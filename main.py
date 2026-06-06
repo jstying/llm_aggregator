@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)  # 创建 Flask 应用实例
 
 # 定义模拟提供商列表，用于测试（实际环境中可替换为真实的 g4f 服务）
+# 这些 URL 这里只是“展示”，没有真的调用
 PROVIDERS = [
     {'name': 'OpenAI_GPT35', 'url': 'https://api.openai.com/v1/chat/completions'},
     {'name': 'Anthropic_Claude', 'url': 'https://api.anthropic.com/v1/messages'},
