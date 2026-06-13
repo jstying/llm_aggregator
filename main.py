@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+
 try:
     import g4f
     G4F_AVAILABLE = True
