@@ -60,7 +60,7 @@
             color: #555;
         }
 
-        input, textarea, select {
+        input, textarea {
             width: 100%;
             padding: 12px;
             border: 2px solid #e1e5e9;
@@ -69,7 +69,7 @@
             transition: border-color 0.3s ease;
         }
 
-        input:focus, textarea:focus, select:focus {
+        input:focus, textarea:focus {
             outline: none;
             border-color: #667eea;
         }
@@ -105,6 +105,17 @@
             margin-right: 8px;
         }
 
+        .provider-meta {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .provider-meta small {
+            color: #888;
+            font-size: 11px;
+            margin-top: 2px;
+        }
+
         .button-group {
             display: flex;
             gap: 15px;
@@ -119,7 +130,6 @@
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s ease;
-            text-decoration: none;
             display: inline-block;
         }
 
@@ -237,6 +247,13 @@
             color: #333;
         }
 
+        .provider-name small {
+            font-size: 0.75rem;
+            color: #888;
+            font-weight: normal;
+            margin-left: 6px;
+        }
+
         .provider-status {
             display: flex;
             align-items: center;
@@ -284,23 +301,29 @@
             border-left: 4px solid #dc3545;
         }
 
+        .no-providers {
+            color: #888;
+            font-style: italic;
+            padding: 10px 0;
+        }
+
         @media (max-width: 768px) {
             .container {
                 padding: 10px;
             }
-            
+
             .header h1 {
                 font-size: 2rem;
             }
-            
+
             .form-container {
                 padding: 20px;
             }
-            
+
             .button-group {
                 flex-direction: column;
             }
-            
+
             .btn {
                 width: 100%;
             }
@@ -311,7 +334,7 @@
     <div class="container">
         <div class="header">
             <h1>🚀 G4F Provider Comparer</h1>
-            <p>Compare responses from different GPT providers and find the best one for your needs</p>
+            <p>Compare responses from different AI providers in real time</p>
         </div>
 
         <div class="form-container">
@@ -322,19 +345,9 @@
                 </div>
 
                 <div class="form-group">
-                    <label for="model">Model:</label>
-                    <select id="model" name="model">
-                        <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                        <option value="gpt-4">GPT-4</option>
-                        <option value="claude-v1">Claude v1</option>
-                        <option value="claude-instant">Claude Instant</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label>Select Providers (leave empty to test all):</label>
+                    <label>Select Providers (leave all unchecked to test all):</label>
                     <div class="provider-selection" id="providerSelection">
-                        <!-- Providers will be loaded dynamically -->
+                        <span class="no-providers">Loading providers...</span>
                     </div>
                 </div>
 
@@ -358,20 +371,15 @@
         <div class="results" id="results">
             <div class="results-header">
                 <h2>📊 Comparison Results</h2>
-                <div class="stats" id="stats">
-                    <!-- Stats will be populated here -->
-                </div>
+                <div class="stats" id="stats"></div>
             </div>
-            <div id="resultsContainer">
-                <!-- Results will be populated here -->
-            </div>
+            <div id="resultsContainer"></div>
         </div>
     </div>
 
     <script>
         let providers = [];
 
-        // Load providers on page load
         async function loadProviders() {
             try {
                 const response = await fetch('/api/providers');
@@ -379,51 +387,61 @@
                 renderProviderSelection();
             } catch (error) {
                 console.error('Error loading providers:', error);
+                document.getElementById('providerSelection').innerHTML =
+                    '<span class="no-providers">Failed to load providers.</span>';
             }
         }
 
         function renderProviderSelection() {
             const container = document.getElementById('providerSelection');
-            container.innerHTML = providers.map(provider => `
+            if (!providers.length) {
+                container.innerHTML = '<span class="no-providers">No providers available.</span>';
+                return;
+            }
+            container.innerHTML = providers.map(p => `
                 <label class="provider-checkbox">
-                    <input type="checkbox" name="providers" value="${provider.name}">
-                    <span>${provider.name}</span>
-                    <small style="color: #666; margin-left: 8px;">(${provider.type})</small>
+                    <input type="checkbox" name="providers" value="${p.name}">
+                    <div class="provider-meta">
+                        <span>${p.name}</span>
+                        <small>${p.model}</small>
+                    </div>
                 </label>
             `).join('');
         }
 
-        // Handle form submission
         document.getElementById('compareForm').addEventListener('submit', async (e) => {
             e.preventDefault();
-            
+
             const prompt = document.getElementById('prompt').value.trim();
             if (!prompt) {
                 alert('Please enter a prompt');
                 return;
             }
 
-            const model = document.getElementById('model').value;
-            const selectedProviders = Array.from(document.querySelectorAll('input[name="providers"]:checked'))
-                .map(cb => cb.value);
+            const selectedProviders = Array.from(
+                document.querySelectorAll('input[name="providers"]:checked')
+            ).map(cb => cb.value);
 
             showLoading();
-            
+
             try {
                 const response = await fetch('/api/compare', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        prompt: prompt,
-                        model: model,
+                        prompt,
                         providers: selectedProviders,
                         max_workers: 5
                     })
                 });
 
                 const data = await response.json();
+
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+
                 displayResults(data);
             } catch (error) {
                 console.error('Error comparing providers:', error);
@@ -433,7 +451,6 @@
             }
         });
 
-        // Clear results
         document.getElementById('clearBtn').addEventListener('click', () => {
             document.getElementById('results').style.display = 'none';
             document.getElementById('prompt').value = '';
@@ -454,11 +471,15 @@
         function displayResults(data) {
             const stats = document.getElementById('stats');
             const resultsContainer = document.getElementById('resultsContainer');
-            
-            // Display stats
-            const avgResponseTime = data.results.filter(r => r.success)
-                .reduce((sum, r) => sum + r.response_time, 0) / data.successful_providers || 0;
-            
+
+            const avgTime = data.successful_providers > 0
+                ? (data.results.filter(r => r.success).reduce((s, r) => s + r.response_time, 0) / data.successful_providers).toFixed(1)
+                : '—';
+
+            const successRate = data.total_providers > 0
+                ? ((data.successful_providers / data.total_providers) * 100).toFixed(1) + '%'
+                : '—';
+
             stats.innerHTML = `
                 <div class="stat">
                     <div class="stat-value">${data.total_providers}</div>
@@ -469,22 +490,21 @@
                     <div class="stat-label">Successful</div>
                 </div>
                 <div class="stat">
-                    <div class="stat-value">${((data.successful_providers / data.total_providers) * 100).toFixed(1)}%</div>
+                    <div class="stat-value">${successRate}</div>
                     <div class="stat-label">Success Rate</div>
                 </div>
                 <div class="stat">
-                    <div class="stat-value">${avgResponseTime.toFixed(1)}s</div>
+                    <div class="stat-value">${avgTime}s</div>
                     <div class="stat-label">Avg Response Time</div>
                 </div>
             `;
 
-            // Display results
             resultsContainer.innerHTML = data.results.map(result => `
                 <div class="provider-result">
                     <div class="provider-header">
                         <div class="provider-name">
-                            ${result.provider} 
-                            <small style="color: #666;">(${result.type || 'unknown'})</small>
+                            ${result.provider}
+                            <small>${result.model}</small>
                         </div>
                         <div class="provider-status">
                             <span class="status-badge ${result.success ? 'status-success' : 'status-error'}">
@@ -493,9 +513,9 @@
                             <span class="response-time">${result.response_time}s</span>
                         </div>
                     </div>
-                    ${result.success ? 
-                        `<div class="provider-response">${result.response}</div>` :
-                        `<div class="provider-error">❌ Error: ${result.error}</div>`
+                    ${result.success
+                        ? `<div class="provider-response">${result.response}</div>`
+                        : `<div class="provider-error">❌ ${result.error}</div>`
                     }
                 </div>
             `).join('');
@@ -504,7 +524,6 @@
             document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
         }
 
-        // Load providers when page loads
         loadProviders();
     </script>
 </body>
