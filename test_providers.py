@@ -3,8 +3,8 @@ import time
 
 print("=== OpenRouterFree - 挑 :free 模型 ===")
 free_models = [
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",  # ✅
-    "poolside/laguna-xs.2:free", # ✅
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",  # local ✅ but not available on cloud
+    "poolside/laguna-xs.2:free", # used to ✅ but active day limit exceeded 
     "google/gemma-4-26b-a4b-it:free",
     "arcee-ai/trinity-large-thinking:free",
     "minimax/minimax-m2.5:free",
