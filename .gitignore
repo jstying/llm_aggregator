@@ -21,3 +21,9 @@ Thumbs.db
 # IDE 和编辑器配置
 .vscode/
 .idea/
+
+# 忽略所有测试结果文本文件
+provider_test_results*.txt
+
+# 忽略可用的服务商模型缓存文件
+available_providers_models.txt
