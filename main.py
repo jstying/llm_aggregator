@@ -269,7 +269,7 @@ def compare_providers():
                         'model': fallback_model,
                         'type': 'g4f'
                     })
-                    logger.error(f"Error testing {name}: {e}")
+                    logger.error(f"Error testing {name}: {e}", exc_info=True) # 添加 exc_info=True 打印完整堆栈
 
         # 排序：成功优先，耗时短优先
         results.sort(
