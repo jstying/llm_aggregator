@@ -265,10 +265,16 @@
 
         .provider-selection {
             display: grid;
-            /* 改变1：固定列宽，防止多行布局在局部刷新时发生整体形变 */
-            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
             gap: 14px;
             margin-top: 12px;
+        }
+
+        .provider-checkbox,
+        .provider-checkbox input,
+        .provider-checkbox * {
+            outline: none !important;
+            -webkit-tap-highlight-color: transparent; /* 消除谷歌内核特有的点击高亮层 */
         }
 
         .provider-checkbox {
@@ -279,20 +285,24 @@
             border: 1px solid #e8e8e8;
             border-radius: 6px;
             cursor: pointer;
-            transition: border-color 0.15s ease, background-color 0.15s ease; /* 改变2：删掉 all，只对颜色过渡，防止尺寸发生形变动画 */
-            height: 66px; /* 改变3：强行固定勾选框卡片的高度，从物理上杜绝它变高变矮 */
+            height: 66px;
             overflow: hidden;
+            /* 核心修改：只对背景色和边框颜色进行平滑过渡，绝对不要用 all */
+            transition: background-color 0.1s ease, border-color 0.1s ease;
         }
 
         .provider-checkbox:hover {
             background: rgba(6, 193, 103, 0.03);
             border-color: #06c167;
+            /* 核心修改：删掉可能导致 Chrome 渲染尺寸抖动的 box-shadow */
         }
 
         .provider-checkbox input {
-            width: auto;
+            width: 16px !important;
+            height: 16px !important;
             margin-right: 12px;
             accent-color: #06c167;
+            flex-shrink: 0; /* 强制不允许 Chrome 挤压这个勾选框 */
         }
 
         .provider-meta {
@@ -819,7 +829,7 @@
         function updateModelDropdown() {
             // 解决鬼畜：在刷新选项前，强制关闭可能正处于打开状态的下拉面板
             customWrapper.classList.remove('open');
-
+            
             const selectedProviders = Array.from(providerTriggers)
                 .filter(cb => cb.checked)
                 .map(cb => cb.value);
@@ -905,17 +915,8 @@
             });
         }
 
-        // 增加防抖器，防止疯狂点击导致的 DOM 树频繁重绘与鬼畜
-        let debounceTimer;
         providerTriggers.forEach(cb => {
-            cb.addEventListener('change', function() {
-                // 只要还在点击，就清除上一次的刷新排队
-                clearTimeout(debounceTimer);
-                // 100毫秒内没有新点击，才真正执行下拉框刷新
-                debounceTimer = setTimeout(() => {
-                    updateModelDropdown();
-                }, 100);
-            });
+            cb.addEventListener('change', updateModelDropdown);
         });
 
         updateModelDropdown();
