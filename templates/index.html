@@ -814,6 +814,9 @@
         });
 
         function updateModelDropdown() {
+            // 解决鬼畜：在刷新选项前，强制关闭可能正处于打开状态的下拉面板
+            customWrapper.classList.remove('open');
+            
             const selectedProviders = Array.from(providerTriggers)
                 .filter(cb => cb.checked)
                 .map(cb => cb.value);
