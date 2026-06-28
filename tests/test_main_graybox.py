@@ -35,9 +35,14 @@ class TestSortOrderInvariant(unittest.TestCase):
         main.app.config['TESTING'] = True
         self.client = main.app.test_client()
         self._original_g4f_available = main.G4F_AVAILABLE
+        _mock_review = {'reviewer_provider': 'mock', 'reviewer_model': 'mock',
+                        'score': 80, 'comment': 'mock review'}
+        self._pr_patcher = patch('main.run_peer_review', return_value=_mock_review)
+        self._pr_patcher.start()
 
     def tearDown(self):
         main.G4F_AVAILABLE = self._original_g4f_available
+        self._pr_patcher.stop()
 
     def _post_compare(self, providers=None):
         payload = {
@@ -172,15 +177,15 @@ class TestThreadTimeoutFallback(unittest.TestCase):
         response = self._compare_with_timeout()
         self.assertEqual(response.status_code, 200)
 
-    def test_timeout_fallback_result_has_all_seven_keys(self):
-        """Fallback dict from init_result_object must contain the full key set."""
+    def test_timeout_fallback_result_has_required_keys(self):
+        """Fallback result from /api/compare must contain all required keys including peer_reviews."""
         response = self._compare_with_timeout()
         data = json.loads(response.data)
         self.assertEqual(len(data['results']), 1)
         result = data['results'][0]
         expected_keys = {
             'provider', 'success', 'response', 'error',
-            'response_time', 'model', 'type'
+            'response_time', 'model', 'type', 'peer_reviews'
         }
         self.assertEqual(set(result.keys()), expected_keys)
 
@@ -406,6 +411,69 @@ class TestGlobalDegradationState(unittest.TestCase):
             self.assertGreater(len(restored_data), 0)
         else:
             self.assertEqual(restored_data, [])
+
+
+# ============================================================
+# 5. 三路 Provider 互评局部失败测试
+# 3 个 Provider，第 3 个在第一轮失败，验证只有 2 个成功者
+# 进行双向互评，失败者不参与也不接收互评。
+# ============================================================
+@unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
+class TestPeerReviewPartialFailure(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+
+    def _make_three_providers(self):
+        p1 = MagicMock(); p1.__name__ = 'PeerA'
+        p2 = MagicMock(); p2.__name__ = 'PeerB'
+        p3 = MagicMock(); p3.__name__ = 'PeerC'
+        return [p1, p2, p3]
+
+    def _post_compare(self):
+        providers = self._make_three_providers()
+
+        def side_effect(*args, **kwargs):
+            name = kwargs.get('provider').__name__
+            if name == 'PeerC':
+                raise RuntimeError('simulated failure')
+            return '{"score": 80, "comment": "ok"}'
+
+        mock_map = {
+            'PeerA': ['gpt-3.5-turbo'],
+            'PeerB': ['aria'],
+            'PeerC': ['gpt-3.5-turbo'],
+        }
+        peer_prompts = {'gpt-3.5-turbo': '评分JSON:', 'aria': '评分JSON:'}
+
+        with patch('main.g4f.ChatCompletion.create', side_effect=side_effect), \
+             patch('main.G4F_PROVIDERS', providers), \
+             patch('main.PROVIDER_MODELS_MAP', mock_map), \
+             patch('main.ROUTE_PROMPTS_MAP', {}), \
+             patch('main.PEER_REVIEW_PROMPTS_MAP', peer_prompts):
+            response = self.client.post(
+                '/api/compare',
+                data=json.dumps({'prompt': 'test', 'providers': ['PeerA', 'PeerB', 'PeerC']}),
+                content_type='application/json'
+            )
+        return response
+
+    def test_partial_failure_returns_200(self):
+        response = self._post_compare()
+        self.assertEqual(response.status_code, 200)
+
+    def test_two_successful_providers_each_have_one_peer_review(self):
+        data = json.loads(self._post_compare().data)
+        successful = [r for r in data['results'] if r['success']]
+        self.assertEqual(len(successful), 2)
+        for result in successful:
+            self.assertEqual(len(result['peer_reviews']), 1)
+
+    def test_failed_provider_has_empty_peer_reviews(self):
+        data = json.loads(self._post_compare().data)
+        failed = next(r for r in data['results'] if r['provider'] == 'PeerC')
+        self.assertEqual(failed['peer_reviews'], [])
 
 
 if __name__ == '__main__':

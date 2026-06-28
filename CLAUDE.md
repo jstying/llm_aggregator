@@ -103,10 +103,16 @@ llm_aggregator/
   - `home()` 路由（`GET /home`）：清除 `session['is_guest']`，重定向到 `/`，用于"返回欢迎页"操作。
   - `guest_login()` 路由（`POST /api/auth/guest`）：设置 `session['is_guest'] = True`，返回 JSON。
   - `determine_actual_model(provider_name, requested_model)`: 纯函数，封装规则 A/B/C 的模型决策逻辑。
-  - `init_result_object(provider_name, model)`: 纯函数，统一初始化标准 Result 字典。
-  - `test_g4f_provider()`: 核心测试函数，调用上述两个辅助函数并计算响应耗时。
-  - `compare_providers()`: 通过线程池并发执行测试，按成功状态和耗时排序。
-- **depends_on**: `flask`, `g4f`, `concurrent.futures`, `time`, `logging`, `dotenv`, `auth.auth_bp`
+  - `init_result_object(provider_name, model)`: 纯函数，统一初始化标准 Result 字典（7 个 key）。
+  - `detect_and_truncate(text)`: 纯函数，句级 + 滑动窗口重复检测，触发时截断并追加提示语。
+  - `parse_peer_review_json(text)`: 纯函数，从互评响应文本中提取 JSON，返回 `(score: int, comment: str)`；任何解析失败均容错返回 `(80, raw_text)`；score 被夹入 [1, 100]。
+  - `test_g4f_provider()`: 核心 LLM 测试函数，调用上述辅助函数、应用隐形 Prompt 路由、统计响应耗时。
+  - `run_peer_review(reviewer_provider, reviewer_model, review_prompt)`: 单次互评请求，内部调用 `parse_peer_review_json` 解析响应，返回 `{reviewer_provider, reviewer_model, score, comment}`，不含 `response_time`。
+  - `compare_providers()`: 两阶段并发执行——第一阶段 `ThreadPoolExecutor` 并发测试各 Provider；第二阶段在满足触发条件时启动第二个 `ThreadPoolExecutor` 执行互评任务，并将结果挂载到对应 result 的 `peer_reviews` 列表；最终按成功状态和耗时排序。
+  - `PEER_REVIEW_PROMPTS_MAP`: 互评裁判提示词表，key 为模型名称，value 为要求模型输出 `{"score": int, "comment": str}` JSON 格式的提示词前缀。
+  - `ROUTE_PROMPTS_MAP`: 隐形 Prompt 路由表，key 为 `(provider_name, model)` 元组，value 为追加到用户 prompt 尾部的风格提示词。
+  - `SENSITIVE_KEYWORDS`: 模块级敏感词列表，当前为空列表占位，可直接填充关键词生效，`detect_and_truncate` 读取此变量。
+- **depends_on**: `flask`, `g4f`, `concurrent.futures`, `time`, `json`, `logging`, `dotenv`, `auth.auth_bp`
 - **affects**: `home.html`、`index.html`（通过 Jinja2 注入变量），所有前端 API 请求。
 
 ### `auth/__init__.py` [NEW]
@@ -148,8 +154,10 @@ llm_aggregator/
   - 游客状态下在导航栏下方显示黄色提示条，引导注册或登录。
   - 已登录用户的 header 区域展示个性化欢迎语（`Welcome back, {{ session.username }}`）。
   - 新增 Flash 消息显示区（位于 `.container` 内、`.header` 之上），确保注册成功等提示在此处被立即消费。
-  - LLM 聚合核心逻辑（`updateModelDropdown`、`displayResults`、`/api/compare` Fetch）保持不变。
-- **depends_on**: 后端路由 `/` 传来的 `providers`、`provider_models_json` 以及 `session` 全局对象。
+  - `escapeHtml(str)`: 所有动态内容（provider 名、model 名、response、error）均通过此函数转义后注入 DOM，防止 XSS。
+  - `renderPeerReviews(reviews, uid)`: 将 `peer_reviews` 数组渲染为可折叠面板，展示"来自 [Provider] 的盲评 [N分]：[comment]"。面板默认折叠，通过 `togglePeerReview(uid)` 切换显示状态。
+  - `displayResults(data)` 在每个成功结果的 `.provider-response` 下方附加互评面板；失败结果不展示互评。
+- **depends_on**: 后端路由 `/` 传来的 `providers`、`provider_models_json` 以及 `session` 全局对象；`/api/compare` 返回的 `peer_reviews` 字段。
 
 ### `templates/auth/base.html` [NEW]
 
@@ -190,10 +198,12 @@ llm_aggregator/
 ### 4. LLM 聚合请求流程
 
 - 用户在 `index.html` 输入 Prompt，勾选 Provider，点击对比按钮。
-- 前端 Fetch POST `/api/compare`，后端启动 `ThreadPoolExecutor` 线程池。
-- 各子线程并发执行 `test_g4f_provider`，模型降级规则 A/B/C 在此应用。
-- 主线程收集结果，按 `(失败状态, 耗时升序)` 排序，返回 JSON。
-- 前端 `displayResults()` 渲染统计卡片和响应内容。
+- 前端 Fetch POST `/api/compare`，后端启动第一个 `ThreadPoolExecutor` 线程池。
+- 各子线程并发执行 `test_g4f_provider`，模型降级规则 A/B/C 在此应用，隐形 Prompt 路由（`ROUTE_PROMPTS_MAP`）追加风格提示词。
+- 主线程收集第一阶段结果，为每条 result 初始化 `peer_reviews: []`。
+- 互评触发条件：`tested_providers >= 2` 且 `successful_results >= 2`。满足时启动第二个 `ThreadPoolExecutor`，每个成功者 B 对成功者 A 执行 `run_peer_review`（B 不对自身评）；互评响应经 `parse_peer_review_json` 解析为 `{score, comment}`，挂载到 A 的 `peer_reviews` 列表。
+- 两阶段完成后按 `(失败状态, 耗时升序)` 排序，返回 JSON。
+- 前端 `displayResults()` 渲染统计卡片、响应内容，并在每个成功结果下方附加可折叠互评面板。
 
 ### 5. 退出登录流程
 
@@ -245,6 +255,16 @@ llm_aggregator/
 - **规则 B**：若用户指定的模型不被支持或未指定，则自动选取映射表中第一个作为默认模型。
 - **规则 C**：若该 Provider 没有任何模型配置，则兜底降级为 `"gpt-3.5-turbo"`。
 
+### AI 盲评触发与评分规则
+
+互评阶段在 `compare_providers()` 第一阶段完成后执行，遵循以下不变量：
+
+- **触发条件**：`len(providers_to_test) >= 2` 且 `len(successful_results) >= 2`。任一条件不满足，所有 `peer_reviews` 保持空列表。
+- **互评配对**：对每个成功者 A，由其余所有成功者 B 扮演裁判发起点评（B 不对自身评）。2 个成功者时各有 1 条互评；N 个成功者时各有 N-1 条。
+- **提示词格式**：`PEER_REVIEW_PROMPTS_MAP[reviewer_model]` 提供裁判人设前缀，要求模型严格输出 `{"score": int, "comment": str}` JSON，不含其他文字。
+- **JSON 容错解析**：`parse_peer_review_json` 从响应中扫描首个 `{...}` 块尝试解析。score 被夹入 [1, 100] 并强转为 int。任何解析失败（格式错误、缺失 score 字段、异常）均 fallback 为 `(80, raw_text)`，接口不崩溃。
+- **失败者不参与互评**：第一阶段失败的 Provider 既不作为被评对象，也不作为裁判，其 `peer_reviews` 永远为空列表。
+
 ### 结果排序权重规则
 
 - **第一优先级**：`success` 状态。成功的请求必须排在失败的请求前面。
@@ -254,7 +274,7 @@ llm_aggregator/
 
 ### 核心数据传输对象 (DTO)：LLM Result
 
-`test_g4f_provider` 返回的字典结构如下，前后端共用此契约，key 集合严禁增删：
+`test_g4f_provider` 返回的字典结构如下，此 7-key 契约严禁增删（`peer_reviews` 字段由 `compare_providers` 在外层追加，不属于此契约）：
 
 ```python
 {
@@ -267,6 +287,22 @@ llm_aggregator/
     'type': 'g4f'           # 固定类型标识
 }
 ```
+
+`compare_providers` 在第一阶段结束后为每条 result 追加 `peer_reviews` 字段，使最终 `/api/compare` 响应中每条 result 共有 8 个 key：
+
+```python
+result['peer_reviews'] = [
+    {
+        'reviewer_provider': str,  # 裁判 Provider 名称
+        'reviewer_model': str,     # 裁判使用的模型名称
+        'score': int,              # 评分（1-100，由 parse_peer_review_json 夹入范围）
+        'comment': str,            # 一句话点评（JSON 解析失败时为原始响应文本）
+    },
+    ...
+]
+```
+
+互评 DTO key 集合（`reviewer_provider`、`reviewer_model`、`score`、`comment`）为前后端契约，严禁增删。
 
 ### Firestore 用户文档结构（`users` 集合）
 
@@ -340,6 +376,8 @@ session['is_guest']  # bool：固定为 True，游客状态独有
 
 - ~~**Flash 消息堆积 Bug**~~（**已修复**）：`home.html` 和 `index.html` 原本没有 Flash 消息显示区，导致退出登录等操作产生的 Flash 消息滞留 session，在下一个 auth 页面（使用 `auth/base.html`）上集中出现，引发"注册成功 + 已退出登录"同时显示的假象。两个文件均已加入 Flash 消息显示区。
 
+- **互评阶段超时缓冲**：`run_peer_review` 内部 `g4f.ChatCompletion.create(timeout=15)` 为 advisory 超时（非硬截断）；外层 `future.result(timeout=25)` 为硬截断，留有约 10 秒缓冲。互评 prompt 远长于普通请求（含完整回答文本），若缩短任一超时值须同步评估另一侧的缓冲余量。
+
 - **线程池潜在安全隐患**：`max_workers` 的计算逻辑为 `min(data.get('max_workers', 3), 5)`。由于 `G4F_PROVIDERS` 目前只有 2 个（`Yqcloud`、`OperaAria`），实际最大线程数永远不超过 2。
 
 - **SECRET_KEY 持久化风险**：若 `SECRET_KEY` 环境变量未设置，每次服务重启都会生成新的随机密钥，导致所有已登录用户的 session 失效。生产环境必须在 `app.yaml` 的 `env_variables` 中固定设置 `SECRET_KEY`，本地开发必须在 `.env` 文件中设置。
@@ -355,7 +393,9 @@ session['is_guest']  # bool：固定为 True，游客状态独有
 1. 确保新通道已被 g4f 原生支持。
 2. 将其追加进 `G4F_PROVIDERS` 列表中。
 3. 在 `PROVIDER_MODELS_MAP` 中添加对应的模型数组（第一个为默认模型）。
-4. 前端具备完全动态的联动机制，无需修改任何 HTML/JS 代码。
+4. 在 `ROUTE_PROMPTS_MAP` 中为 `(provider_name, model)` 元组添加隐形风格提示词（可选）。
+5. 在 `PEER_REVIEW_PROMPTS_MAP` 中为该 Provider 使用的模型名称添加互评裁判提示词（可选；缺失时使用默认值 `'请评估以下回答的质量，指出优点与不足。'`）。新增条目必须要求模型输出 `{"score": int, "comment": str}` JSON 格式，否则 `parse_peer_review_json` 将 fallback 为 80 分。
+6. 前端具备完全动态的联动机制，无需修改任何 HTML/JS 代码。
 
 ### 🟢 安全区：如何安全地添加新页面
 
@@ -373,11 +413,13 @@ session['is_guest']  # bool：固定为 True，游客状态独有
 
 ### 🔴 危险区（Danger Zones）：严禁触碰的逻辑
 
-- 不要修改 `test_g4f_provider` 的返回值字典结构。前端的 `displayResults()` 严格依赖全部 7 个 key，任何增删都会导致前端报表瘫痪。
+- 不要修改 `test_g4f_provider` 的返回值字典结构（7-key 契约）。`compare_providers` 在其外层追加 `peer_reviews`，不属于此契约范围，但同样不可删除。
+- 不要修改互评 DTO 的 key 集合（`reviewer_provider`、`reviewer_model`、`score`、`comment`）。前端 `renderPeerReviews` 直接读取 `r.score` 和 `r.comment`，任何 key 变更将导致互评面板渲染空白。
 - 不要移除根路由 `/` 中的 `provider_models_json` 注入。它是前端模型联动过滤机制的唯一数据源。
 - 不要在 session 中同时设置 `user_id` 和 `is_guest`。两个键必须互斥。任何改变身份状态的路由都必须在写入新键的同时清除旧键。
 - 不要在 auth 路由中直接调用 CRUD 函数而不先检查 `FIREBASE_AVAILABLE`。若 Firebase 未初始化，`db` 对象为 `None`，直接调用会触发 `AttributeError`。
 - 不要修改 `GET /home` 路由的行为（即不要让它清除 `user_id`）。该路由专为"返回欢迎页"设计，已登录用户误触不应导致退出登录。
+- 不要将 `run_peer_review` 的返回结构改回含 `response_time` 字段。互评阶段不计入前端展示的耗时统计，两者混用会使前端数据语义混乱。
 
 ## 11. 🛠️ BUILD, RUN & TEST COMMANDS
 
@@ -421,14 +463,14 @@ gunicorn -b :8080 main:app
 
 项目使用 Python 内置的 `unittest` 框架，测试文件存放于 `tests/` 目录。
 
-- **test_main_whitebox.py**：直接测试 `main.py` 的三个核心内部函数。测试内容包括模型降级规则 A/B/C 的全部边界条件、结果字典的 key 完整性，以及 `test_g4f_provider` 的成功路径与异常路径。
-- **test_main_blackbox.py**：通过 Flask `test_client()` 以 HTTP 协议测试 `main.py` 暴露的全部对外 API 端点。
-- **test_main_graybox.py**：感知后端全局状态与线程池行为。测试内容包括排序契约、fallback 路径、`max_workers` 双重上限以及 `G4F_AVAILABLE` 降级响应。
+- **test_main_whitebox.py**：直接测试 `main.py` 的核心内部函数。测试内容包括模型降级规则 A/B/C 的全部边界条件、结果字典的 key 完整性、`test_g4f_provider` 的成功路径与异常路径、`detect_and_truncate` 的句级与滑动窗口重复检测、`ROUTE_PROMPTS_MAP` 路由注入行为，以及 `parse_peer_review_json` 的 JSON 解析、夹值、容错 fallback 全部边界条件。
+- **test_main_blackbox.py**：通过 Flask `test_client()` 以 HTTP 协议测试 `main.py` 暴露的全部对外 API 端点，包含互评触发条件、`peer_reviews` 字段存在性、互评 DTO key 集合（`{reviewer_provider, reviewer_model, score, comment}`）以及 `score` 类型为 `int` 的断言。
+- **test_main_graybox.py**：感知后端全局状态与线程池行为。测试内容包括排序契约、fallback 路径、`max_workers` 双重上限、`G4F_AVAILABLE` 降级响应，以及三 Provider 场景下 1 个失败时互评仅在 2 个成功者之间双向触发的行为（`TestPeerReviewPartialFailure`）。排序测试（`TestSortOrderInvariant`）在 setUp 中 mock `run_peer_review`，避免 2 个成功者触发真实网络调用。
 - **test_auth_whitebox.py**：使用 `unittest.mock.patch` 绕过真实 Firebase 网络连接。测试内容包括 Werkzeug 密码哈希生成与校验，以及 `get_user_by_username` 和 `get_user_by_email` 两个函数在"用户存在"和"用户不存在"两个分支下的行为。
 - **test_auth_blackbox.py**：通过 Flask `test_client()` 测试 auth 蓝图的全部路由。测试内容包括登录成功后 `session['user_id']` 的写入与重定向、注册成功后 `session['is_guest']` 的清除、`/profile` 路由的未登录重定向以及已登录用户的正常访问。
 
 ```bash
-# 发现并运行 tests/ 目录下的全部测试（共 5 个测试文件）
+# 发现并运行 tests/ 目录下的全部测试（共 174 个用例，5 个测试文件）
 python -m unittest discover -s tests
 
 # 带详细输出运行
@@ -542,12 +584,15 @@ gcloud app logs tail -s default
 
 ## 13. 🧠 MEMORY ANCHORS (FOR CLAUDE CODE)
 
-- **LLM 核心调用链路**：`index.html (Form Submit)` + `POST /api/compare` + `ThreadPoolExecutor` + `test_g4f_provider()` + `g4f.ChatCompletion.create()`。
+- **LLM 核心调用链路（两阶段）**：`index.html (Form Submit)` + `POST /api/compare` + `ThreadPoolExecutor[1]` + `test_g4f_provider()` + `g4f.ChatCompletion.create()` → 收集结果 → `ThreadPoolExecutor[2]` + `run_peer_review()` + `parse_peer_review_json()` → 挂载 `peer_reviews`。
 - **认证核心调用链路**：`home.html (Login/Register/Guest)` + `auth Blueprint` + `Firebase Firestore` + `session 写入` + `redirect url_for('index')`。
 - **身份状态入口**：根路由 `/` 的 `index()` 函数是唯一的身份状态路由器，所有重定向最终都回到这里。
 - **关键不变量 1**：LLM 对比结果的排序始终是"成功在前，耗时短在前"。
 - **关键不变量 2**：`session['user_id']` 和 `session['is_guest']` 永远不同时存在。
 - **关键不变量 3**：所有作为 Flash + redirect 目标的页面，必须包含 Flash 消息显示区，否则会产生消息堆积 Bug。
+- **关键不变量 4**：`test_g4f_provider` 的返回值严格为 7-key 契约；`peer_reviews` 字段由 `compare_providers` 在外层追加，使最终 result 共有 8 个 key；`run_peer_review` 的返回值严格为 `{reviewer_provider, reviewer_model, score, comment}` 4-key 契约。
+- **互评触发条件**：`tested >= 2` 且 `success >= 2`，缺一不触发。只有成功者相互点评，失败者不参与任何方向。
+- **`parse_peer_review_json` 容错行为**：任何解析失败（格式错误、缺失 score、异常）均返回 `(80, raw_text)`，不抛出异常，接口永不因互评解析失败而崩溃。
 - **核心文件**：LLM 后端入口为 `main.py`，认证后端为 `auth/routes.py` 和 `auth/db.py`，三个前端入口分别为 `templates/home.html`（未认证）、`templates/index.html`（已认证或游客）、`templates/auth/` 目录（认证流程页）。
 - **自适应策略**：指定模型不匹配时，自动降级为映射表中的第一个模型，最终兜底为 `"gpt-3.5-turbo"`。
 - **Firebase 初始化顺序**：key 文件优先于 ADC，不能反转，因为 ADC 的构造函数不立即抛出异常。

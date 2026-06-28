@@ -17,6 +17,8 @@ import logging
 # 读取环境变量
 import os
 import secrets
+import re
+import json
 
 # 用于并发执行多个Provider请求
 from concurrent.futures import ThreadPoolExecutor
@@ -55,16 +57,34 @@ try:
         'OperaAria': ['aria'],
     }
 
+    # 隐形 Prompt 路由表：(provider_name, model) → 追加到用户 prompt 尾部的 Style Prompt
+    ROUTE_PROMPTS_MAP = {
+        ('Yqcloud', 'gpt-4'): '\n\n【系统提示：请从底层逻辑深入剖析，注重结构化表达，给出最严谨的步骤或推导。】',
+        ('Yqcloud', 'gpt-3.5-turbo'): '\n\n【系统提示：请用最精炼、通俗的语言快速回答，突出核心要点，字数控制在 200 字内。】',
+        ('OperaAria', 'aria'): '\n\n【系统提示：请结合最新行业现状与实用应用场景，给出最具实操性的建议。】',
+    }
+
+    # 互评裁判提示词配置表：model → 裁判专属提示词前缀（要求输出 JSON 格式）
+    PEER_REVIEW_PROMPTS_MAP = {
+        'gpt-4': '你现在是盲评裁判。请严谨审视以下匿名回答，挑出逻辑漏洞、事实错误或论证不充分之处。请严格按照以下 JSON 格式输出，不要包含任何其他文字：{"score": 分数(1-100的整数), "comment": "一句话犀利点评"}',
+        'gpt-3.5-turbo': '请迅速评估以下匿名回答的条理性和易读性。请严格按照以下 JSON 格式输出，不要包含任何其他文字：{"score": 分数(1-100的整数), "comment": "一句话效率至上的改稿意见"}',
+        'aria': '请从实用角度点评以下匿名回答，指出其接地气程度与可操作性。请严格按照以下 JSON 格式输出，不要包含任何其他文字：{"score": 分数(1-100的整数), "comment": "一句话大白话吐槽"}',
+    }
+
 except ImportError as e:
     G4F_AVAILABLE = False
     G4F_PROVIDERS = []
     PROVIDER_MODELS_MAP = {}
+    ROUTE_PROMPTS_MAP = {}
+    PEER_REVIEW_PROMPTS_MAP = {}
     logger.warning(f"g4f not available: {e}")
 
 except Exception as e:
     G4F_AVAILABLE = False
     G4F_PROVIDERS = []
     PROVIDER_MODELS_MAP = {}
+    ROUTE_PROMPTS_MAP = {}
+    PEER_REVIEW_PROMPTS_MAP = {}
     logger.warning(f"g4f initialization failed: {e}")
 
 
@@ -98,6 +118,64 @@ def init_result_object(provider_name, model):
 
 
 # ==================================================
+# 辅助函数：解析互评 JSON 响应，提取 score 与 comment
+# 容错策略：任何解析失败均返回默认分 80 + 原始文本作为 comment
+# ==================================================
+def parse_peer_review_json(text):
+    try:
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end > start:
+            data = json.loads(text[start:end + 1])
+            score = data.get('score')
+            comment = str(data.get('comment', ''))
+            if isinstance(score, (int, float)):
+                return max(1, min(100, int(score))), comment
+    except Exception:
+        pass
+    return 80, text.strip()
+
+
+# 敏感词列表（当前为占位空列表，按需填充关键词即可生效）
+SENSITIVE_KEYWORDS = []
+
+
+# ==================================================
+# 辅助函数：检测重复文本并截断，同时过滤敏感内容
+# ==================================================
+def detect_and_truncate(text):
+    for kw in SENSITIVE_KEYWORDS:
+        if kw in text:
+            return "内容涉及敏感信息，已拦截。"
+
+    n = len(text)
+    if n < 24:
+        return text
+
+    # --- 句级重复检测（以句末标点或换行为切分点）---
+    parts = re.split(r'(?<=[。！？.!?\n])', text)
+    parts = [p for p in parts if p.strip()]
+    for i in range(len(parts) - 2):
+        s = parts[i].strip()
+        if s and s == parts[i + 1].strip() == parts[i + 2].strip():
+            first_pos = text.find(parts[i])
+            second_pos = text.find(parts[i + 1], first_pos + len(parts[i]))
+            third_pos = text.find(parts[i + 2], second_pos + len(parts[i + 1]))
+            if third_pos != -1:
+                return text[:third_pos] + '...（因文本重复已被系统自动截断）'
+
+    # --- 滑动窗口短串重复检测（窗口 8~50 字符，覆盖短句/词组抽风）---
+    for win in range(8, min(51, n // 3 + 1)):
+        for i in range(n - win * 3 + 1):
+            chunk = text[i:i + win]
+            if (text[i + win:i + win * 2] == chunk and
+                    text[i + win * 2:i + win * 3] == chunk):
+                return text[:i + win * 2] + '...（因文本重复已被系统自动截断）'
+
+    return text
+
+
+# ==================================================
 # 测试单个Provider
 # 功能：
 # 1. 调用指定Provider
@@ -112,13 +190,16 @@ def test_g4f_provider(provider, prompt, requested_model=None):
     result = init_result_object(provider_name, actual_model)
 
     try:
-        # 调用大模型
+        style_suffix = ROUTE_PROMPTS_MAP.get((provider_name, actual_model), '')
+        routed_prompt = prompt + style_suffix
+
+        # 调用大模型（传入含隐形路由的 prompt，result 中保留原始 prompt 无需修改）
         response = g4f.ChatCompletion.create(
             model=actual_model,
             messages=[
                 {
                     "role": "user",
-                    "content": prompt
+                    "content": routed_prompt
                 }
             ],
             provider=provider,
@@ -126,10 +207,19 @@ def test_g4f_provider(provider, prompt, requested_model=None):
         )
 
         result['success'] = True
-        result['response'] = str(response)
+        result['response'] = detect_and_truncate(str(response))
 
     except Exception as e:
-        result['error'] = str(e)
+        err_str = str(e).lower()
+        network_keywords = [
+            'timeout', 'timed out', 'connection', 'network', 'remote',
+            '502', '504', 'rate limit', 'too many requests', 'unavailable',
+            'ssl', 'broken pipe', 'connection reset',
+        ]
+        if any(kw in err_str for kw in network_keywords):
+            result['error'] = '系统正忙，正在努力重新连接中，请稍后再试。'
+        else:
+            result['error'] = str(e)
 
     finally:
         result['response_time'] = round(
@@ -138,6 +228,40 @@ def test_g4f_provider(provider, prompt, requested_model=None):
         )
 
     return result
+
+
+# ==================================================
+# 辅助函数：执行单次互评请求（不经过隐形 Prompt 路由）
+# ==================================================
+def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
+    review_result = {
+        'reviewer_provider': reviewer_provider.__name__,
+        'reviewer_model': reviewer_model,
+        'score': 80,
+        'comment': '',
+    }
+    try:
+        response = g4f.ChatCompletion.create(
+            model=reviewer_model,
+            messages=[{"role": "user", "content": review_prompt}],
+            provider=reviewer_provider,
+            timeout=15
+        )
+        score, comment = parse_peer_review_json(detect_and_truncate(str(response)))
+        review_result['score'] = score
+        review_result['comment'] = comment
+    except Exception as e:
+        err_str = str(e).lower()
+        network_keywords = [
+            'timeout', 'timed out', 'connection', 'network', 'remote',
+            '502', '504', 'rate limit', 'too many requests', 'unavailable',
+            'ssl', 'broken pipe', 'connection reset',
+        ]
+        if any(kw in err_str for kw in network_keywords):
+            review_result['comment'] = '系统正忙，正在努力重新连接中，请稍后再试。'
+        else:
+            review_result['comment'] = f'点评失败：{str(e)}'
+    return review_result
 
 
 # ==================================================
@@ -289,6 +413,53 @@ def compare_providers():
                     fallback_result['error'] = f'Execution error: {str(e)}'
                     results.append(fallback_result)
                     logger.error(f"Error testing {name}: {e}", exc_info=True)
+
+        # 为所有结果初始化空的互评列表
+        for r in results:
+            r['peer_reviews'] = []
+
+        # 互评触发条件：providers_to_test >= 2 且成功结果 >= 2
+        successful_results = [r for r in results if r['success']]
+        if len(providers_to_test) >= 2 and len(successful_results) >= 2:
+            provider_obj_map = {p.__name__: p for p in providers_to_test}
+
+            # 构建互评任务：对每个成功结果 A，让其他成功模型 B 进行点评
+            peer_review_tasks = []
+            for result_a in successful_results:
+                for result_b in successful_results:
+                    if result_b['provider'] == result_a['provider']:
+                        continue
+                    reviewer_provider = provider_obj_map[result_b['provider']]
+                    reviewer_model = result_b['model']
+                    judge_prefix = PEER_REVIEW_PROMPTS_MAP.get(
+                        reviewer_model,
+                        '请评估以下回答的质量，指出优点与不足。'
+                    )
+                    review_prompt = (
+                        f"{judge_prefix}\n\n需要点评的匿名文本如下：\n{result_a['response']}"
+                    )
+                    peer_review_tasks.append(
+                        (reviewer_provider, reviewer_model, review_prompt, result_a['provider'])
+                    )
+
+            max_peer_workers = min(10, len(peer_review_tasks))
+            with ThreadPoolExecutor(max_workers=max_peer_workers) as peer_executor:
+                peer_futures = {
+                    peer_executor.submit(run_peer_review, rp, rm, rpr): target
+                    for rp, rm, rpr, target in peer_review_tasks
+                }
+                for future, target_provider in peer_futures.items():
+                    try:
+                        review_item = future.result(timeout=25)
+                        for r in results:
+                            if r['provider'] == target_provider:
+                                r['peer_reviews'].append(review_item)
+                                break
+                    except Exception as e:
+                        logger.error(
+                            f"Peer review error targeting {target_provider}: {e}",
+                            exc_info=True
+                        )
 
         # 排序：成功优先，耗时短优先
         results.sort(
