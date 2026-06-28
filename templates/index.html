@@ -12,18 +12,17 @@
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #fbfbfc; /* 极轻薄的冷调底色 */
             min-height: 100vh;
-            color: #333;
+            color: #09110e; /* 带有绿意底蕴的深邃暗墨色 */
         }
 
         /* ---- Navbar ---- */
         .navbar {
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            padding: 0.85rem 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            background: #ffffff;
+            padding: 1.1rem 0;
+            border-bottom: 1px solid #e8e8e8;
             position: sticky;
             top: 0;
             z-index: 100;
@@ -39,61 +38,66 @@
         }
 
         .nav-logo {
-            font-size: 1.3rem;
-            font-weight: bold;
-            color: white;
+            font-size: 1.35rem;
+            font-weight: 800;
+            color: #09110e;
             text-decoration: none;
+            letter-spacing: -0.04em; /* 紧凑的高级字距 */
         }
 
         .nav-links {
             display: flex;
-            gap: 0.5rem;
+            gap: 0.4rem;
             list-style: none;
             align-items: center;
         }
 
         .nav-links a {
-            color: white;
+            color: #09110e;
             text-decoration: none;
-            padding: 0.4rem 0.9rem;
-            border-radius: 6px;
+            padding: 0.5rem 1rem;
+            border-radius: 4px; /* 硬朗的小圆角 */
             font-size: 0.9rem;
-            transition: background-color 0.2s;
+            font-weight: 600;
+            transition: all 0.15s ease;
         }
 
         .nav-links a:hover {
-            background: rgba(255, 255, 255, 0.2);
+            background: rgba(6, 193, 103, 0.06); /* 带有呼吸感的浅绿高亮 */
+            color: #06c167;
         }
 
         .nav-welcome {
-            color: rgba(255, 255, 255, 0.85);
+            color: #545e5a;
             font-size: 0.9rem;
             padding: 0.4rem 0.5rem;
         }
 
         .guest-badge {
-            background: rgba(255, 193, 7, 0.25);
-            border: 1px solid rgba(255, 193, 7, 0.6);
-            color: white;
-            padding: 0.3rem 0.9rem;
-            border-radius: 12px;
-            font-size: 0.82rem;
-            font-weight: 500;
+            background: rgba(6, 193, 103, 0.08);
+            border: 1px solid rgba(6, 193, 103, 0.3);
+            color: #06c167;
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
         }
 
         /* ---- Guest banner ---- */
         .guest-banner {
-            background: rgba(255, 193, 7, 0.15);
-            border-bottom: 1px solid rgba(255, 193, 7, 0.35);
-            color: white;
+            background: #09110e;
+            color: #ffffff;
             text-align: center;
-            padding: 0.6rem 1rem;
+            padding: 0.75rem 1rem;
             font-size: 0.88rem;
+            font-weight: 500;
+            letter-spacing: 0.01em;
         }
 
         .guest-banner a {
-            color: #ffe082;
-            font-weight: 600;
+            color: #06c167;
+            font-weight: 700;
             text-decoration: none;
         }
 
@@ -105,89 +109,187 @@
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            padding: 20px;
+            padding: 40px 24px;
         }
 
         .header {
-            text-align: center;
-            margin-bottom: 30px;
-            color: white;
+            text-align: center; /* 改为居中对齐 */
+            margin-bottom: 36px;
+            color: #09110e;
         }
 
         .header h1 {
-            font-size: 2.5rem;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            font-size: 2.6rem;
+            font-weight: 800;
+            letter-spacing: -0.04em;
+            margin-bottom: 8px;
+            display: inline-block; /* 保证火箭图标与文字良好居中 */
         }
 
         .header p {
-            font-size: 1.1rem;
-            opacity: 0.9;
+            font-size: 1.05rem;
+            color: #545e5a;
+            max-width: 600px; /* 限制宽度，防止长句在宽屏上两头拉得太开 */
+            margin: 0 auto; /* 配合 max-width 实现段落整体居中 */
         }
 
         .form-container {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            margin-bottom: 30px;
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px; /* 统一硬朗风格 */
+            padding: 36px;
+            box-shadow: 0 4px 24px rgba(9, 17, 14, 0.015);
+            margin-bottom: 36px;
         }
 
         .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 26px;
         }
 
         label {
             display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #555;
+            margin-bottom: 10px;
+            font-weight: 700;
+            color: #09110e;
+            font-size: 0.95rem;
+            letter-spacing: -0.01em;
         }
 
-        input, textarea, select {
+        input, textarea {
             width: 100%;
-            padding: 12px;
-            border: 2px solid #e1e5e9;
-            border-radius: 8px;
-            font-size: 16px;
-            transition: border-color 0.3s ease;
-            background-color: white;
+            padding: 12px 16px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            font-size: 15px;
+            transition: all 0.15s ease;
+            background-color: rgba(6, 193, 103, 0.015); /* 极淡的底色增加质感 */
+            color: #09110e;
         }
 
-        input:focus, textarea:focus, select:focus {
+        input:focus, textarea:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #09110e; /* 聚焦时使用暗墨色深化边缘 */
+            background-color: #ffffff;
+            box-shadow: 0 0 0 3px rgba(9, 17, 14, 0.05);
         }
 
         textarea {
             resize: vertical;
-            min-height: 100px;
+            min-height: 120px;
+        }
+
+        /* ---- Custom Dropdown ---- */
+        .custom-select-wrapper {
+            position: relative;
+            user-select: none;
+            width: 100%;
+        }
+
+        .custom-select-trigger {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            font-size: 15px;
+            background-color: rgba(6, 193, 103, 0.015);
+            color: #09110e;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            position: relative;
+        }
+
+        .custom-select-wrapper.open .custom-select-trigger {
+            border-color: #09110e;
+            background-color: #ffffff;
+            box-shadow: 0 0 0 3px rgba(9, 17, 14, 0.05);
+        }
+
+        .custom-select-trigger::after {
+            content: '';
+            position: absolute;
+            right: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            border: 5px solid transparent;
+            border-top-color: #09110e;
+            transition: transform 0.15s ease;
+        }
+
+        .custom-select-wrapper.open .custom-select-trigger::after {
+            transform: translateY(-50%) rotate(180deg);
+        }
+
+        .custom-options {
+            position: absolute;
+            display: block;
+            top: 100%;
+            left: 0;
+            right: 0;
+            border: 1px solid #e8e8e8;
+            background: #ffffff;
+            border-radius: 6px;
+            margin-top: 4px;
+            box-shadow: 0 4px 20px rgba(9, 17, 14, 0.08);
+            z-index: 999;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-10px);
+            transition: all 0.15s ease;
+            max-height: 250px;
+            overflow-y: auto;
+        }
+
+        .custom-select-wrapper.open .custom-options {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+
+        .custom-option {
+            padding: 12px 16px;
+            font-size: 15px;
+            color: #09110e;
+            cursor: pointer;
+            transition: all 0.1s ease;
+        }
+
+        .custom-option:hover {
+            background-color: rgba(6, 193, 103, 0.08);
+            color: #06c167;
+        }
+
+        .custom-option.selected {
+            background-color: #09110e;
+            color: #ffffff;
         }
 
         .provider-selection {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 10px;
-            margin-top: 10px;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 14px;
+            margin-top: 12px;
         }
 
         .provider-checkbox {
             display: flex;
             align-items: center;
-            padding: 8px;
-            background: #f8f9fa;
+            padding: 14px;
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
             border-radius: 6px;
             cursor: pointer;
-            transition: background-color 0.2s ease;
+            transition: all 0.15s ease;
         }
 
         .provider-checkbox:hover {
-            background: #e9ecef;
+            background: rgba(6, 193, 103, 0.03);
+            border-color: #06c167;
         }
 
         .provider-checkbox input {
             width: auto;
-            margin-right: 8px;
+            margin-right: 12px;
+            accent-color: #06c167;
         }
 
         .provider-meta {
@@ -196,69 +298,72 @@
         }
 
         .provider-meta small {
-            color: #888;
-            font-size: 11px;
+            color: #545e5a;
+            font-size: 12px;
             margin-top: 2px;
         }
 
         .button-group {
             display: flex;
-            gap: 15px;
+            gap: 14px;
             flex-wrap: wrap;
         }
 
         .btn {
-            padding: 12px 24px;
+            padding: 12px 26px;
             border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
+            border-radius: 6px;
+            font-size: 15px;
+            font-weight: 700;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all 0.15s ease;
             display: inline-block;
+            letter-spacing: -0.01em;
         }
 
         .btn-primary {
-            background: linear-gradient(45deg, #667eea, #764ba2);
-            color: white;
+            background: #06c167;
+            color: #ffffff;
         }
 
         .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+            background: #05a859;
+            box-shadow: 0 4px 12px rgba(6, 193, 103, 0.2);
         }
 
         .btn-secondary {
-            background: #6c757d;
-            color: white;
+            background: #09110e;
+            color: #ffffff;
         }
 
         .btn-secondary:hover {
-            background: #5a6268;
+            background: #172420;
         }
 
         .btn:disabled {
-            opacity: 0.6;
+            opacity: 0.3;
+            background: #e8e8e8;
+            color: #545e5a;
             cursor: not-allowed;
-            transform: none;
+            box-shadow: none;
         }
 
         .loading {
             display: none;
             text-align: center;
-            padding: 40px;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            padding: 44px;
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
         }
 
         .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #667eea;
+            border: 3px solid rgba(6, 193, 103, 0.1);
+            border-top: 3px solid #06c167;
             border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            animation: spin 1s linear infinite;
+            width: 38px;
+            height: 38px;
+            animation: spin 0.6s linear infinite;
             margin: 0 auto 20px;
         }
 
@@ -272,69 +377,69 @@
         }
 
         .results-header {
-            background: white;
-            padding: 20px;
-            border-radius: 15px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            background: #ffffff;
+            padding: 26px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            margin-bottom: 26px;
         }
 
         .stats {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-            margin-top: 15px;
+            gap: 16px;
+            margin-top: 16px;
         }
 
         .stat {
             text-align: center;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 8px;
+            padding: 14px;
+            background: rgba(6, 193, 103, 0.02);
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
         }
 
         .stat-value {
-            font-size: 2rem;
-            font-weight: bold;
-            color: #667eea;
+            font-size: 1.9rem;
+            font-weight: 800;
+            color: #09110e;
+            letter-spacing: -0.03em;
         }
 
         .stat-label {
-            color: #666;
-            margin-top: 5px;
+            color: #545e5a;
+            margin-top: 4px;
+            font-size: 0.85rem;
+            font-weight: 600;
         }
 
         .provider-result {
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            transition: transform 0.2s ease;
-        }
-
-        .provider-result:hover {
-            transform: translateY(-2px);
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            padding: 26px;
+            margin-bottom: 26px;
         }
 
         .provider-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 15px;
+            margin-bottom: 18px;
             flex-wrap: wrap;
             gap: 10px;
         }
 
         .provider-name {
-            font-size: 1.4rem;
-            font-weight: bold;
-            color: #333;
+            font-size: 1.3rem;
+            font-weight: 800;
+            color: #09110e;
+            letter-spacing: -0.02em;
         }
 
         .provider-name small {
-            font-size: 0.75rem;
-            color: #888;
+            font-size: 0.8rem;
+            color: #545e5a;
             font-weight: normal;
             margin-left: 6px;
         }
@@ -342,41 +447,42 @@
         .provider-status {
             display: flex;
             align-items: center;
-            gap: 15px;
+            gap: 16px;
         }
 
         .status-badge {
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.03em;
         }
 
         .status-success {
-            background: #d4edda;
-            color: #155724;
+            background: rgba(6, 193, 103, 0.1);
+            color: #05a859;
         }
 
         .status-error {
-            background: #f8d7da;
-            color: #721c24;
+            background: #fff2f2;
+            color: #ff3b30;
         }
 
         .response-time {
-            color: #666;
-            font-size: 14px;
+            color: #545e5a;
+            font-size: 13px;
+            font-weight: 600;
         }
 
         .provider-response {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
-            line-height: 1.6;
-            font-family: 'Georgia', serif;
+            background: #ffffff;
+            padding: 20px 0 0 0;
+            border-top: 1px dashed #e8e8e8;
+            line-height: 1.7;
+            font-size: 15px;
             word-break: break-word;
             overflow-wrap: break-word;
+            color: #09110e;
         }
 
         .provider-response > *:first-child { margin-top: 0; }
@@ -384,178 +490,180 @@
 
         .provider-response h1, .provider-response h2, .provider-response h3,
         .provider-response h4, .provider-response h5, .provider-response h6 {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            color: #333;
-            margin: 1rem 0 0.4rem;
+            color: #09110e;
+            margin: 1.6rem 0 0.8rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
         }
 
-        .provider-response p { margin-bottom: 0.7rem; }
+        .provider-response p { margin-bottom: 1.1rem; color: #1c2622; }
 
         .provider-response ul, .provider-response ol {
-            margin: 0 0 0.7rem 1.4rem;
+            margin: 0 0 1.1rem 1.5rem;
         }
 
-        .provider-response li { margin-bottom: 0.2rem; }
+        .provider-response li { margin-bottom: 0.4rem; }
 
         .provider-response code {
-            background: #e8e8e8;
-            padding: 1px 5px;
-            border-radius: 3px;
-            font-family: 'Courier New', Consolas, monospace;
-            font-size: 0.88em;
-            color: #c7254e;
+            background: rgba(6, 193, 103, 0.06);
+            padding: 3px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.9em;
+            color: #05a859;
+            font-weight: 700;
         }
 
         .provider-response pre {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            padding: 12px 16px;
+            background: #09110e;
+            color: #ffffff;
+            padding: 18px;
             border-radius: 6px;
             overflow-x: auto;
-            margin-bottom: 0.7rem;
+            margin-bottom: 1.1rem;
         }
 
         .provider-response pre code {
             background: none;
             padding: 0;
             color: inherit;
-            font-size: 0.88rem;
-            white-space: pre;
+            font-size: 0.85rem;
+            font-weight: 400;
         }
 
         .provider-response blockquote {
-            border-left: 3px solid #667eea;
-            margin: 0 0 0.7rem 0;
-            padding-left: 14px;
-            color: #666;
+            border-left: 4px solid #06c167;
+            margin: 0 0 1.1rem 0;
+            padding-left: 16px;
+            color: #545e5a;
             font-style: italic;
         }
 
         .provider-response table {
             border-collapse: collapse;
             width: 100%;
-            margin-bottom: 0.7rem;
-            font-size: 0.92rem;
+            margin-bottom: 1.1rem;
         }
 
         .provider-response th, .provider-response td {
-            border: 1px solid #dee2e6;
-            padding: 5px 10px;
+            border: 1px solid #e8e8e8;
+            padding: 12px 14px;
             text-align: left;
         }
 
-        .provider-response th { background: #f0f0f0; font-weight: 700; }
+        .provider-response th { background: rgba(6, 193, 103, 0.02); font-weight: 700; color: #09110e; }
 
-        .provider-response a { color: #667eea; }
-        .provider-response a:hover { text-decoration: underline; }
+        .provider-response a { color: #06c167; text-decoration: underline; font-weight: 600; }
 
         .provider-response hr {
             border: none;
-            border-top: 1px solid #dee2e6;
-            margin: 0.8rem 0;
+            border-top: 1px solid #e8e8e8;
+            margin: 1.6rem 0;
         }
 
         .provider-error {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 15px;
-            border-radius: 8px;
-            border-left: 4px solid #dc3545;
+            background: #fff2f2;
+            color: #ff3b30;
+            padding: 16px;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 600;
         }
 
         .no-providers {
-            color: #888;
+            color: #545e5a;
             font-style: italic;
             padding: 10px 0;
         }
 
         .flash-messages {
-            margin-bottom: 20px;
+            margin-bottom: 22px;
         }
 
         .flash {
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-size: 0.9rem;
-            font-weight: 500;
-            margin-bottom: 8px;
+            padding: 14px 16px;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            letter-spacing: -0.01em;
         }
 
-        .flash-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .flash-error   { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        .flash-info    { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        .flash-success { background: rgba(6, 193, 103, 0.1); color: #05a859; }
+        .flash-error   { background: #fff2f2; color: #ff3b30; }
+        .flash-info    { background: #f0f4f8; color: #1d64b4; }
 
         /* ---- Peer Review Panel ---- */
         .peer-review-section {
-            margin-top: 15px;
-            padding-top: 12px;
-            border-top: 1px dashed #dee2e6;
+            margin-top: 22px;
+            padding-top: 18px;
+            border-top: 1px dashed #e8e8e8;
         }
 
         .peer-review-toggle {
-            background: none;
-            border: 1px solid #764ba2;
-            color: #764ba2;
-            padding: 5px 16px;
-            border-radius: 20px;
-            font-size: 0.82rem;
-            font-weight: 600;
+            background: #ffffff;
+            border: 1.5px solid #09110e;
+            color: #09110e;
+            padding: 6px 18px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 700;
             cursor: pointer;
-            transition: background 0.2s, color 0.2s;
+            transition: all 0.15s ease;
         }
 
         .peer-review-toggle:hover {
-            background: #764ba2;
-            color: white;
+            background: #09110e;
+            color: #ffffff;
         }
 
         .peer-review-list {
-            margin-top: 10px;
+            margin-top: 16px;
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 12px;
         }
 
         .peer-review-item {
-            background: linear-gradient(135deg, #f3f0ff 0%, #fdf0ff 100%);
-            border-left: 3px solid #764ba2;
-            border-radius: 0 6px 6px 0;
-            padding: 10px 14px;
-            font-size: 0.88rem;
-            line-height: 1.5;
+            background: rgba(6, 193, 103, 0.01);
+            border-radius: 6px;
+            padding: 16px;
+            font-size: 0.9rem;
+            line-height: 1.55;
+            border: 1px solid #e8e8e8;
         }
 
         .reviewer-tag {
             font-weight: 700;
-            color: #764ba2;
+            color: #09110e;
         }
 
         .review-score-badge {
             display: inline-block;
-            background: #764ba2;
-            color: white;
+            background: #06c167;
+            color: #ffffff;
             font-size: 0.75rem;
             font-weight: 700;
-            padding: 1px 8px;
-            border-radius: 10px;
-            margin: 0 6px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin: 0 8px;
         }
 
         .review-comment-text {
-            color: #444;
+            color: #1c2622;
         }
 
         @media (max-width: 768px) {
             .container {
-                padding: 10px;
+                padding: 20px 16px;
             }
 
             .header h1 {
-                font-size: 2rem;
+                font-size: 2.1rem;
             }
 
             .form-container {
-                padding: 20px;
+                padding: 24px 20px;
             }
 
             .button-group {
@@ -564,9 +672,10 @@
 
             .btn {
                 width: 100%;
+                text-align: center;
             }
         }
-    </style>
+</style>
 </head>
 <body>
 
@@ -608,7 +717,7 @@
         {% endwith %}
 
         <div class="header">
-            <h1>🚀 G4F LLM Aggregator</h1>
+            <h1>G4F LLM Aggregator</h1>
             {% if session.user_id %}
                 <p>Welcome back, {{ session.username }}. Compare AI provider responses below.</p>
             {% else %}
@@ -643,18 +752,23 @@
                 </div>
 
                 <div class="form-group">
-                    <label for="modelSelect">Select Model (Single Selection):</label>
-                    <select id="modelSelect" name="model">
+                    <label>Select Model (Single Selection):</label>
+                    <div class="custom-select-wrapper" id="customSelectWrapper">
+                        <div class="custom-select-trigger" id="customSelectTrigger">-- Use Provider's Default Model --</div>
+                        <div class="custom-options" id="customOptions">
+                            </div>
+                    </div>
+                    <select id="modelSelect" name="model" style="display: none;">
                         <option value="">-- Use Provider's Default Model --</option>
                     </select>
                 </div>
 
                 <div class="button-group">
                     <button type="submit" class="btn btn-primary" id="compareBtn">
-                        🔍 Compare Providers
+                        Compare Providers
                     </button>
                     <button type="button" class="btn btn-secondary" id="clearBtn">
-                        🗑️ Clear Results
+                        Clear Results
                     </button>
                 </div>
             </form>
@@ -668,7 +782,7 @@
 
         <div class="results" id="results">
             <div class="results-header">
-                <h2>📊 Comparison Results</h2>
+                <h2>Comparison Results</h2>
                 <div class="stats" id="stats"></div>
             </div>
             <div id="resultsContainer"></div>
@@ -683,6 +797,21 @@
 
         const providerTriggers = document.querySelectorAll('.provider-trigger');
         const modelSelect = document.getElementById('modelSelect');
+        
+        // 自定义组件的 DOM 节点
+        const customWrapper = document.getElementById('customSelectWrapper');
+        const customTrigger = document.getElementById('customSelectTrigger');
+        const customOptionsContainer = document.getElementById('customOptions');
+
+        // 统一控制自定义下拉列表点击切换的逻辑
+        customTrigger.addEventListener('click', function(e) {
+            customWrapper.classList.toggle('open');
+            e.stopPropagation();
+        });
+
+        document.addEventListener('click', function() {
+            customWrapper.classList.remove('open');
+        });
 
         function updateModelDropdown() {
             const selectedProviders = Array.from(providerTriggers)
@@ -708,18 +837,66 @@
 
             const currentSelectedValue = modelSelect.value;
 
+            // 1. 重置隐藏的原生 select 元素
             modelSelect.innerHTML = '<option value="">-- Use Provider\'s Default Model --</option>';
+            
+            // 2. 清空并重置自定义下拉面板的选项
+            customOptionsContainer.innerHTML = '';
+            
+            // 创建自定义的默认选项
+            const defaultOpt = document.createElement('div');
+            defaultOpt.className = 'custom-option';
+            defaultOpt.textContent = "-- Use Provider's Default Model --";
+            defaultOpt.setAttribute('data-value', '');
+            customOptionsContainer.appendChild(defaultOpt);
 
+            // 动态填入新选项数据
             Array.from(availableModels).sort().forEach(modelName => {
+                // 同步至原生标签
                 const option = document.createElement('option');
                 option.value = modelName;
                 option.textContent = modelName;
                 modelSelect.appendChild(option);
+
+                // 同步至自定义 div 标签
+                const customOpt = document.createElement('div');
+                customOpt.className = 'custom-option';
+                customOpt.textContent = modelName;
+                customOpt.setAttribute('data-value', modelName);
+                customOptionsContainer.appendChild(customOpt);
             });
 
-            if (availableModels.has(currentSelectedValue)) {
+            // 3. 恢复联动刷新前的选中项状态
+            if (availableModels.has(currentSelectedValue) && currentSelectedValue !== '') {
                 modelSelect.value = currentSelectedValue;
+                customTrigger.textContent = currentSelectedValue;
+            } else {
+                modelSelect.value = '';
+                customTrigger.textContent = "-- Use Provider's Default Model --";
             }
+
+            // 4. 为新生成的自定义选项单独绑定点击选择事件
+            const allCustomOpts = customOptionsContainer.querySelectorAll('.custom-option');
+            allCustomOpts.forEach(opt => {
+                const optValue = opt.getAttribute('data-value');
+                
+                // 标记当前高亮选中的项
+                if (optValue === modelSelect.value) {
+                    opt.classList.add('selected');
+                }
+
+                opt.addEventListener('click', function() {
+                    allCustomOpts.forEach(o => o.classList.remove('selected'));
+                    this.classList.add('selected');
+                    
+                    customTrigger.textContent = this.textContent;
+                    modelSelect.value = optValue;
+                    
+                    // 派发原生 change 事件，确保上层表单感知数值变动
+                    modelSelect.dispatchEvent(new Event('change'));
+                    customWrapper.classList.remove('open');
+                });
+            });
         }
 
         providerTriggers.forEach(cb => {
