@@ -410,9 +410,13 @@ def compare_providers():
                     name = provider.__name__
                     fallback_model = determine_actual_model(name, requested_model)
                     fallback_result = init_result_object(name, fallback_model)
-                    fallback_result['error'] = f'Execution error: {str(e)}'
+                    if isinstance(e, TimeoutError):
+                        fallback_result['error'] = '系统正忙，正在努力重新连接中，请稍后再试。'
+                        logger.warning(f"Provider {name} timed out after 21s")
+                    else:
+                        fallback_result['error'] = f'Execution error: {str(e)}'
+                        logger.error(f"Error testing {name}: {e}", exc_info=True)
                     results.append(fallback_result)
-                    logger.error(f"Error testing {name}: {e}", exc_info=True)
 
         # 为所有结果初始化空的互评列表
         for r in results:
