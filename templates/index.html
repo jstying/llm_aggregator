@@ -481,6 +481,16 @@
                     body: JSON.stringify(requestBody)
                 });
 
+                if (!response.ok) {
+                    let errorMsg = `Server error: ${response.status} ${response.statusText}`;
+                    try {
+                        const errData = await response.json();
+                        if (errData.error) errorMsg = errData.error;
+                    } catch (_) {}
+                    alert('Error: ' + errorMsg);
+                    return;
+                }
+
                 const data = await response.json();
 
                 if (data.error) {

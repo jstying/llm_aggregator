@@ -60,6 +60,35 @@ except Exception as e:
 
 
 # ==================================================
+# 辅助函数：根据映射表和用户请求确定最终使用的模型
+# 规则 A：用户指定的模型在支持列表中 → 直接使用
+# 规则 B：不支持或未指定 → 降级为该 Provider 的默认模型（列表第一个）
+# 规则 C：Provider 无模型配置 → 兜底为 "gpt-3.5-turbo"
+# ==================================================
+def determine_actual_model(provider_name, requested_model):
+    supported_models = PROVIDER_MODELS_MAP.get(provider_name, [])
+    if requested_model in supported_models:
+        return requested_model
+    return supported_models[0] if supported_models else "gpt-3.5-turbo"
+
+
+# ==================================================
+# 辅助函数：初始化标准 Result 字典
+# 统一管理 Key 集合，确保正常流程与异常兜底结构严格一致
+# ==================================================
+def init_result_object(provider_name, model):
+    return {
+        'provider': provider_name,
+        'success': False,
+        'response': '',
+        'error': '',
+        'response_time': 0,
+        'model': model,
+        'type': 'g4f'
+    }
+
+
+# ==================================================
 # 测试单个Provider
 # 功能：
 # 1. 调用指定Provider
@@ -68,30 +97,10 @@ except Exception as e:
 # ==================================================
 def test_g4f_provider(provider, prompt, requested_model=None):
     provider_name = provider.__name__
-    
-    # 获取该 Provider 支持的模型列表
-    supported_models = PROVIDER_MODELS_MAP.get(provider_name, [])
-    
-    # 确定最终使用的模型
-    if requested_model in supported_models:
-        # 如果用户指定的模型在支持列表中，直接使用它
-        actual_model = requested_model
-    else:
-        # 如果用户未指定，或者指定的模型不被该 Provider 支持，则默认使用列表第一个
-        actual_model = supported_models[0] if supported_models else "gpt-3.5-turbo"
+    actual_model = determine_actual_model(provider_name, requested_model)
 
     start_time = time.time()
-
-    # 结果对象
-    result = {
-        'provider': provider_name,
-        'success': False,
-        'response': '',
-        'error': '',
-        'response_time': 0,
-        'model': actual_model,
-        'type': 'g4f'
-    }
+    result = init_result_object(provider_name, actual_model)
 
     try:
         # 调用大模型
@@ -249,7 +258,7 @@ def compare_providers():
 
             for future, provider in futures.items():
                 try:
-                    result = future.result(timeout=25)
+                    result = future.result(timeout=21)
                     results.append(result)
                     logger.info(
                         f"Completed: {result['provider']} "
@@ -257,19 +266,11 @@ def compare_providers():
                     )
                 except Exception as e:
                     name = provider.__name__
-                    models = PROVIDER_MODELS_MAP.get(name, [])
-                    fallback_model = requested_model if requested_model in models else (models[0] if models else "unknown")
-                    
-                    results.append({
-                        'provider': name,
-                        'success': False,
-                        'response': '',
-                        'error': f'Execution error: {str(e)}',
-                        'response_time': 0,
-                        'model': fallback_model,
-                        'type': 'g4f'
-                    })
-                    logger.error(f"Error testing {name}: {e}", exc_info=True) # 添加 exc_info=True 打印完整堆栈
+                    fallback_model = determine_actual_model(name, requested_model)
+                    fallback_result = init_result_object(name, fallback_model)
+                    fallback_result['error'] = f'Execution error: {str(e)}'
+                    results.append(fallback_result)
+                    logger.error(f"Error testing {name}: {e}", exc_info=True)
 
         # 排序：成功优先，耗时短优先
         results.sort(
