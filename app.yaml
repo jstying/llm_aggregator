@@ -4,7 +4,7 @@ entrypoint: gunicorn -b :$PORT main:app
 
 env_variables:
   FLASK_ENV: production
-  SECRET_KEY: "whatever_secret_key_llm_aggregator"
+  SECRET_KEY: "dcc066b93de48b43fe46454cfbcd7b38d2f63beac9934f76f74582ae98b82140"
 
 automatic_scaling:
   min_instances: 1
