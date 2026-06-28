@@ -27,3 +27,6 @@ provider_test_results*.txt
 
 # 忽略可用的服务商模型缓存文件
 available_providers_models.txt
+
+# Firebase private key file
+firebase-key.json

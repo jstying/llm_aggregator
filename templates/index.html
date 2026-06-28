@@ -18,6 +18,90 @@
             color: #333;
         }
 
+        /* ---- Navbar ---- */
+        .navbar {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 0.85rem 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .nav-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .nav-logo {
+            font-size: 1.3rem;
+            font-weight: bold;
+            color: white;
+            text-decoration: none;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 0.5rem;
+            list-style: none;
+            align-items: center;
+        }
+
+        .nav-links a {
+            color: white;
+            text-decoration: none;
+            padding: 0.4rem 0.9rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            transition: background-color 0.2s;
+        }
+
+        .nav-links a:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .nav-welcome {
+            color: rgba(255, 255, 255, 0.85);
+            font-size: 0.9rem;
+            padding: 0.4rem 0.5rem;
+        }
+
+        .guest-badge {
+            background: rgba(255, 193, 7, 0.25);
+            border: 1px solid rgba(255, 193, 7, 0.6);
+            color: white;
+            padding: 0.3rem 0.9rem;
+            border-radius: 12px;
+            font-size: 0.82rem;
+            font-weight: 500;
+        }
+
+        /* ---- Guest banner ---- */
+        .guest-banner {
+            background: rgba(255, 193, 7, 0.15);
+            border-bottom: 1px solid rgba(255, 193, 7, 0.35);
+            color: white;
+            text-align: center;
+            padding: 0.6rem 1rem;
+            font-size: 0.88rem;
+        }
+
+        .guest-banner a {
+            color: #ffe082;
+            font-weight: 600;
+            text-decoration: none;
+        }
+
+        .guest-banner a:hover {
+            text-decoration: underline;
+        }
+
+        /* ---- Main content ---- */
         .container {
             max-width: 1200px;
             margin: 0 auto;
@@ -308,6 +392,22 @@
             padding: 10px 0;
         }
 
+        .flash-messages {
+            margin-bottom: 20px;
+        }
+
+        .flash {
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            margin-bottom: 8px;
+        }
+
+        .flash-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .flash-error   { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .flash-info    { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+
         @media (max-width: 768px) {
             .container {
                 padding: 10px;
@@ -332,10 +432,51 @@
     </style>
 </head>
 <body>
+
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="{{ url_for('index') }}" class="nav-logo">LLM Aggregator</a>
+            <ul class="nav-links">
+                {% if session.user_id %}
+                    <li><span class="nav-welcome">Welcome, {{ session.username }}</span></li>
+                    <li><a href="{{ url_for('auth.profile') }}">Profile</a></li>
+                    <li><a href="{{ url_for('auth.logout') }}">Logout</a></li>
+                {% elif session.is_guest %}
+                    <li><span class="guest-badge">Guest Mode</span></li>
+                    <li><a href="{{ url_for('auth.login') }}">Login</a></li>
+                    <li><a href="{{ url_for('auth.register') }}">Register</a></li>
+                {% endif %}
+            </ul>
+        </div>
+    </nav>
+
+    {% if session.is_guest and not session.user_id %}
+    <div class="guest-banner">
+        您当前正在以游客身份体验，数据无法保存。
+        <a href="{{ url_for('auth.login') }}">登录</a> 或
+        <a href="{{ url_for('auth.register') }}">注册</a> 以保存您的历史记录。
+    </div>
+    {% endif %}
+
     <div class="container">
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-messages">
+                    {% for category, message in messages %}
+                        <div class="flash flash-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
         <div class="header">
             <h1>🚀 G4F LLM Aggregator</h1>
-            <p>Aggregate and compare responses from different AI providers in real time</p>
+            {% if session.user_id %}
+                <p>Welcome back, {{ session.username }}. Compare AI provider responses below.</p>
+            {% else %}
+                <p>Aggregate and compare responses from different AI providers in real time</p>
+            {% endif %}
         </div>
 
         <div class="form-container">
@@ -527,7 +668,7 @@
 
         function displayResults(data) {
             const stats = document.getElementById('stats');
-            const resultsContainer = document.getElementById('resultsContainer'); // 修复变量名为全小写开头
+            const resultsContainer = document.getElementById('resultsContainer');
 
             const avgTime = data.successful_providers > 0
                 ? (data.results.filter(r => r.success).reduce((s, r) => s + r.response_time, 0) / data.successful_providers).toFixed(1)

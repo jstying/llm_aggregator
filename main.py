@@ -1,5 +1,9 @@
+# 先加载环境变量
+from dotenv import load_dotenv
+load_dotenv()
+
 # Flask Web框架相关模块
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, redirect, session, url_for
 
 # 计时模块（统计模型响应时间）
 import time
@@ -12,6 +16,7 @@ import logging
 
 # 读取环境变量
 import os
+import secrets
 
 # 用于并发执行多个Provider请求
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 # 创建Flask应用
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+
+from auth import auth_bp  # noqa: E402
+app.register_blueprint(auth_bp)
 
 
 # =========================
@@ -136,6 +145,9 @@ def test_g4f_provider(provider, prompt, requested_model=None):
 # ==================================================
 @app.route('/')
 def index():
+    if not session.get('user_id') and not session.get('is_guest'):
+        return render_template('home.html')
+
     if not G4F_AVAILABLE:
         return render_template('index.html', providers=[], provider_models_json={})
 
@@ -157,10 +169,16 @@ def index():
 
     # 将结构化数据注入前端
     return render_template(
-        'index.html', 
-        providers=provider_list, 
+        'index.html',
+        providers=provider_list,
         provider_models_json=provider_models_json
     )
+
+
+@app.route('/home')
+def home():
+    session.pop('is_guest', None)
+    return redirect(url_for('index'))
 
 
 # ==================================================
@@ -352,6 +370,12 @@ def health_check():
         'providers': [p.__name__ for p in G4F_PROVIDERS],
         'timestamp': time.time()
     })
+
+
+@app.route('/api/auth/guest', methods=['POST'])
+def guest_login():
+    session['is_guest'] = True
+    return jsonify({'status': 'ok'})
 
 
 @app.errorhandler(404)

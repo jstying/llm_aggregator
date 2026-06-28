@@ -1,0 +1,27 @@
+{% extends "auth/base.html" %}
+
+{% block title %}Profile - LLM Aggregator{% endblock %}
+
+{% block content %}
+<div class="text-center">
+    <h2 style="color: #333; margin-bottom: 2rem;">User Profile</h2>
+</div>
+
+<div class="user-info">
+    <h3>Account Information</h3>
+    <p><strong>Username:</strong> {{ user.username }}</p>
+    <p><strong>Email:</strong> {{ user.email }}</p>
+    <p><strong>Member since:</strong>
+        {% if user.created_at %}
+            {{ user.created_at.strftime('%B %d, %Y') }}
+        {% else %}
+            N/A
+        {% endif %}
+    </p>
+</div>
+
+<div class="btn-group">
+    <a href="{{ url_for('index') }}" class="btn-secondary">Back to Home</a>
+    <a href="{{ url_for('auth.logout') }}" class="btn-secondary">Logout</a>
+</div>
+{% endblock %}
