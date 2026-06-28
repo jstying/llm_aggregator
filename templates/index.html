@@ -286,8 +286,8 @@
             border-radius: 6px;
             cursor: pointer;
             height: 66px;
+            box-sizing: border-box; /* 强行让边框和内边距包含在66px内，不挤压外部 */
             overflow: hidden;
-            /* 核心修改：只对背景色和边框颜色进行平滑过渡，绝对不要用 all */
             transition: background-color 0.1s ease, border-color 0.1s ease;
         }
 
@@ -915,8 +915,32 @@
             });
         }
 
-        providerTriggers.forEach(cb => {
-            cb.addEventListener('change', updateModelDropdown);
+       let debounceTimer;
+        const providerCards = document.querySelectorAll('.provider-checkbox');
+
+        providerCards.forEach(card => {
+            card.addEventListener('click', function(e) {
+                // 如果用户直接点到了 input 勾选框本身，让它正常走，不做干涉
+                if (e.target.tagName === 'INPUT') {
+                    clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(() => {
+                        updateModelDropdown();
+                    }, 50);
+                    return;
+                }
+
+                // 如果用户点的是大方块的其他区域，手动切换勾选状态
+                e.preventDefault(); // 核心：干掉 Chrome 默认的 label 投射行为，防止二次触发
+                
+                const checkbox = this.querySelector('.provider-trigger');
+                checkbox.checked = !checkbox.checked;
+
+                // 手动触发一次刷新
+                clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(() => {
+                    updateModelDropdown();
+                }, 50);
+            });
         });
 
         updateModelDropdown();
