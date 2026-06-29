@@ -78,6 +78,7 @@
             font-size: 0.8rem;
             font-weight: 700;
             letter-spacing: 0.02em;
+            white-space: nowrap;
         }
 
         /* ---- Main Content ---- */
@@ -239,6 +240,31 @@
             color: #545e5a;
             font-size: 0.95rem;
             line-height: 1.5;
+        }
+
+        /* ---- Mobile portrait: keep navbar on one line ---- */
+        @media (max-width: 520px) {
+            .nav-container {
+                padding: 0 0.75rem;
+            }
+
+            .logo {
+                font-size: 1.05rem;
+            }
+
+            .nav-links {
+                gap: 0.15rem;
+            }
+
+            .nav-links a {
+                padding: 0.35rem 0.5rem;
+                font-size: 0.82rem;
+            }
+
+            .guest-badge {
+                padding: 0.2rem 0.45rem;
+                font-size: 0.72rem;
+            }
         }
     </style>
 </head>

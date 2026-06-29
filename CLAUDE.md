@@ -152,7 +152,8 @@ llm_aggregator/
 - **role**: LLM 聚合功能主页，已登录用户和游客均可访问。
 - **key logic**:
   - 顶部新增三态导航栏：已登录时显示用户名、Profile、Logout；游客时显示 Guest Mode 徽章、Login、Register。
-  - **移动端响应式导航栏**：`@media (max-width: 520px)` 将 Logo 从"LLM Aggregator"切换为"G4F"（通过 `.logo-full` / `.logo-short` 双 span 实现），隐藏 `.nav-welcome`，压缩 nav 间距与字号，确保导航栏在手机竖屏单行显示。`.guest-badge` 始终设置 `white-space: nowrap` 防止"Guest Mode"被截断为两行。
+  - **移动端响应式导航栏**：`@media (max-width: 520px)` 将 Logo 从"LLM Aggregator"切换为"G4F"（通过 `.logo-full` / `.logo-short` 双 span 实现），隐藏 `.nav-welcome`，压缩 nav 间距与字号（`Guest Mode` 徽章、Login、Register 字号均缩至 `0.82rem`/`0.72rem`），确保导航栏在手机竖屏单行显示。`.guest-badge` 始终设置 `white-space: nowrap` 防止"Guest Mode"被截断为两行。
+  - **移动端响应式页面标题**：`@media (max-width: 520px)` 将 `.header h1` 中"G4F LLM Aggregator"切换为"G4F"（通过 `.header-full` / `.header-short` 双 span 实现，手机端隐藏 `.header-full`，显示 `.header-short`）。
   - 游客状态下在导航栏下方显示黄色提示条，引导注册或登录。
   - 已登录用户的 header 区域展示个性化欢迎语（`Welcome back, {{ session.username }}`）。
   - 新增 Flash 消息显示区（位于 `.container` 内、`.header` 之上），确保注册成功等提示在此处被立即消费。Flash 消息在渲染后 3 秒自动淡出消失（opacity 渐变 0.4s，淡出后从 DOM 移除，若 `.flash-messages` 容器变空则一并移除）。
@@ -164,7 +165,7 @@ llm_aggregator/
 ### `templates/auth/base.html` [NEW]
 
 - **role**: 认证模块所有页面的通用布局基础模板。
-- **key logic**: 导航栏根据 `session.user_id` 和 `session.is_guest` 进行三态切换：已登录显示 Profile + Logout；游客显示 Guest Mode 徽章 + Login + Register；未认证显示 Login + Register。Flash 消息（`.alert` 类）统一在 `.card` 容器顶部渲染，3 秒后自动淡出消失（opacity 渐变 0.4s，淡出后从 DOM 移除）。
+- **key logic**: 导航栏根据 `session.user_id` 和 `session.is_guest` 进行三态切换：已登录显示 Profile + Logout；游客显示 Guest Mode 徽章 + Login + Register；未认证显示 Login + Register。Flash 消息（`.alert` 类）统一在 `.card` 容器顶部渲染，3 秒后自动淡出消失（opacity 渐变 0.4s，淡出后从 DOM 移除）。**移动端响应式导航栏**：`@media (max-width: 520px)` 压缩 nav-container padding、Logo 字号（`1.05rem`）、nav-links 间距与 a 标签字号（`0.82rem`）、`.guest-badge` 字号（`0.72rem`），与 `index.html` 保持一致。`.guest-badge` 始终设置 `white-space: nowrap` 防止"Guest Mode"换行。
 
 ### `templates/auth/login.html` 和 `templates/auth/register.html` [NEW]
 
