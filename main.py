@@ -8,9 +8,6 @@ from flask import Flask, request, jsonify, render_template, redirect, session, u
 # 计时模块（统计模型响应时间）
 import time
 
-# 打印详细异常堆栈
-import traceback
-
 # 日志模块
 import logging
 
@@ -19,6 +16,7 @@ import os
 import secrets
 import re
 import json
+import random
 
 # 用于并发执行多个Provider请求
 from concurrent.futures import ThreadPoolExecutor
@@ -48,6 +46,7 @@ try:
     G4F_PROVIDERS = [
         g4f.Provider.Yqcloud,
         g4f.Provider.OperaAria,
+        g4f.Provider.PollinationsAI,
     ]
 
     # 配置映射表：一个 Provider 对应一个模型列表
@@ -55,13 +54,20 @@ try:
     PROVIDER_MODELS_MAP = {
         'Yqcloud': ['gpt-3.5-turbo', 'gpt-4'],
         'OperaAria': ['aria'],
+        'PollinationsAI': ['openai-fast'],
     }
 
     # 隐形 Prompt 路由表：(provider_name, model) → 追加到用户 prompt 尾部的 Style Prompt
+    # 设计原则：首句必须有"立刻"urgency指令（防超时）；其次凸显各模型的真实个性角色
+    # gpt-4        → 严谨分析师：结论-依据-反思三层结构，300字
+    # gpt-3.5      → 高效助手：TLDR一句话结论优先，口语化，150字
+    # aria         → 实战顾问：跳过铺垫、直接给1-2个可操作动作，200字
+    # openai-fast  → 极速速答者：一句结论+一句理由，英文输出，100字内
     ROUTE_PROMPTS_MAP = {
-        ('Yqcloud', 'gpt-4'): '\n\n【系统提示：请从底层逻辑深入剖析，注重结构化表达，给出最严谨的步骤或推导。】',
-        ('Yqcloud', 'gpt-3.5-turbo'): '\n\n【系统提示：请用最精炼、通俗的语言快速回答，突出核心要点，字数控制在 200 字内。】',
-        ('OperaAria', 'aria'): '\n\n【系统提示：请结合最新行业现状与实用应用场景，给出最具实操性的建议。】',
+        ('Yqcloud', 'gpt-4'): '\n\n【系统提示：请立刻给出判断；你扮演严谨分析师角色，按"核心结论 → 关键依据 → 潜在风险或反思"三层结构快速作答，全文不超过 300 字。】',
+        ('Yqcloud', 'gpt-3.5-turbo'): '\n\n【系统提示：请立刻给出 TLDR；你扮演高效助手角色，先用一句话说最重要的结论，再补充最多两个关键点，用口语化中文作答，全文不超过 150 字，绝不废话。】',
+        ('OperaAria', 'aria'): '\n\n【系统提示：请立刻给出行动建议；你扮演互联网实战顾问角色，跳过背景铺垫，直接告诉用户"现在可以做哪 1-2 件事"，结合当下实际情境，全文不超过 200 字。】',
+        ('PollinationsAI', 'openai-fast'): '\n\n[System: Reply immediately. You are a speed-first assistant. Give ONE sentence answer then ONE sentence reason. English only. Max 100 words. No preamble.]',
     }
 
     # 互评裁判提示词配置表：model → 裁判专属提示词前缀（要求输出 JSON 格式）
@@ -69,6 +75,7 @@ try:
         'gpt-4': '你现在是盲评裁判。请严谨审视以下匿名回答，挑出逻辑漏洞、事实错误或论证不充分之处。请严格按照以下 JSON 格式输出，不要包含任何其他文字：{"score": 分数(1-100的整数), "comment": "一句话犀利点评"}',
         'gpt-3.5-turbo': '请迅速评估以下匿名回答的条理性和易读性。请严格按照以下 JSON 格式输出，不要包含任何其他文字：{"score": 分数(1-100的整数), "comment": "一句话效率至上的改稿意见"}',
         'aria': '请从实用角度点评以下匿名回答，指出其接地气程度与可操作性。请严格按照以下 JSON 格式输出，不要包含任何其他文字：{"score": 分数(1-100的整数), "comment": "一句话大白话吐槽"}',
+        'openai-fast': 'You are a blind reviewer. Rate the following answer for clarity and accuracy. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sharp sentence critique in English"}',
     }
 
 except ImportError as e:
@@ -240,27 +247,42 @@ def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
         'score': 80,
         'comment': '',
     }
-    try:
-        response = g4f.ChatCompletion.create(
-            model=reviewer_model,
-            messages=[{"role": "user", "content": review_prompt}],
-            provider=reviewer_provider,
-            timeout=15
-        )
-        score, comment = parse_peer_review_json(detect_and_truncate(str(response)))
-        review_result['score'] = score
-        review_result['comment'] = comment
-    except Exception as e:
-        err_str = str(e).lower()
-        network_keywords = [
-            'timeout', 'timed out', 'connection', 'network', 'remote',
-            '502', '504', 'rate limit', 'too many requests', 'unavailable',
-            'ssl', 'broken pipe', 'connection reset',
-        ]
-        if any(kw in err_str for kw in network_keywords):
-            review_result['comment'] = '系统正忙，正在努力重新连接中，请稍后再试。'
-        else:
-            review_result['comment'] = f'点评失败：{str(e)}'
+    network_keywords = [
+        'timeout', 'timed out', 'connection', 'network', 'remote',
+        '429', '502', '504', 'rate limit', 'too many requests', 'unavailable',
+        'queue', 'ssl', 'broken pipe', 'connection reset',
+    ]
+    last_exc = None
+    for attempt in range(2):
+        try:
+            response = g4f.ChatCompletion.create(
+                model=reviewer_model,
+                messages=[{"role": "user", "content": review_prompt}],
+                provider=reviewer_provider,
+                timeout=15
+            )
+            score, comment = parse_peer_review_json(detect_and_truncate(str(response)))
+            review_result['score'] = score
+            review_result['comment'] = comment
+            return review_result
+        except Exception as e:
+            last_exc = e
+            err_str = str(e).lower()
+            # 仅 429 / queue-full 类错误值得重试；其他异常直接跳出
+            if attempt == 0 and ('429' in err_str or 'queue' in err_str):
+                wait = 2 + random.uniform(0, 1)
+                logger.warning(
+                    f"Peer review 429/queue from {reviewer_provider.__name__}, "
+                    f"retrying in {wait:.1f}s"
+                )
+                time.sleep(wait)
+                continue
+            break
+    err_str = str(last_exc).lower()
+    if any(kw in err_str for kw in network_keywords):
+        review_result['comment'] = '系统正忙，正在努力重新连接中，请稍后再试。'
+    else:
+        review_result['comment'] = f'点评失败：{str(last_exc)}'
     return review_result
 
 
@@ -500,8 +522,7 @@ def compare_providers():
         })
 
     except Exception as e:
-        logger.error(f"Error in compare_providers: {str(e)}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Error in compare_providers: {str(e)}", exc_info=True)
         return jsonify({
             'error': '服务暂时不可用，请稍后重试。'
         }), 500
@@ -545,9 +566,9 @@ def test_single_provider():
         return jsonify(result)
 
     except Exception as e:
-        logger.error(f"Error in test_single_provider: {str(e)}")
+        logger.error(f"Error in test_single_provider: {str(e)}", exc_info=True)
         return jsonify({
-            'error': f'Internal server error: {str(e)}'
+            'error': '服务暂时不可用，请稍后重试。'
         }), 500
 
 
@@ -560,6 +581,8 @@ def health_check():
         'status': 'healthy',
         'g4f_available': G4F_AVAILABLE,
         'providers': [p.__name__ for p in G4F_PROVIDERS],
+        'routing_rules_loaded': bool(ROUTE_PROMPTS_MAP),
+        'peer_review_rules_loaded': bool(PEER_REVIEW_PROMPTS_MAP),
         'timestamp': time.time()
     })
 
@@ -571,7 +594,7 @@ def guest_login():
 
 
 @app.errorhandler(404)
-def not_found(error):
+def not_found(_error):
     return jsonify({'error': 'Not found'}), 404
 
 

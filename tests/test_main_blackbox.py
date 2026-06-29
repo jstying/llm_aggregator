@@ -42,6 +42,18 @@ class TestHealthEndpoint(unittest.TestCase):
         self.assertIn('providers', data)
         self.assertIsInstance(data['providers'], list)
 
+    def test_has_routing_rules_loaded(self):
+        response = self.client.get('/health')
+        data = json.loads(response.data)
+        self.assertIn('routing_rules_loaded', data)
+        self.assertIsInstance(data['routing_rules_loaded'], bool)
+
+    def test_has_peer_review_rules_loaded(self):
+        response = self.client.get('/health')
+        data = json.loads(response.data)
+        self.assertIn('peer_review_rules_loaded', data)
+        self.assertIsInstance(data['peer_review_rules_loaded'], bool)
+
 
 class TestGetProvidersEndpoint(unittest.TestCase):
 
@@ -230,6 +242,37 @@ class TestTestSingleEndpoint(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         data = json.loads(response.data)
         self.assertIn('error', data)
+
+    @patch('main.g4f.ChatCompletion.create')
+    def test_route_prompts_map_applied_in_test_single(self, mock_create):
+        mock_create.return_value = 'ok'
+        with patch('main.ROUTE_PROMPTS_MAP', {('Yqcloud', 'gpt-3.5-turbo'): '[ROUTE_SUFFIX]'}), \
+             patch('main.PROVIDER_MODELS_MAP', {'Yqcloud': ['gpt-3.5-turbo'], 'OperaAria': ['aria']}):
+            payload = {'prompt': 'hello world', 'provider': 'Yqcloud', 'model': 'gpt-3.5-turbo'}
+            response = self.client.post(
+                '/api/test-single',
+                data=json.dumps(payload),
+                content_type='application/json'
+            )
+        self.assertEqual(response.status_code, 200)
+        sent_content = mock_create.call_args[1]['messages'][0]['content']
+        self.assertIn('[ROUTE_SUFFIX]', sent_content)
+        self.assertTrue(sent_content.startswith('hello world'))
+
+    @patch('main.g4f.ChatCompletion.create')
+    @patch('main.detect_and_truncate', return_value='TRUNCATED_RESPONSE')
+    def test_detect_and_truncate_applied_in_test_single(self, mock_truncate, mock_create):
+        mock_create.return_value = 'very long repetitive response'
+        payload = {'prompt': 'test', 'provider': 'Yqcloud'}
+        response = self.client.post(
+            '/api/test-single',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertEqual(data['response'], 'TRUNCATED_RESPONSE')
+        mock_truncate.assert_called_once()
 
 
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')

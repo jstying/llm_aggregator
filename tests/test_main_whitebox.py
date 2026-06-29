@@ -357,6 +357,81 @@ class TestRoutePromptsMap(unittest.TestCase):
         self.assertNotIn('[STYLE]', result['response'])
 
 
+class TestRunPeerReview(unittest.TestCase):
+    """Whitebox tests for run_peer_review retry logic."""
+
+    def _make_mock_provider(self, name='TestProvider'):
+        mock_p = MagicMock()
+        mock_p.__name__ = name
+        return mock_p
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    @patch('main.g4f.ChatCompletion.create')
+    def test_429_triggers_retry_and_succeeds(self, mock_create, mock_rand, mock_sleep):
+        mock_create.side_effect = [
+            Exception('Error 429: Queue full for IP'),
+            '{"score": 90, "comment": "great"}'
+        ]
+        import main
+        result = main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
+        self.assertEqual(mock_create.call_count, 2)
+        mock_sleep.assert_called_once()
+        self.assertEqual(result['score'], 90)
+        self.assertEqual(result['comment'], 'great')
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    @patch('main.g4f.ChatCompletion.create')
+    def test_queue_full_error_also_triggers_retry(self, mock_create, mock_rand, mock_sleep):
+        mock_create.side_effect = [
+            Exception('queue is full'),
+            '{"score": 75, "comment": "ok"}'
+        ]
+        import main
+        result = main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
+        self.assertEqual(mock_create.call_count, 2)
+        self.assertEqual(result['score'], 75)
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    @patch('main.g4f.ChatCompletion.create')
+    def test_non_429_error_does_not_retry(self, mock_create, mock_rand, mock_sleep):
+        mock_create.side_effect = Exception('Some other error')
+        import main
+        result = main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
+        self.assertEqual(mock_create.call_count, 1)
+        mock_sleep.assert_not_called()
+        self.assertIn('点评失败', result['comment'])
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    @patch('main.g4f.ChatCompletion.create')
+    def test_429_then_retry_also_fails_returns_friendly_comment(self, mock_create, mock_rand, mock_sleep):
+        mock_create.side_effect = [
+            Exception('Error 429: Queue full'),
+            Exception('Error 429: Queue full'),
+        ]
+        import main
+        result = main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
+        self.assertEqual(mock_create.call_count, 2)
+        self.assertIn('系统正忙', result['comment'])
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    @patch('main.g4f.ChatCompletion.create')
+    def test_result_keys_always_present(self, mock_create, mock_rand, mock_sleep):
+        mock_create.side_effect = Exception('Error 429: Queue full')
+        import main
+        result = main.run_peer_review(self._make_mock_provider('FakeP'), 'aria', 'p')
+        self.assertIn('reviewer_provider', result)
+        self.assertIn('reviewer_model', result)
+        self.assertIn('score', result)
+        self.assertIn('comment', result)
+        self.assertEqual(result['reviewer_provider'], 'FakeP')
+        self.assertEqual(result['reviewer_model'], 'aria')
+
+
 class TestParsePeerReviewJson(unittest.TestCase):
 
     def setUp(self):

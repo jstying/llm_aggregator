@@ -56,6 +56,7 @@
             margin-bottom: 12px;
             text-align: left;
             letter-spacing: -0.01em;
+            transition: opacity 0.4s ease;
         }
 
         .flash-success { background: rgba(6, 193, 103, 0.1); color: #05a859; }
@@ -178,6 +179,20 @@
     </div>
 
     <script>
+        // Auto-dismiss flash messages after 3 seconds
+        document.querySelectorAll('.flash').forEach(function(el) {
+            setTimeout(function() {
+                el.style.opacity = '0';
+                setTimeout(function() {
+                    var container = el.parentElement;
+                    el.remove();
+                    if (container && container.classList.contains('flash-section') && container.children.length === 0) {
+                        container.remove();
+                    }
+                }, 400);
+            }, 3000);
+        });
+
         async function continueAsGuest(btn) {
             btn.disabled = true;
             btn.textContent = 'Loading...';

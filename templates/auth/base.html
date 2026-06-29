@@ -185,6 +185,7 @@
             font-size: 0.95rem;
             font-weight: 700;
             letter-spacing: -0.01em;
+            transition: opacity 0.4s ease;
         }
 
         .alert-success { background: rgba(6, 193, 103, 0.1); color: #05a859; }
@@ -274,5 +275,14 @@
             {% block content %}{% endblock %}
         </div>
     </main>
+    <script>
+        // Auto-dismiss flash messages after 3 seconds
+        document.querySelectorAll('.alert').forEach(function(el) {
+            setTimeout(function() {
+                el.style.opacity = '0';
+                setTimeout(function() { el.remove(); }, 400);
+            }, 3000);
+        });
+    </script>
 </body>
 </html>

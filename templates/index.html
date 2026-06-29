@@ -17,8 +17,8 @@
             min-height: 100vh;
             color: #09110e; /* 带有绿意底蕴的深邃暗墨色 */
 
-            /* 在这里添加下面这行代码，即可实现全屏 90% 缩放 */
-            zoom: 0.9;
+            /* 在这里添加下面这行代码，即可实现全屏 80% 缩放 */
+            zoom: 0.8;
         }
 
         /* ---- Navbar ---- */
@@ -70,6 +70,10 @@
             color: #06c167;
         }
 
+        .nav-logo .logo-short {
+            display: none;
+        }
+
         .nav-welcome {
             color: #545e5a;
             font-size: 0.9rem;
@@ -85,6 +89,7 @@
             font-size: 0.8rem;
             font-weight: 700;
             letter-spacing: 0.02em;
+            white-space: nowrap;
         }
 
         /* ---- Guest banner ---- */
@@ -603,6 +608,7 @@
             font-weight: 700;
             margin-bottom: 10px;
             letter-spacing: -0.01em;
+            transition: opacity 0.4s ease;
         }
 
         .flash-success { background: rgba(6, 193, 103, 0.1); color: #05a859; }
@@ -691,13 +697,52 @@
                 text-align: center;
             }
         }
+
+        /* ---- Mobile portrait: keep navbar on one line ---- */
+        @media (max-width: 520px) {
+            .nav-container {
+                padding: 0 0.75rem;
+            }
+
+            .nav-logo {
+                font-size: 1.05rem;
+            }
+
+            .nav-logo .logo-full {
+                display: none;
+            }
+
+            .nav-logo .logo-short {
+                display: inline;
+            }
+
+            .nav-links {
+                gap: 0.15rem;
+            }
+
+            .nav-links a {
+                padding: 0.35rem 0.5rem;
+                font-size: 0.82rem;
+            }
+
+            .guest-badge {
+                padding: 0.2rem 0.45rem;
+                font-size: 0.72rem;
+            }
+
+            .nav-welcome {
+                display: none;
+            }
+        }
 </style>
 </head>
 <body>
 
     <nav class="navbar">
         <div class="nav-container">
-            <a href="{{ url_for('index') }}" class="nav-logo">LLM Aggregator</a>
+            <a href="{{ url_for('index') }}" class="nav-logo">
+                <span class="logo-full">LLM Aggregator</span><span class="logo-short">G4F</span>
+            </a>
             <ul class="nav-links">
                 {% if session.user_id %}
                     <li><span class="nav-welcome">Welcome, {{ session.username }}</span></li>
@@ -808,6 +853,20 @@
     <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
     <script>
         marked.use({ gfm: true, breaks: true });
+
+        // Auto-dismiss flash messages after 3 seconds
+        document.querySelectorAll('.flash').forEach(function(el) {
+            setTimeout(function() {
+                el.style.opacity = '0';
+                setTimeout(function() {
+                    var container = el.parentElement;
+                    el.remove();
+                    if (container && container.classList.contains('flash-messages') && container.children.length === 0) {
+                        container.remove();
+                    }
+                }, 400);
+            }, 3000);
+        });
 
         const providerModelsMap = {{ provider_models_json | default({}) | tojson | safe }};
 

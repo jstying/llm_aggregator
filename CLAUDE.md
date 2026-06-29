@@ -84,7 +84,7 @@ llm_aggregator/
 │   └── test_providers.py            # 手动逐一测试候选 Provider 是否真正可用
 ├── available_providers_models.txt   # find_providers_models.py 的输出结果
 ├── provider_test_results.txt        # test_providers.py 第一轮测试结果
-├── provider_test_results_v2.txt     # test_providers.py 第二轮测试结果
+├── provider_test_results_v2.txt     # test_providers.py 第三轮测试结果（最新，含 PollinationsAI 验证）
 ├── firebase-key.json                # Firebase 服务账号密钥（本地开发用，严禁提交 git）[NEW]
 ├── .env                             # 本地环境变量文件（SECRET_KEY 等，严禁提交 git）[NEW]
 ├── requirements.txt                 # 依赖锁定版本（新增 firebase-admin、python-dotenv）[MODIFIED]
@@ -106,13 +106,14 @@ llm_aggregator/
   - `init_result_object(provider_name, model)`: 纯函数，统一初始化标准 Result 字典（7 个 key）。
   - `detect_and_truncate(text)`: 纯函数，句级 + 滑动窗口重复检测，触发时截断并追加提示语。
   - `parse_peer_review_json(text)`: 纯函数，从互评响应文本中提取 JSON，返回 `(score: int, comment: str)`；任何解析失败均容错返回 `(80, raw_text)`；score 被夹入 [1, 100]。
-  - `test_g4f_provider()`: 核心 LLM 测试函数，调用上述辅助函数、应用隐形 Prompt 路由、统计响应耗时。
-  - `run_peer_review(reviewer_provider, reviewer_model, review_prompt)`: 单次互评请求，内部调用 `parse_peer_review_json` 解析响应，返回 `{reviewer_provider, reviewer_model, score, comment}`，不含 `response_time`。
+  - `test_g4f_provider()`: 核心 LLM 测试函数，调用上述辅助函数、应用隐形 Prompt 路由（`ROUTE_PROMPTS_MAP`）、将响应经 `detect_and_truncate` 处理后写入 result、统计响应耗时。
+  - `test_single_provider()`: `/api/test-single` 路由处理函数，直接调用 `test_g4f_provider`，因此隐形 Prompt 路由和重复截断与 `/api/compare` 完全同路径生效。外层 `except Exception` 返回中文友好 500 消息，不暴露原始异常。
+  - `run_peer_review(reviewer_provider, reviewer_model, review_prompt)`: 单次互评请求，内置 429/queue-full 错误单次重试（检测到 `'429'` 或 `'queue'` 关键词时等待 2+random(0,1)s 后重试一次）。`network_keywords` 列表现包含 `'429'` 和 `'queue'`，任何匹配项最终触发"系统正忙"友好消息而非原始异常文本。成功路径内部调用 `parse_peer_review_json` 解析响应，返回 `{reviewer_provider, reviewer_model, score, comment}`，不含 `response_time`。
   - `compare_providers()`: 两阶段并发执行。第一阶段 `ThreadPoolExecutor` 并发测试各 Provider，except 块区分 `TimeoutError`（`logger.warning` 无 traceback）和其他异常（`logger.error` 带 `exc_info`）。第二阶段整体包裹在独立 `try-except` 中：任何崩溃（任务构建失败、Executor 异常等）均被捕获并记 `logger.error`，第一轮结果（含 `peer_reviews: []`）仍可安全返回，接口不会因互评失败而报 500。第二阶段内部每个 `future.result(timeout=25)` 也有独立 except，单条互评的 `TimeoutError` 单独 `logger.warning`，其他异常 `logger.error`。互评任务开始、每条完成（含裁判名、被评 Provider 名、score）、阶段整体完成均有 `logger.info`。最终按成功状态和耗时排序。外层 `except Exception` 的 500 响应返回中文友好消息，不暴露原始异常信息给用户。
   - `PEER_REVIEW_PROMPTS_MAP`: 互评裁判提示词表，key 为模型名称，value 为要求模型输出 `{"score": int, "comment": str}` JSON 格式的提示词前缀。
-  - `ROUTE_PROMPTS_MAP`: 隐形 Prompt 路由表，key 为 `(provider_name, model)` 元组，value 为追加到用户 prompt 尾部的风格提示词。
+  - `ROUTE_PROMPTS_MAP`: 隐形 Prompt 路由表，key 为 `(provider_name, model)` 元组，value 为追加到用户 prompt 尾部的风格提示词。**设计约束**：首句必须含"立刻"urgency 指令（防超时）；其次凸显各模型真实角色个性：gpt-4 扮演"严谨分析师"（结论→依据→反思三层结构，300 字），gpt-3.5-turbo 扮演"高效助手"（TLDR 一句话结论优先，口语化中文，150 字），aria 扮演"实战顾问"（跳过铺垫直接给 1-2 个可操作动作，200 字），openai-fast 扮演"极速速答者"（一句结论+一句理由，英文输出，100 字内）。新增条目须同时满足速度指令和角色鲜明两项要求，字数上限不得超过 300 字。
   - `SENSITIVE_KEYWORDS`: 模块级敏感词列表，当前为空列表占位，可直接填充关键词生效，`detect_and_truncate` 读取此变量。
-- **depends_on**: `flask`, `g4f`, `concurrent.futures`, `time`, `json`, `logging`, `dotenv`, `auth.auth_bp`
+- **depends_on**: `flask`, `g4f`, `concurrent.futures`, `time`, `json`, `logging`, `re`, `os`, `secrets`, `random`, `dotenv`, `auth.auth_bp`
 - **affects**: `home.html`、`index.html`（通过 Jinja2 注入变量），所有前端 API 请求。
 
 ### `auth/__init__.py` [NEW]
@@ -144,16 +145,17 @@ llm_aggregator/
 - **role**: 系统的第一入口，仅对"未认证且非游客"的用户展示。
 - **key logic**:
   - 提供三个操作入口：Login（跳转 `/login`）、Sign Up（跳转 `/register`）、Continue as Guest（Fetch POST `/api/auth/guest`，成功后重定向 `/`）。
-  - 页面内含 Flash 消息显示区，确保退出登录等操作的提示消息能在此页面被立即消费，不向下一个页面泄漏。
+  - 页面内含 Flash 消息显示区，确保退出登录等操作的提示消息能在此页面被立即消费，不向下一个页面泄漏。Flash 消息在渲染后 3 秒自动淡出消失（opacity 渐变 0.4s，淡出后从 DOM 移除并清理父容器）。
 
 ### `templates/index.html` [MODIFIED]
 
 - **role**: LLM 聚合功能主页，已登录用户和游客均可访问。
 - **key logic**:
   - 顶部新增三态导航栏：已登录时显示用户名、Profile、Logout；游客时显示 Guest Mode 徽章、Login、Register。
+  - **移动端响应式导航栏**：`@media (max-width: 520px)` 将 Logo 从"LLM Aggregator"切换为"G4F"（通过 `.logo-full` / `.logo-short` 双 span 实现），隐藏 `.nav-welcome`，压缩 nav 间距与字号，确保导航栏在手机竖屏单行显示。`.guest-badge` 始终设置 `white-space: nowrap` 防止"Guest Mode"被截断为两行。
   - 游客状态下在导航栏下方显示黄色提示条，引导注册或登录。
   - 已登录用户的 header 区域展示个性化欢迎语（`Welcome back, {{ session.username }}`）。
-  - 新增 Flash 消息显示区（位于 `.container` 内、`.header` 之上），确保注册成功等提示在此处被立即消费。
+  - 新增 Flash 消息显示区（位于 `.container` 内、`.header` 之上），确保注册成功等提示在此处被立即消费。Flash 消息在渲染后 3 秒自动淡出消失（opacity 渐变 0.4s，淡出后从 DOM 移除，若 `.flash-messages` 容器变空则一并移除）。
   - `escapeHtml(str)`: 所有动态内容（provider 名、model 名、response、error）均通过此函数转义后注入 DOM，防止 XSS。
   - `renderPeerReviews(reviews, uid)`: 将 `peer_reviews` 数组渲染为可折叠面板，展示"来自 [Provider] 的盲评 [N分]：[comment]"。面板默认折叠，通过 `togglePeerReview(uid)` 切换显示状态。
   - `displayResults(data)` 在每个成功结果的 `.provider-response` 下方附加互评面板；失败结果不展示互评。
@@ -162,7 +164,7 @@ llm_aggregator/
 ### `templates/auth/base.html` [NEW]
 
 - **role**: 认证模块所有页面的通用布局基础模板。
-- **key logic**: 导航栏根据 `session.user_id` 和 `session.is_guest` 进行三态切换：已登录显示 Profile + Logout；游客显示 Guest Mode 徽章 + Login + Register；未认证显示 Login + Register。Flash 消息统一在 `.card` 容器顶部渲染。
+- **key logic**: 导航栏根据 `session.user_id` 和 `session.is_guest` 进行三态切换：已登录显示 Profile + Logout；游客显示 Guest Mode 徽章 + Login + Register；未认证显示 Login + Register。Flash 消息（`.alert` 类）统一在 `.card` 容器顶部渲染，3 秒后自动淡出消失（opacity 渐变 0.4s，淡出后从 DOM 移除）。
 
 ### `templates/auth/login.html` 和 `templates/auth/register.html` [NEW]
 
@@ -341,7 +343,7 @@ session['is_guest']  # bool：固定为 True，游客状态独有
 - `GET /api/providers`：返回所有可用 Provider 的元数据列表。
 - `POST /api/compare`：接收 `prompt`、`providers`、`model`、`max_workers`，返回并发测试后的聚合排序结果。
 - `POST /api/test-single`：接收 `prompt`、`provider`、`model`，单独测试某一通道并返回标准 Result 对象。
-- `GET /health`：健康检查，返回系统状态、`g4f_available`、Provider 列表及时间戳。
+- `GET /health`：健康检查，返回系统状态、`g4f_available`、Provider 列表、`routing_rules_loaded`（`ROUTE_PROMPTS_MAP` 是否非空）、`peer_review_rules_loaded`（`PEER_REVIEW_PROMPTS_MAP` 是否非空）及时间戳。
 
 **页面路由：**
 
@@ -363,7 +365,7 @@ session['is_guest']  # bool：固定为 True，游客状态独有
 
 ### 第三方集成
 
-- **g4f 库**：通过模拟浏览器或逆向接口，无凭证调用各大免费 AI 渠道（如 `Yqcloud`、`OperaAria`）。
+- **g4f 库**：通过模拟浏览器或逆向接口，无凭证调用各大免费 AI 渠道（如 `Yqcloud`、`OperaAria`、`PollinationsAI`）。
 - **Firebase Admin SDK**：连接 Google Cloud Firestore，管理 `users` 集合的读写。本地开发使用 `firebase-key.json`，GAE 生产环境使用 Application Default Credentials（ADC）。
 
 ## 9. ⚠️ SYSTEM RISKS / CODE QUALITY AUDIT
@@ -376,9 +378,9 @@ session['is_guest']  # bool：固定为 True，游客状态独有
 
 - ~~**Flash 消息堆积 Bug**~~（**已修复**）：`home.html` 和 `index.html` 原本没有 Flash 消息显示区，导致退出登录等操作产生的 Flash 消息滞留 session，在下一个 auth 页面（使用 `auth/base.html`）上集中出现，引发"注册成功 + 已退出登录"同时显示的假象。两个文件均已加入 Flash 消息显示区。
 
-- **互评阶段双层保护**：互评阶段采用两层独立 try-except。外层兜住整个阶段（任务构建崩溃、Executor 初始化失败等），内层兜住单条 `future.result(timeout=25)` 的超时或执行异常。任何一层失败均不影响第一轮 LLM 结果返回，`peer_reviews` 字段在互评 try 块之前已初始化为 `[]`。`run_peer_review` 内部 `g4f.ChatCompletion.create(timeout=15)` 为 advisory 超时（非硬截断）；外层硬截断留有约 10 秒缓冲。互评 prompt 远长于普通请求（含完整回答文本），若缩短任一超时值须同步评估另一侧的缓冲余量。
+- **互评阶段双层保护**：互评阶段采用两层独立 try-except。外层兜住整个阶段（任务构建崩溃、Executor 初始化失败等），内层兜住单条 `future.result(timeout=25)` 的超时或执行异常。任何一层失败均不影响第一轮 LLM 结果返回，`peer_reviews` 字段在互评 try 块之前已初始化为 `[]`。`run_peer_review` 内部 `g4f.ChatCompletion.create(timeout=15)` 为 advisory 超时（非硬截断）；外层硬截断留有约 10 秒缓冲。互评 prompt 远长于普通请求（含完整回答文本），若缩短任一超时值须同步评估另一侧的缓冲余量。**429 重试时序**：429 通常在 0.1s 内即返回，重试等待 2-3s，第一个并发请求通常已完成，因此第二次尝试几乎不会再遇到队列满。两次尝试总耗时上限约 2-3s + 15s = 18s，安全在 25s outer timeout 以内。
 
-- **线程池潜在安全隐患**：`max_workers` 的计算逻辑为 `min(data.get('max_workers', 3), 5)`。由于 `G4F_PROVIDERS` 目前只有 2 个（`Yqcloud`、`OperaAria`），实际最大线程数永远不超过 2。
+- **线程池潜在安全隐患**：`max_workers` 的计算逻辑为 `min(data.get('max_workers', 3), 5)`。`G4F_PROVIDERS` 目前有 3 个（`Yqcloud`、`OperaAria`、`PollinationsAI`），实际最大线程数不超过 3。
 
 - **SECRET_KEY 持久化风险**：若 `SECRET_KEY` 环境变量未设置，每次服务重启都会生成新的随机密钥，导致所有已登录用户的 session 失效。生产环境必须在 `app.yaml` 的 `env_variables` 中固定设置 `SECRET_KEY`，本地开发必须在 `.env` 文件中设置。
 
@@ -390,8 +392,8 @@ session['is_guest']  # bool：固定为 True，游客状态独有
 
 若需要引入新的 g4f 支持的 Provider，只需修改 `main.py` 的初始化部分：
 
-1. 确保新通道已被 g4f 原生支持。
-2. 将其追加进 `G4F_PROVIDERS` 列表中。
+1. 先运行 `availability_g4f/find_providers_models.py` 扫描当前 g4f 库中 `working=True` 且 `needs_auth=False` 的 Provider，再更新 `availability_g4f/test_providers.py` 加入候选条目，运行后取成功的 Provider。（参考：PollinationsAI `openai-fast` 于 2026-06-28 经第三轮测试验证通过）
+2. 将验证通过的 Provider 追加进 `G4F_PROVIDERS` 列表中。
 3. 在 `PROVIDER_MODELS_MAP` 中添加对应的模型数组（第一个为默认模型）。
 4. 在 `ROUTE_PROMPTS_MAP` 中为 `(provider_name, model)` 元组添加隐形风格提示词（可选）。
 5. 在 `PEER_REVIEW_PROMPTS_MAP` 中为该 Provider 使用的模型名称添加互评裁判提示词（可选；缺失时使用默认值 `'请评估以下回答的质量，指出优点与不足。'`）。新增条目必须要求模型输出 `{"score": int, "comment": str}` JSON 格式，否则 `parse_peer_review_json` 将 fallback 为 80 分。
@@ -463,14 +465,14 @@ gunicorn -b :8080 main:app
 
 项目使用 Python 内置的 `unittest` 框架，测试文件存放于 `tests/` 目录。
 
-- **test_main_whitebox.py**：直接测试 `main.py` 的核心内部函数。测试内容包括模型降级规则 A/B/C 的全部边界条件、结果字典的 key 完整性、`test_g4f_provider` 的成功路径与异常路径、`detect_and_truncate` 的句级与滑动窗口重复检测、`ROUTE_PROMPTS_MAP` 路由注入行为，以及 `parse_peer_review_json` 的 JSON 解析、夹值、容错 fallback 全部边界条件。
-- **test_main_blackbox.py**：通过 Flask `test_client()` 以 HTTP 协议测试 `main.py` 暴露的全部对外 API 端点，包含互评触发条件、`peer_reviews` 字段存在性、互评 DTO key 集合（`{reviewer_provider, reviewer_model, score, comment}`）以及 `score` 类型为 `int` 的断言。
-- **test_main_graybox.py**：感知后端全局状态与线程池行为。测试内容包括排序契约、fallback 路径、`max_workers` 双重上限、`G4F_AVAILABLE` 降级响应，以及三 Provider 场景下 1 个失败时互评仅在 2 个成功者之间双向触发的行为（`TestPeerReviewPartialFailure`）。排序测试（`TestSortOrderInvariant`）在 setUp 中 mock `run_peer_review`，避免 2 个成功者触发真实网络调用。新增 `TestPeerReviewPhaseRobustness`（3 个用例）：通过令 `PEER_REVIEW_PROMPTS_MAP.get` 在任务构建阶段抛出 `RuntimeError`，模拟互评阶段整体崩溃，断言接口仍返回 200、第一轮结果完整、`peer_reviews` 字段为空列表。
+- **test_main_whitebox.py**：直接测试 `main.py` 的核心内部函数。测试内容包括模型降级规则 A/B/C 的全部边界条件、结果字典的 key 完整性、`test_g4f_provider` 的成功路径与异常路径、`detect_and_truncate` 的句级与滑动窗口重复检测、`ROUTE_PROMPTS_MAP` 路由注入行为、`parse_peer_review_json` 的 JSON 解析/夹值/容错 fallback 全部边界条件，以及 `run_peer_review` 的 429 重试逻辑（`TestRunPeerReview`，5 个用例：429 触发重试且成功、queue-full 同样触发重试、非 429 不重试、重试后仍失败返回友好消息、结果 4-key 契约始终完整）。
+- **test_main_blackbox.py**：通过 Flask `test_client()` 以 HTTP 协议测试 `main.py` 暴露的全部对外 API 端点，包含互评触发条件、`peer_reviews` 字段存在性、互评 DTO key 集合（`{reviewer_provider, reviewer_model, score, comment}`）以及 `score` 类型为 `int` 的断言。新增对 `/health` 接口的 `routing_rules_loaded` 和 `peer_review_rules_loaded` 两个字段的存在性与类型断言；新增对 `/api/test-single` 的 `ROUTE_PROMPTS_MAP` 隐形路由生效验证（检查 g4f 实际收到的 prompt 含 style suffix）以及 `detect_and_truncate` 被调用验证。
+- **test_main_graybox.py**：感知后端全局状态与线程池行为。测试内容包括排序契约、fallback 路径、`max_workers` 双重上限、`G4F_AVAILABLE` 降级响应，以及三 Provider 场景下 1 个失败时互评仅在 2 个成功者之间双向触发的行为（`TestPeerReviewPartialFailure`）。排序测试（`TestSortOrderInvariant`）在 setUp 中 mock `run_peer_review`，避免 2 个成功者触发真实网络调用。新增 `TestPeerReviewPhaseRobustness`（3 个用例）：通过令 `PEER_REVIEW_PROMPTS_MAP.get` 在任务构建阶段抛出 `RuntimeError`，模拟互评阶段整体崩溃，断言接口仍返回 200、第一轮结果完整、`peer_reviews` 字段为空列表。新增 `TestTestSingleRobustness`（1 个用例）：令 `test_g4f_provider` 直接抛出异常以触发 `test_single_provider` 外层 except，断言返回 500 中文友好消息。新增 `TestHealthConfigFlags`（2 个用例）：分别将 `ROUTE_PROMPTS_MAP` 和 `PEER_REVIEW_PROMPTS_MAP` patch 为空字典，断言 `/health` 对应标志字段为 `False`。
 - **test_auth_whitebox.py**：使用 `unittest.mock.patch` 绕过真实 Firebase 网络连接。测试内容包括 Werkzeug 密码哈希生成与校验，以及 `get_user_by_username` 和 `get_user_by_email` 两个函数在"用户存在"和"用户不存在"两个分支下的行为。
 - **test_auth_blackbox.py**：通过 Flask `test_client()` 测试 auth 蓝图的全部路由。测试内容包括登录成功后 `session['user_id']` 的写入与重定向、注册成功后 `session['is_guest']` 的清除、`/profile` 路由的未登录重定向以及已登录用户的正常访问。
 
 ```bash
-# 发现并运行 tests/ 目录下的全部测试（共 177 个用例，5 个测试文件）
+# 发现并运行 tests/ 目录下的全部测试（共 189 个用例，5 个测试文件）
 python -m unittest discover -s tests
 
 # 带详细输出运行

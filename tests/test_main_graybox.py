@@ -531,5 +531,58 @@ class TestPeerReviewPhaseRobustness(unittest.TestCase):
             self.assertEqual(result['peer_reviews'], [])
 
 
+# ============================================================
+# 7. /api/test-single 外层异常健壮性测试
+# 通过令 test_g4f_provider 直接抛出异常来触发
+# test_single_provider 的外层 except 块，验证返回中文友好消息。
+# ============================================================
+@unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
+class TestTestSingleRobustness(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+
+    @patch('main.test_g4f_provider', side_effect=RuntimeError('unexpected crash'))
+    def test_outer_exception_returns_500_chinese_message(self, _mock_fn):
+        """Outer except in test_single_provider must return 500 with Chinese message."""
+        payload = {'prompt': 'test', 'provider': 'Yqcloud'}
+        response = self.client.post(
+            '/api/test-single',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 500)
+        data = json.loads(response.data)
+        self.assertIn('服务暂时不可用', data['error'])
+
+
+# ============================================================
+# 8. /health 配置标志状态测试
+# 通过 patch 将两个 prompt 映射表置为空，验证 health 接口
+# 的 routing_rules_loaded / peer_review_rules_loaded 字段
+# 正确反映当前配置状态。
+# ============================================================
+class TestHealthConfigFlags(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+
+    def test_routing_rules_loaded_false_when_route_map_empty(self):
+        """routing_rules_loaded must be False when ROUTE_PROMPTS_MAP is empty."""
+        with patch('main.ROUTE_PROMPTS_MAP', {}):
+            response = self.client.get('/health')
+        data = json.loads(response.data)
+        self.assertFalse(data['routing_rules_loaded'])
+
+    def test_peer_review_rules_loaded_false_when_peer_map_empty(self):
+        """peer_review_rules_loaded must be False when PEER_REVIEW_PROMPTS_MAP is empty."""
+        with patch('main.PEER_REVIEW_PROMPTS_MAP', {}):
+            response = self.client.get('/health')
+        data = json.loads(response.data)
+        self.assertFalse(data['peer_review_rules_loaded'])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
