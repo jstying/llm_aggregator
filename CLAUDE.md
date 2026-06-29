@@ -156,7 +156,7 @@ llm_aggregator/
   - 游客状态下在导航栏下方显示黄色提示条，引导注册或登录。
   - 已登录用户的 header 区域展示个性化欢迎语（`Welcome back, {{ session.username }}`）。
   - 新增 Flash 消息显示区（位于 `.container` 内、`.header` 之上），确保注册成功等提示在此处被立即消费。Flash 消息在渲染后 3 秒自动淡出消失（opacity 渐变 0.4s，淡出后从 DOM 移除，若 `.flash-messages` 容器变空则一并移除）。
-  - `escapeHtml(str)`: 所有动态内容（provider 名、model 名、response、error）均通过此函数转义后注入 DOM，防止 XSS。
+  - `escapeHtml(str)`: provider 名、model 名、error 均通过此函数转义后注入 DOM，防止 XSS。`response` 经 `marked.parse()` 渲染为 Markdown HTML，不经过 `escapeHtml`（内容来自受信 LLM，Markdown 渲染为有意为之）。
   - `renderPeerReviews(reviews, uid)`: 将 `peer_reviews` 数组渲染为可折叠面板，展示"来自 [Provider] 的盲评 [N分]：[comment]"。面板默认折叠，通过 `togglePeerReview(uid)` 切换显示状态。
   - `displayResults(data)` 在每个成功结果的 `.provider-response` 下方附加互评面板；失败结果不展示互评。
 - **depends_on**: 后端路由 `/` 传来的 `providers`、`provider_models_json` 以及 `session` 全局对象；`/api/compare` 返回的 `peer_reviews` 字段。
@@ -527,7 +527,7 @@ python test_providers.py
 
 ### 依赖管理
 
-- `requirements.txt` 采用完全锁版本策略（`pip freeze` 输出格式），所有间接依赖均固定。
+- `requirements.txt` 采用完全锁版本策略（`pip freeze` 输出格式），所有间接依赖均固定。例外：`gunicorn` 仅写包名不含版本（GAE 运行时负责安装，本地开发环境通常不安装）。
 - 更新依赖时：在虚拟环境中 `pip install <package>`，然后 `pip freeze > requirements.txt`。
 - 不要手动编辑 `requirements.txt` 中的版本号，避免依赖冲突。
 - 新增依赖后，必须同步检查 `app.yaml` 的 runtime 是否支持该依赖。
@@ -577,7 +577,7 @@ gcloud app logs tail -s default
 - 使用 Vanilla JS，不引入任何前端框架或构建工具。
 - 前端通过 Jinja2 变量 `{{ provider_models_json | tojson }}` 接收后端数据，在页面初始化时解析为 JS 对象。
 - Fetch 请求必须先检查 `response.ok` 再调用 `response.json()`。非 2xx 响应时先尝试解析 JSON `error` 字段，解析失败则回退到 `Server error: 状态码`。
-- 游客切换相关的 Fetch（`/api/auth/guest`）必须处理网络错误，在按钮上显示 Loading 状态并在失败时恢复原始文案。
+- 游客切换相关的 Fetch（`/api/auth/guest`）：`home.html` 中的专属游客按钮实现完整交互（disabled + "Loading..." 文案 + 失败时恢复原始文案 + 显示 `#guestError`）。`login.html` 和 `register.html` 中的 "Continue as guest" 是简化实现（仅在 `res.ok` 时跳转，无 Loading 状态），因为这两处是辅助入口而非主路径。
 
 ### 提交规范
 
