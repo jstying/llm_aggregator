@@ -418,52 +418,69 @@ def compare_providers():
                         logger.error(f"Error testing {name}: {e}", exc_info=True)
                     results.append(fallback_result)
 
-        # 为所有结果初始化空的互评列表
+        # 为所有结果初始化空的互评列表（必须在互评 try 块之前，保证字段始终存在）
         for r in results:
             r['peer_reviews'] = []
 
-        # 互评触发条件：providers_to_test >= 2 且成功结果 >= 2
-        successful_results = [r for r in results if r['success']]
-        if len(providers_to_test) >= 2 and len(successful_results) >= 2:
-            provider_obj_map = {p.__name__: p for p in providers_to_test}
+        # 第二阶段：AI 互评（独立 try-except，任何崩溃不影响第一轮结果交付）
+        try:
+            successful_results = [r for r in results if r['success']]
+            if len(providers_to_test) >= 2 and len(successful_results) >= 2:
+                logger.info(
+                    f"Peer review phase started: {len(successful_results)} successful providers"
+                )
+                provider_obj_map = {p.__name__: p for p in providers_to_test}
 
-            # 构建互评任务：对每个成功结果 A，让其他成功模型 B 进行点评
-            peer_review_tasks = []
-            for result_a in successful_results:
-                for result_b in successful_results:
-                    if result_b['provider'] == result_a['provider']:
-                        continue
-                    reviewer_provider = provider_obj_map[result_b['provider']]
-                    reviewer_model = result_b['model']
-                    judge_prefix = PEER_REVIEW_PROMPTS_MAP.get(
-                        reviewer_model,
-                        '请评估以下回答的质量，指出优点与不足。'
-                    )
-                    review_prompt = (
-                        f"{judge_prefix}\n\n需要点评的匿名文本如下：\n{result_a['response']}"
-                    )
-                    peer_review_tasks.append(
-                        (reviewer_provider, reviewer_model, review_prompt, result_a['provider'])
-                    )
-
-            max_peer_workers = min(10, len(peer_review_tasks))
-            with ThreadPoolExecutor(max_workers=max_peer_workers) as peer_executor:
-                peer_futures = {
-                    peer_executor.submit(run_peer_review, rp, rm, rpr): target
-                    for rp, rm, rpr, target in peer_review_tasks
-                }
-                for future, target_provider in peer_futures.items():
-                    try:
-                        review_item = future.result(timeout=25)
-                        for r in results:
-                            if r['provider'] == target_provider:
-                                r['peer_reviews'].append(review_item)
-                                break
-                    except Exception as e:
-                        logger.error(
-                            f"Peer review error targeting {target_provider}: {e}",
-                            exc_info=True
+                # 构建互评任务：对每个成功结果 A，让其他成功模型 B 进行点评
+                peer_review_tasks = []
+                for result_a in successful_results:
+                    for result_b in successful_results:
+                        if result_b['provider'] == result_a['provider']:
+                            continue
+                        reviewer_provider = provider_obj_map[result_b['provider']]
+                        reviewer_model = result_b['model']
+                        judge_prefix = PEER_REVIEW_PROMPTS_MAP.get(
+                            reviewer_model,
+                            '请评估以下回答的质量，指出优点与不足。'
                         )
+                        review_prompt = (
+                            f"{judge_prefix}\n\n需要点评的匿名文本如下：\n{result_a['response']}"
+                        )
+                        peer_review_tasks.append(
+                            (reviewer_provider, reviewer_model, review_prompt, result_a['provider'])
+                        )
+
+                logger.info(f"Peer review phase: {len(peer_review_tasks)} tasks scheduled")
+                max_peer_workers = min(10, len(peer_review_tasks))
+                with ThreadPoolExecutor(max_workers=max_peer_workers) as peer_executor:
+                    peer_futures = {
+                        peer_executor.submit(run_peer_review, rp, rm, rpr): target
+                        for rp, rm, rpr, target in peer_review_tasks
+                    }
+                    for future, target_provider in peer_futures.items():
+                        try:
+                            review_item = future.result(timeout=25)
+                            for r in results:
+                                if r['provider'] == target_provider:
+                                    r['peer_reviews'].append(review_item)
+                                    break
+                            logger.info(
+                                f"Peer review: {review_item['reviewer_provider']} "
+                                f"scored {target_provider} {review_item['score']}/100"
+                            )
+                        except TimeoutError:
+                            logger.warning(
+                                f"Peer review for {target_provider} timed out after 25s"
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Peer review error for {target_provider}: {e}",
+                                exc_info=True
+                            )
+                logger.info("Peer review phase completed")
+        except Exception as e:
+            logger.error(f"Peer review phase failed entirely: {e}", exc_info=True)
+            # peer_reviews 字段已初始化为 []，第一轮回答数据完整，安全返回
 
         # 排序：成功优先，耗时短优先
         results.sort(
@@ -486,7 +503,7 @@ def compare_providers():
         logger.error(f"Error in compare_providers: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({
-            'error': f'Internal server error: {str(e)}'
+            'error': '服务暂时不可用，请稍后重试。'
         }), 500
 
 

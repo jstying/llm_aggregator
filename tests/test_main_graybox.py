@@ -476,5 +476,60 @@ class TestPeerReviewPartialFailure(unittest.TestCase):
         self.assertEqual(failed['peer_reviews'], [])
 
 
+# ============================================================
+# 6. 互评阶段整体崩溃健壮性测试
+# 模拟互评 phase 内部整体异常（如任务构建崩溃），验证第一轮
+# 结果仍能安全返回 200，peer_reviews 字段保持空列表。
+# ============================================================
+@unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
+class TestPeerReviewPhaseRobustness(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+
+    def _make_two_providers(self):
+        p1 = MagicMock(); p1.__name__ = 'ProvA'
+        p2 = MagicMock(); p2.__name__ = 'ProvB'
+        return [p1, p2]
+
+    def _post_with_crashing_peer_review(self):
+        """Two providers both succeed; PEER_REVIEW_PROMPTS_MAP.get raises during task build."""
+        providers = self._make_two_providers()
+        crashing_map = MagicMock()
+        crashing_map.get.side_effect = RuntimeError('simulated peer review phase crash')
+        with patch('main.g4f.ChatCompletion.create', return_value='ok response'), \
+             patch('main.G4F_PROVIDERS', providers), \
+             patch('main.PROVIDER_MODELS_MAP', {'ProvA': ['gpt-3.5-turbo'], 'ProvB': ['aria']}), \
+             patch('main.ROUTE_PROMPTS_MAP', {}), \
+             patch('main.PEER_REVIEW_PROMPTS_MAP', crashing_map):
+            return self.client.post(
+                '/api/compare',
+                data=json.dumps({'prompt': 'test', 'providers': ['ProvA', 'ProvB']}),
+                content_type='application/json'
+            )
+
+    def test_peer_review_phase_crash_returns_200(self):
+        """Outer peer review try-except must catch the crash and still return 200."""
+        response = self._post_with_crashing_peer_review()
+        self.assertEqual(response.status_code, 200)
+
+    def test_peer_review_phase_crash_first_round_results_preserved(self):
+        """First-round responses must be intact when peer review phase crashes."""
+        data = json.loads(self._post_with_crashing_peer_review().data)
+        self.assertEqual(data['total_providers'], 2)
+        self.assertEqual(data['successful_providers'], 2)
+        for result in data['results']:
+            self.assertTrue(result['success'])
+            self.assertEqual(result['response'], 'ok response')
+
+    def test_peer_review_phase_crash_peer_reviews_are_empty(self):
+        """peer_reviews must remain [] when the peer review phase crashes entirely."""
+        data = json.loads(self._post_with_crashing_peer_review().data)
+        for result in data['results']:
+            self.assertIn('peer_reviews', result)
+            self.assertEqual(result['peer_reviews'], [])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

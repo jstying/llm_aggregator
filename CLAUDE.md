@@ -108,7 +108,7 @@ llm_aggregator/
   - `parse_peer_review_json(text)`: 纯函数，从互评响应文本中提取 JSON，返回 `(score: int, comment: str)`；任何解析失败均容错返回 `(80, raw_text)`；score 被夹入 [1, 100]。
   - `test_g4f_provider()`: 核心 LLM 测试函数，调用上述辅助函数、应用隐形 Prompt 路由、统计响应耗时。
   - `run_peer_review(reviewer_provider, reviewer_model, review_prompt)`: 单次互评请求，内部调用 `parse_peer_review_json` 解析响应，返回 `{reviewer_provider, reviewer_model, score, comment}`，不含 `response_time`。
-  - `compare_providers()`: 两阶段并发执行——第一阶段 `ThreadPoolExecutor` 并发测试各 Provider；第二阶段在满足触发条件时启动第二个 `ThreadPoolExecutor` 执行互评任务，并将结果挂载到对应 result 的 `peer_reviews` 列表；最终按成功状态和耗时排序。
+  - `compare_providers()`: 两阶段并发执行。第一阶段 `ThreadPoolExecutor` 并发测试各 Provider，except 块区分 `TimeoutError`（`logger.warning` 无 traceback）和其他异常（`logger.error` 带 `exc_info`）。第二阶段整体包裹在独立 `try-except` 中：任何崩溃（任务构建失败、Executor 异常等）均被捕获并记 `logger.error`，第一轮结果（含 `peer_reviews: []`）仍可安全返回，接口不会因互评失败而报 500。第二阶段内部每个 `future.result(timeout=25)` 也有独立 except，单条互评的 `TimeoutError` 单独 `logger.warning`，其他异常 `logger.error`。互评任务开始、每条完成（含裁判名、被评 Provider 名、score）、阶段整体完成均有 `logger.info`。最终按成功状态和耗时排序。外层 `except Exception` 的 500 响应返回中文友好消息，不暴露原始异常信息给用户。
   - `PEER_REVIEW_PROMPTS_MAP`: 互评裁判提示词表，key 为模型名称，value 为要求模型输出 `{"score": int, "comment": str}` JSON 格式的提示词前缀。
   - `ROUTE_PROMPTS_MAP`: 隐形 Prompt 路由表，key 为 `(provider_name, model)` 元组，value 为追加到用户 prompt 尾部的风格提示词。
   - `SENSITIVE_KEYWORDS`: 模块级敏感词列表，当前为空列表占位，可直接填充关键词生效，`detect_and_truncate` 读取此变量。
@@ -376,7 +376,7 @@ session['is_guest']  # bool：固定为 True，游客状态独有
 
 - ~~**Flash 消息堆积 Bug**~~（**已修复**）：`home.html` 和 `index.html` 原本没有 Flash 消息显示区，导致退出登录等操作产生的 Flash 消息滞留 session，在下一个 auth 页面（使用 `auth/base.html`）上集中出现，引发"注册成功 + 已退出登录"同时显示的假象。两个文件均已加入 Flash 消息显示区。
 
-- **互评阶段超时缓冲**：`run_peer_review` 内部 `g4f.ChatCompletion.create(timeout=15)` 为 advisory 超时（非硬截断）；外层 `future.result(timeout=25)` 为硬截断，留有约 10 秒缓冲。互评 prompt 远长于普通请求（含完整回答文本），若缩短任一超时值须同步评估另一侧的缓冲余量。
+- **互评阶段双层保护**：互评阶段采用两层独立 try-except。外层兜住整个阶段（任务构建崩溃、Executor 初始化失败等），内层兜住单条 `future.result(timeout=25)` 的超时或执行异常。任何一层失败均不影响第一轮 LLM 结果返回，`peer_reviews` 字段在互评 try 块之前已初始化为 `[]`。`run_peer_review` 内部 `g4f.ChatCompletion.create(timeout=15)` 为 advisory 超时（非硬截断）；外层硬截断留有约 10 秒缓冲。互评 prompt 远长于普通请求（含完整回答文本），若缩短任一超时值须同步评估另一侧的缓冲余量。
 
 - **线程池潜在安全隐患**：`max_workers` 的计算逻辑为 `min(data.get('max_workers', 3), 5)`。由于 `G4F_PROVIDERS` 目前只有 2 个（`Yqcloud`、`OperaAria`），实际最大线程数永远不超过 2。
 
@@ -465,12 +465,12 @@ gunicorn -b :8080 main:app
 
 - **test_main_whitebox.py**：直接测试 `main.py` 的核心内部函数。测试内容包括模型降级规则 A/B/C 的全部边界条件、结果字典的 key 完整性、`test_g4f_provider` 的成功路径与异常路径、`detect_and_truncate` 的句级与滑动窗口重复检测、`ROUTE_PROMPTS_MAP` 路由注入行为，以及 `parse_peer_review_json` 的 JSON 解析、夹值、容错 fallback 全部边界条件。
 - **test_main_blackbox.py**：通过 Flask `test_client()` 以 HTTP 协议测试 `main.py` 暴露的全部对外 API 端点，包含互评触发条件、`peer_reviews` 字段存在性、互评 DTO key 集合（`{reviewer_provider, reviewer_model, score, comment}`）以及 `score` 类型为 `int` 的断言。
-- **test_main_graybox.py**：感知后端全局状态与线程池行为。测试内容包括排序契约、fallback 路径、`max_workers` 双重上限、`G4F_AVAILABLE` 降级响应，以及三 Provider 场景下 1 个失败时互评仅在 2 个成功者之间双向触发的行为（`TestPeerReviewPartialFailure`）。排序测试（`TestSortOrderInvariant`）在 setUp 中 mock `run_peer_review`，避免 2 个成功者触发真实网络调用。
+- **test_main_graybox.py**：感知后端全局状态与线程池行为。测试内容包括排序契约、fallback 路径、`max_workers` 双重上限、`G4F_AVAILABLE` 降级响应，以及三 Provider 场景下 1 个失败时互评仅在 2 个成功者之间双向触发的行为（`TestPeerReviewPartialFailure`）。排序测试（`TestSortOrderInvariant`）在 setUp 中 mock `run_peer_review`，避免 2 个成功者触发真实网络调用。新增 `TestPeerReviewPhaseRobustness`（3 个用例）：通过令 `PEER_REVIEW_PROMPTS_MAP.get` 在任务构建阶段抛出 `RuntimeError`，模拟互评阶段整体崩溃，断言接口仍返回 200、第一轮结果完整、`peer_reviews` 字段为空列表。
 - **test_auth_whitebox.py**：使用 `unittest.mock.patch` 绕过真实 Firebase 网络连接。测试内容包括 Werkzeug 密码哈希生成与校验，以及 `get_user_by_username` 和 `get_user_by_email` 两个函数在"用户存在"和"用户不存在"两个分支下的行为。
 - **test_auth_blackbox.py**：通过 Flask `test_client()` 测试 auth 蓝图的全部路由。测试内容包括登录成功后 `session['user_id']` 的写入与重定向、注册成功后 `session['is_guest']` 的清除、`/profile` 路由的未登录重定向以及已登录用户的正常访问。
 
 ```bash
-# 发现并运行 tests/ 目录下的全部测试（共 174 个用例，5 个测试文件）
+# 发现并运行 tests/ 目录下的全部测试（共 177 个用例，5 个测试文件）
 python -m unittest discover -s tests
 
 # 带详细输出运行
