@@ -177,7 +177,7 @@ class TestTestG4fProvider(unittest.TestCase):
             result = main.test_g4f_provider(mock_provider, 'ping', 'gpt-3.5-turbo')
 
         self.assertFalse(result['success'])
-        self.assertIn('系统正忙', result['error'])
+        self.assertIn('system is busy', result['error'])
 
     def test_rate_limit_error_shows_friendly_message(self):
         mock_provider = self._make_mock_provider('Yqcloud')
@@ -188,7 +188,37 @@ class TestTestG4fProvider(unittest.TestCase):
             result = main.test_g4f_provider(mock_provider, 'ping', 'gpt-3.5-turbo')
 
         self.assertFalse(result['success'])
-        self.assertIn('系统正忙', result['error'])
+        self.assertIn('system is busy', result['error'])
+
+    def test_content_policy_error_shows_friendly_message(self):
+        mock_provider = self._make_mock_provider('Yqcloud')
+        with patch('main.PROVIDER_MODELS_MAP', MOCK_PROVIDER_MODELS_MAP), \
+             patch('main.g4f') as mock_g4f:
+            mock_g4f.ChatCompletion.create.side_effect = Exception(
+                "Error 400: Error BAD_REQUEST: 400 Bad Request: azure-openai error: "
+                "The response was filtered due to the prompt triggering Azure OpenAI's "
+                "content management policy. Please modify your prompt and retry."
+            )
+            import main
+            result = main.test_g4f_provider(mock_provider, 'ping', 'gpt-3.5-turbo')
+
+        self.assertFalse(result['success'])
+        self.assertIn('content filter', result['error'])
+        self.assertNotIn('system is busy', result['error'])
+
+    def test_content_policy_error_takes_priority_over_network_wording(self):
+        mock_provider = self._make_mock_provider('Yqcloud')
+        with patch('main.PROVIDER_MODELS_MAP', MOCK_PROVIDER_MODELS_MAP), \
+             patch('main.g4f') as mock_g4f:
+            # "remote" (a network keyword) also appears alongside the content-filter
+            # phrasing; content-policy wording must win since retrying won't help.
+            mock_g4f.ChatCompletion.create.side_effect = Exception(
+                'remote server: blocked by content_filter'
+            )
+            import main
+            result = main.test_g4f_provider(mock_provider, 'ping', 'gpt-3.5-turbo')
+
+        self.assertIn('content filter', result['error'])
 
     def test_exception_response_time_still_set(self):
         mock_provider = self._make_mock_provider('Yqcloud')
@@ -273,14 +303,14 @@ class TestDetectAndTruncate(unittest.TestCase):
         sentence = 'This keeps repeating!'
         text = (sentence + ' ') * 3
         result = self.fn(text)
-        self.assertIn('...（因文本重复已被系统自动截断）', result)
+        self.assertIn('... (truncated automatically due to repeated content)', result)
 
     def test_sentence_truncation_preserves_first_two_occurrences(self):
         sentence = 'Repeat.'
         text = (sentence + ' ') * 4
         result = self.fn(text)
         self.assertEqual(result.count(sentence), 2)
-        self.assertIn('...（因文本重复已被系统自动截断）', result)
+        self.assertIn('... (truncated automatically due to repeated content)', result)
 
     def test_two_sentence_repetitions_do_not_trigger(self):
         text = 'Hello there! Hello there! This part is completely different.'
@@ -291,7 +321,7 @@ class TestDetectAndTruncate(unittest.TestCase):
         chunk = 'abcdefghij'
         text = chunk * 3 + 'extra content that is unique'
         result = self.fn(text)
-        self.assertIn('...（因文本重复已被系统自动截断）', result)
+        self.assertIn('... (truncated automatically due to repeated content)', result)
 
     def test_window_truncation_preserves_first_two_occurrences(self):
         chunk = 'abcdefghij'
@@ -310,7 +340,7 @@ class TestDetectAndTruncate(unittest.TestCase):
         import main
         with patch('main.SENSITIVE_KEYWORDS', ['forbidden_word']):
             result = main.detect_and_truncate('This text contains forbidden_word content.')
-        self.assertEqual(result, '内容涉及敏感信息，已拦截。')
+        self.assertEqual(result, 'Content contains sensitive information and has been blocked.')
 
 
 class TestRoutePromptsMap(unittest.TestCase):
@@ -402,7 +432,7 @@ class TestRunPeerReview(unittest.TestCase):
         result = main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
         self.assertEqual(mock_create.call_count, 1)
         mock_sleep.assert_not_called()
-        self.assertIn('点评失败', result['comment'])
+        self.assertIn('Review failed', result['comment'])
 
     @patch('main.time.sleep', return_value=None)
     @patch('main.random.uniform', return_value=0.5)
@@ -415,7 +445,33 @@ class TestRunPeerReview(unittest.TestCase):
         import main
         result = main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
         self.assertEqual(mock_create.call_count, 2)
-        self.assertIn('系统正忙', result['comment'])
+        self.assertIn('system is busy', result['comment'])
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    @patch('main.g4f.ChatCompletion.create')
+    def test_content_policy_error_does_not_retry_and_returns_friendly_comment(
+        self, mock_create, mock_rand, mock_sleep
+    ):
+        mock_create.side_effect = Exception(
+            "Error 400: azure-openai error: The response was filtered due to the "
+            "prompt triggering Azure OpenAI's content management policy."
+        )
+        import main
+        result = main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
+        self.assertEqual(mock_create.call_count, 1)
+        mock_sleep.assert_not_called()
+        self.assertIn('content filter', result['comment'])
+        self.assertNotIn('system is busy', result['comment'])
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    @patch('main.g4f.ChatCompletion.create')
+    def test_advisory_timeout_passed_to_g4f_is_25_seconds(self, mock_create, mock_rand, mock_sleep):
+        mock_create.return_value = '{"score": 88, "comment": "fine"}'
+        import main
+        main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
+        self.assertEqual(mock_create.call_args.kwargs['timeout'], 25)
 
     @patch('main.time.sleep', return_value=None)
     @patch('main.random.uniform', return_value=0.5)

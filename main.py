@@ -32,6 +32,14 @@ app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 from auth import auth_bp  # noqa: E402
 app.register_blueprint(auth_bp)
 
+from auth.db import (  # noqa: E402
+    save_chat_history,
+    get_chat_history_list,
+    delete_chat_history,
+    update_chat_history_title,
+    toggle_pin_chat_history,
+)
+
 
 # =========================
 # 初始化 g4f Provider
@@ -64,17 +72,17 @@ try:
     # aria         → 实战顾问：跳过铺垫、直接给1-2个可操作动作，200字
     # openai-fast  → 极速速答者：一句结论+一句理由，英文输出，100字内
     ROUTE_PROMPTS_MAP = {
-        ('Yqcloud', 'gpt-4'): '\n\n【系统提示：请立刻给出判断；你扮演严谨分析师角色，按"核心结论 → 关键依据 → 潜在风险或反思"三层结构快速作答，全文不超过 300 字。】',
-        ('Yqcloud', 'gpt-3.5-turbo'): '\n\n【系统提示：请立刻给出 TLDR；你扮演高效助手角色，先用一句话说最重要的结论，再补充最多两个关键点，用口语化中文作答，全文不超过 150 字，绝不废话。】',
-        ('OperaAria', 'aria'): '\n\n【系统提示：请立刻给出行动建议；你扮演互联网实战顾问角色，跳过背景铺垫，直接告诉用户"现在可以做哪 1-2 件事"，结合当下实际情境，全文不超过 200 字。】',
+        ('Yqcloud', 'gpt-4'): '\n\n[System: Respond immediately. You are a rigorous analyst. Answer quickly using a three-part structure: "Core conclusion -> Key evidence -> Potential risks or reflection." Keep the entire response under 300 words.]',
+        ('Yqcloud', 'gpt-3.5-turbo'): '\n\n[System: Give a TLDR immediately. You are an efficient assistant. State the single most important conclusion in one sentence first, then add up to two key points. Reply in a casual, conversational tone. Keep the entire response under 150 words. No filler.]',
+        ('OperaAria', 'aria'): '\n\n[System: Give actionable advice immediately. You are a hands-on consultant. Skip the background and tell the user directly "here are the 1-2 things you can do right now," tailored to the current situation. Keep the entire response under 200 words.]',
         ('PollinationsAI', 'openai-fast'): '\n\n[System: Reply immediately. You are a speed-first assistant. Give ONE sentence answer then ONE sentence reason. English only. Max 100 words. No preamble.]',
     }
 
     # 互评裁判提示词配置表：model → 裁判专属提示词前缀（要求输出 JSON 格式）
     PEER_REVIEW_PROMPTS_MAP = {
-        'gpt-4': '你现在是盲评裁判。请严谨审视以下匿名回答，挑出逻辑漏洞、事实错误或论证不充分之处。请严格按照以下 JSON 格式输出，不要包含任何其他文字：{"score": 分数(1-100的整数), "comment": "一句话犀利点评"}',
-        'gpt-3.5-turbo': '请迅速评估以下匿名回答的条理性和易读性。请严格按照以下 JSON 格式输出，不要包含任何其他文字：{"score": 分数(1-100的整数), "comment": "一句话效率至上的改稿意见"}',
-        'aria': '请从实用角度点评以下匿名回答，指出其接地气程度与可操作性。请严格按照以下 JSON 格式输出，不要包含任何其他文字：{"score": 分数(1-100的整数), "comment": "一句话大白话吐槽"}',
+        'gpt-4': 'You are now a blind review judge. Rigorously examine the following anonymous answer and point out any logical gaps, factual errors, or insufficiently supported arguments. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sharp sentence critique"}',
+        'gpt-3.5-turbo': 'Quickly assess the following anonymous answer for organization and readability. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one efficiency-focused sentence of editing feedback"}',
+        'aria': 'Review the following anonymous answer from a practical standpoint, noting how down-to-earth and actionable it is. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one blunt, plain-spoken sentence"}',
         'openai-fast': 'You are a blind reviewer. Rate the following answer for clarity and accuracy. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sharp sentence critique in English"}',
     }
 
@@ -146,6 +154,26 @@ def parse_peer_review_json(text):
 # 敏感词列表（当前为占位空列表，按需填充关键词即可生效）
 SENSITIVE_KEYWORDS = []
 
+# 网络/限流类错误关键词：命中时返回统一的"系统正忙"友好提示，而非原始异常文本
+NETWORK_ERROR_KEYWORDS = [
+    'timeout', 'timed out', 'connection', 'network', 'remote',
+    '502', '504', 'rate limit', 'too many requests', 'unavailable',
+    'ssl', 'broken pipe', 'connection reset',
+]
+
+# 互评阶段的网络类错误判定额外把 429 / queue-full 计入（重试耗尽后兜底文案用）
+PEER_REVIEW_NETWORK_ERROR_KEYWORDS = NETWORK_ERROR_KEYWORDS + ['429', 'queue']
+
+# 内容策略类错误关键词：命中时说明是 Provider 底层供应商（如 Azure OpenAI）自身的
+# 内容审查拦截了响应，重试无意义，需与网络类错误区分开单独给出友好提示
+CONTENT_POLICY_ERROR_KEYWORDS = [
+    'content management policy',
+    'content_filter',
+    'content filtering polic',
+    'response was filtered',
+    'responsible ai',
+]
+
 
 # ==================================================
 # 辅助函数：检测重复文本并截断，同时过滤敏感内容
@@ -153,7 +181,7 @@ SENSITIVE_KEYWORDS = []
 def detect_and_truncate(text):
     for kw in SENSITIVE_KEYWORDS:
         if kw in text:
-            return "内容涉及敏感信息，已拦截。"
+            return "Content contains sensitive information and has been blocked."
 
     n = len(text)
     if n < 24:
@@ -169,7 +197,7 @@ def detect_and_truncate(text):
             second_pos = text.find(parts[i + 1], first_pos + len(parts[i]))
             third_pos = text.find(parts[i + 2], second_pos + len(parts[i + 1]))
             if third_pos != -1:
-                return text[:third_pos] + '...（因文本重复已被系统自动截断）'
+                return text[:third_pos] + '... (truncated automatically due to repeated content)'
 
     # --- 滑动窗口短串重复检测（窗口 8~50 字符，覆盖短句/词组抽风）---
     for win in range(8, min(51, n // 3 + 1)):
@@ -177,7 +205,7 @@ def detect_and_truncate(text):
             chunk = text[i:i + win]
             if (text[i + win:i + win * 2] == chunk and
                     text[i + win * 2:i + win * 3] == chunk):
-                return text[:i + win * 2] + '...（因文本重复已被系统自动截断）'
+                return text[:i + win * 2] + '... (truncated automatically due to repeated content)'
 
     return text
 
@@ -218,13 +246,10 @@ def test_g4f_provider(provider, prompt, requested_model=None):
 
     except Exception as e:
         err_str = str(e).lower()
-        network_keywords = [
-            'timeout', 'timed out', 'connection', 'network', 'remote',
-            '502', '504', 'rate limit', 'too many requests', 'unavailable',
-            'ssl', 'broken pipe', 'connection reset',
-        ]
-        if any(kw in err_str for kw in network_keywords):
-            result['error'] = '系统正忙，正在努力重新连接中，请稍后再试。'
+        if any(kw in err_str for kw in CONTENT_POLICY_ERROR_KEYWORDS):
+            result['error'] = "This provider's content filter blocked the response. Try rephrasing your prompt."
+        elif any(kw in err_str for kw in NETWORK_ERROR_KEYWORDS):
+            result['error'] = 'The system is busy and trying to reconnect. Please try again shortly.'
         else:
             result['error'] = str(e)
 
@@ -247,11 +272,6 @@ def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
         'score': 80,
         'comment': '',
     }
-    network_keywords = [
-        'timeout', 'timed out', 'connection', 'network', 'remote',
-        '429', '502', '504', 'rate limit', 'too many requests', 'unavailable',
-        'queue', 'ssl', 'broken pipe', 'connection reset',
-    ]
     last_exc = None
     for attempt in range(2):
         try:
@@ -259,7 +279,7 @@ def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
                 model=reviewer_model,
                 messages=[{"role": "user", "content": review_prompt}],
                 provider=reviewer_provider,
-                timeout=15
+                timeout=25
             )
             score, comment = parse_peer_review_json(detect_and_truncate(str(response)))
             review_result['score'] = score
@@ -279,11 +299,24 @@ def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
                 continue
             break
     err_str = str(last_exc).lower()
-    if any(kw in err_str for kw in network_keywords):
-        review_result['comment'] = '系统正忙，正在努力重新连接中，请稍后再试。'
+    if any(kw in err_str for kw in CONTENT_POLICY_ERROR_KEYWORDS):
+        review_result['comment'] = "This provider's content filter blocked the review. Try rephrasing your prompt."
+    elif any(kw in err_str for kw in PEER_REVIEW_NETWORK_ERROR_KEYWORDS):
+        review_result['comment'] = 'The system is busy and trying to reconnect. Please try again shortly.'
     else:
-        review_result['comment'] = f'点评失败：{str(last_exc)}'
+        review_result['comment'] = f'Review failed: {str(last_exc)}'
     return review_result
+
+
+# ==================================================
+# 辅助函数：校验对话历史路由的登录状态
+# 未登录（含游客）一律拒绝，返回 (None, 401 响应)；已登录返回 (user_id, None)
+# ==================================================
+def _get_authenticated_user_id():
+    user_id = session.get('user_id')
+    if not user_id:
+        return None, (jsonify({'error': 'Authentication required'}), 401)
+    return user_id, None
 
 
 # ==================================================
@@ -433,7 +466,7 @@ def compare_providers():
                     fallback_model = determine_actual_model(name, requested_model)
                     fallback_result = init_result_object(name, fallback_model)
                     if isinstance(e, TimeoutError):
-                        fallback_result['error'] = '系统正忙，正在努力重新连接中，请稍后再试。'
+                        fallback_result['error'] = 'The system is busy and trying to reconnect. Please try again shortly.'
                         logger.warning(f"Provider {name} timed out after 21s")
                     else:
                         fallback_result['error'] = f'Execution error: {str(e)}'
@@ -463,10 +496,10 @@ def compare_providers():
                         reviewer_model = result_b['model']
                         judge_prefix = PEER_REVIEW_PROMPTS_MAP.get(
                             reviewer_model,
-                            '请评估以下回答的质量，指出优点与不足。'
+                            'Please evaluate the quality of the following answer, noting its strengths and weaknesses.'
                         )
                         review_prompt = (
-                            f"{judge_prefix}\n\n需要点评的匿名文本如下：\n{result_a['response']}"
+                            f"{judge_prefix}\n\nHere is the anonymous text to review:\n{result_a['response']}"
                         )
                         peer_review_tasks.append(
                             (reviewer_provider, reviewer_model, review_prompt, result_a['provider'])
@@ -481,7 +514,7 @@ def compare_providers():
                     }
                     for future, target_provider in peer_futures.items():
                         try:
-                            review_item = future.result(timeout=25)
+                            review_item = future.result(timeout=32)
                             for r in results:
                                 if r['provider'] == target_provider:
                                     r['peer_reviews'].append(review_item)
@@ -492,7 +525,7 @@ def compare_providers():
                             )
                         except TimeoutError:
                             logger.warning(
-                                f"Peer review for {target_provider} timed out after 25s"
+                                f"Peer review for {target_provider} timed out after 32s"
                             )
                         except Exception as e:
                             logger.error(
@@ -514,17 +547,28 @@ def compare_providers():
 
         successful_count = sum(1 for r in results if r['success'])
 
+        # 已登录用户持久化对话历史；游客不落库。持久化失败不影响本次对比结果返回
+        history_id = None
+        if session.get('user_id'):
+            try:
+                saved = save_chat_history(session['user_id'], prompt, results)
+                if saved:
+                    history_id = saved['id']
+            except Exception as e:
+                logger.error(f"Failed to save chat history: {e}", exc_info=True)
+
         return jsonify({
             'prompt': prompt,
             'total_providers': len(results),
             'successful_providers': successful_count,
-            'results': results
+            'results': results,
+            'history_id': history_id
         })
 
     except Exception as e:
         logger.error(f"Error in compare_providers: {str(e)}", exc_info=True)
         return jsonify({
-            'error': '服务暂时不可用，请稍后重试。'
+            'error': 'Service temporarily unavailable. Please try again later.'
         }), 500
 
 
@@ -568,7 +612,115 @@ def test_single_provider():
     except Exception as e:
         logger.error(f"Error in test_single_provider: {str(e)}", exc_info=True)
         return jsonify({
-            'error': '服务暂时不可用，请稍后重试。'
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
+# 对话历史：分页查询
+# GET /api/history?page=1&limit=20
+# ==================================================
+@app.route('/api/history', methods=['GET'])
+def get_history():
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        page = request.args.get('page', 1, type=int) or 1
+        limit = request.args.get('limit', 20, type=int) or 20
+        page = max(page, 1)
+        limit = max(min(limit, 100), 1)
+        offset = (page - 1) * limit
+
+        history_list = get_chat_history_list(user_id, limit=limit, offset=offset)
+        return jsonify({
+            'history': history_list,
+            'page': page,
+            'limit': limit
+        })
+
+    except Exception as e:
+        logger.error(f"Error in get_history: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
+# 对话历史：重命名
+# PATCH /api/history/<history_id>/title
+# ==================================================
+@app.route('/api/history/<history_id>/title', methods=['PATCH'])
+def update_history_title(history_id):
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        new_title = data.get('new_title', '').strip()
+        if not new_title:
+            return jsonify({'error': 'new_title is required'}), 400
+
+        success = update_chat_history_title(user_id, history_id, new_title)
+        if not success:
+            return jsonify({'error': 'History entry not found'}), 404
+
+        return jsonify({'status': 'ok'})
+
+    except Exception as e:
+        logger.error(f"Error in update_history_title: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
+# 对话历史：删除
+# DELETE /api/history/<history_id>
+# ==================================================
+@app.route('/api/history/<history_id>', methods=['DELETE'])
+def delete_history(history_id):
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        success = delete_chat_history(user_id, history_id)
+        if not success:
+            return jsonify({'error': 'History entry not found'}), 404
+
+        return jsonify({'status': 'ok'})
+
+    except Exception as e:
+        logger.error(f"Error in delete_history: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
+# 对话历史：切换置顶状态
+# POST /api/history/<history_id>/toggle-pin
+# ==================================================
+@app.route('/api/history/<history_id>/toggle-pin', methods=['POST'])
+def toggle_history_pin(history_id):
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        new_pinned = toggle_pin_chat_history(user_id, history_id)
+        if new_pinned is None:
+            return jsonify({'error': 'History entry not found'}), 404
+
+        return jsonify({'is_pinned': new_pinned})
+
+    except Exception as e:
+        logger.error(f"Error in toggle_history_pin: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
         }), 500
 
 

@@ -554,7 +554,7 @@ class TestTestSingleRobustness(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 500)
         data = json.loads(response.data)
-        self.assertIn('服务暂时不可用', data['error'])
+        self.assertIn('Service temporarily unavailable', data['error'])
 
 
 # ============================================================
@@ -582,6 +582,119 @@ class TestHealthConfigFlags(unittest.TestCase):
             response = self.client.get('/health')
         data = json.loads(response.data)
         self.assertFalse(data['peer_review_rules_loaded'])
+
+
+# ============================================================
+# 9. 对话历史持久化健壮性测试
+# save_chat_history 的调用被独立 try-except 包裹，任何崩溃
+# 都不应影响 /api/compare 本次对比结果的正常返回。
+# ============================================================
+@unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
+class TestSaveHistoryRobustness(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def _post_compare_as_user(self, user_id='uid1'):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = user_id
+            payload = {'prompt': 'Hello', 'providers': ['Yqcloud']}
+            return client.post(
+                '/api/compare', data=json.dumps(payload), content_type='application/json'
+            )
+
+    @patch('main.save_chat_history', side_effect=RuntimeError('firestore down'))
+    @patch('main.g4f.ChatCompletion.create')
+    def test_save_failure_does_not_break_compare_response(self, mock_create, mock_save):
+        mock_create.return_value = 'Mock response'
+        response = self._post_compare_as_user()
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertIn('results', data)
+        self.assertGreater(len(data['results']), 0)
+
+    @patch('main.save_chat_history', side_effect=RuntimeError('firestore down'))
+    @patch('main.g4f.ChatCompletion.create')
+    def test_save_failure_leaves_history_id_null(self, mock_create, mock_save):
+        mock_create.return_value = 'Mock response'
+        response = self._post_compare_as_user()
+        data = json.loads(response.data)
+        self.assertIsNone(data['history_id'])
+
+    @patch('main.save_chat_history', return_value=None)
+    @patch('main.g4f.ChatCompletion.create')
+    def test_save_returning_none_leaves_history_id_null(self, mock_create, mock_save):
+        mock_create.return_value = 'Mock response'
+        response = self._post_compare_as_user()
+        data = json.loads(response.data)
+        self.assertIsNone(data['history_id'])
+
+
+# ============================================================
+# 8. 互评阶段超时时长回归测试（2026-07-03）
+# 修复 Yqcloud 等较慢 Provider 在互评阶段被误判超时的问题：
+# run_peer_review 内部 advisory timeout 从 15s 提升到 25s，
+# 外层 future.result 的等待上限同步从 25s 提升到 32s。
+# ============================================================
+@unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
+class TestPeerReviewOuterTimeoutValue(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+
+    def _make_two_providers(self):
+        p1 = MagicMock(); p1.__name__ = 'ProvA'
+        p2 = MagicMock(); p2.__name__ = 'ProvB'
+        return [p1, p2]
+
+    def test_peer_review_future_result_waits_up_to_32_seconds(self):
+        """future.result() for the peer review stage must be called with timeout=32,
+        not the old 25, so slower providers get the extra advisory-timeout headroom."""
+        providers = self._make_two_providers()
+        original_result = concurrent.futures.Future.result
+        captured_timeouts = []
+
+        def spy_result(self_future, timeout=None):
+            captured_timeouts.append(timeout)
+            return original_result(self_future, timeout=timeout)
+
+        with patch('main.g4f.ChatCompletion.create', return_value='ok response'), \
+             patch('main.G4F_PROVIDERS', providers), \
+             patch('main.PROVIDER_MODELS_MAP', {'ProvA': ['gpt-3.5-turbo'], 'ProvB': ['aria']}), \
+             patch('main.ROUTE_PROMPTS_MAP', {}), \
+             patch.object(concurrent.futures.Future, 'result', spy_result):
+            response = self.client.post(
+                '/api/compare',
+                data=json.dumps({'prompt': 'test', 'providers': ['ProvA', 'ProvB']}),
+                content_type='application/json'
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(32, captured_timeouts)
+        self.assertNotIn(25, captured_timeouts)
+
+    def test_peer_review_timeout_error_does_not_crash_and_leaves_that_review_missing(self):
+        """A simulated TimeoutError from run_peer_review must be caught per-future;
+        the route still returns 200 and first-round results stay intact."""
+        providers = self._make_two_providers()
+        with patch('main.g4f.ChatCompletion.create', return_value='ok response'), \
+             patch('main.G4F_PROVIDERS', providers), \
+             patch('main.PROVIDER_MODELS_MAP', {'ProvA': ['gpt-3.5-turbo'], 'ProvB': ['aria']}), \
+             patch('main.ROUTE_PROMPTS_MAP', {}), \
+             patch('main.run_peer_review', side_effect=concurrent.futures.TimeoutError('simulated')):
+            response = self.client.post(
+                '/api/compare',
+                data=json.dumps({'prompt': 'test', 'providers': ['ProvA', 'ProvB']}),
+                content_type='application/json'
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        for result in data['results']:
+            self.assertTrue(result['success'])
+            self.assertEqual(result['peer_reviews'], [])
 
 
 if __name__ == '__main__':

@@ -11,14 +11,30 @@
             box-sizing: border-box;
         }
 
+        :root {
+            /* 页面全局缩放比例，与下方 body 的 zoom 保持同一个变量，避免两处数值分叉 */
+            --page-zoom: 0.8;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background: #fbfbfc; /* 极轻薄的冷调底色 */
-            min-height: 100vh;
             color: #09110e; /* 带有绿意底蕴的深邃暗墨色 */
 
+            /* body 撑满视口高度并纵向排列 nav/guest-banner/app-layout，
+               让 .app-layout 用 flex:1 吃掉剩余高度，.left-sidebar 才能在结果区为空、
+               页面本身矮于视口时依然铺满到视口底部，而不是只跟 .main-content 的内容高度对齐。
+               `zoom` 是非标准的渲染期缩放：一个 min-height:100vh 的盒子套上 zoom:0.8 后，
+               视觉上只会占到 100vh * 0.8 的高度（vh 始终按真实视口计算，不会跟着 zoom 一起放大），
+               余下的 20% 视口高度会露出 body 背后的空白，且与 flex:1 的效果无关、无法通过调整
+               flex 本身修复。因此这里改用 calc(100vh / var(--page-zoom))：预先把 min-height
+               放大 1/0.8 倍，缩放后刚好还原成 100vh，从而与 flex:1 配合真正铺满到视口底部。 */
+            min-height: calc(100vh / var(--page-zoom));
+            display: flex;
+            flex-direction: column;
+
             /* 在这里添加下面这行代码，即可实现全屏 80% 缩放 */
-            zoom: 0.8;
+            zoom: var(--page-zoom);
         }
 
         /* ---- Navbar ---- */
@@ -40,12 +56,41 @@
             align-items: center;
         }
 
+        .nav-left {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
         .nav-logo {
             font-size: 1.35rem;
             font-weight: 800;
             color: #09110e;
             text-decoration: none;
             letter-spacing: -0.04em; /* 紧凑的高级字距 */
+        }
+
+        /* 汉堡按钮：桌面端隐藏，仅在 <=520px 的移动端断点显示（见文件底部媒体查询） */
+        .hamburger-btn {
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            gap: 4px;
+            width: 30px;
+            height: 30px;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            padding: 4px;
+            flex-shrink: 0;
+        }
+
+        .hamburger-btn span {
+            display: block;
+            height: 2px;
+            width: 100%;
+            background: #09110e;
+            border-radius: 2px;
         }
 
         .nav-links {
@@ -115,6 +160,339 @@
 
         .guest-banner a:hover {
             text-decoration: underline;
+        }
+
+        /* ---- Two-column app layout (Sidebar + Main content) ---- */
+        .app-layout {
+            display: flex;
+            align-items: stretch;
+            flex: 1; /* 吃掉 body 剩余高度，让空结果区时侧边栏也能铺满到视口底部 */
+        }
+
+        .left-sidebar {
+            width: 260px;
+            flex-shrink: 0;
+            background: #171717;
+            color: #ececec;
+            display: flex;
+            flex-direction: column;
+            padding: 16px 12px;
+            box-sizing: border-box;
+        }
+
+        .main-content {
+            flex: 1;
+            min-width: 0; /* 允许内部长内容正常收缩，避免撑破 flex 布局 */
+        }
+
+        .sidebar-top {
+            margin-bottom: 8px;
+        }
+
+        .new-chat-btn {
+            width: 100%;
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #ececec;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: left;
+            transition: background-color 0.15s ease;
+        }
+
+        .new-chat-btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .sidebar-section-label {
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #8e8e8e;
+            padding: 14px 10px 6px;
+        }
+
+        .sidebar-recents {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        /* ---- Sidebar skeleton (loading placeholder) ---- */
+        .sidebar-skeleton {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 4px 10px;
+        }
+
+        .skeleton-line {
+            height: 14px;
+            border-radius: 4px;
+            background: linear-gradient(90deg,
+                rgba(255, 255, 255, 0.06) 25%,
+                rgba(255, 255, 255, 0.14) 37%,
+                rgba(255, 255, 255, 0.06) 63%);
+            background-size: 400% 100%;
+            animation: skeleton-loading 1.4s ease infinite;
+        }
+
+        .skeleton-line.short {
+            width: 60%;
+        }
+
+        @keyframes skeleton-loading {
+            0% { background-position: 100% 50%; }
+            100% { background-position: 0 50%; }
+        }
+
+        /* ---- Recents: time-grouped list ---- */
+        .history-group-label {
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #8e8e8e;
+            padding: 14px 10px 6px;
+        }
+
+        .history-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background-color 0.15s ease;
+        }
+
+        .history-item:hover,
+        .history-item:focus-within {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .history-item-title {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 0.85rem;
+            color: #ececec;
+        }
+
+        /* Right-hand cluster of a history row: the always-hidden-until-hover action group
+           plus (for pinned items) the persistent pin indicator that sits outside it. A
+           dedicated wrapper keeps `.history-item`'s title/right-cluster two-column layout
+           intact regardless of which pieces are present inside the cluster. */
+        .history-item-right {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex-shrink: 0;
+        }
+
+        /* 默认只显示文字，操作图标透明且轻微右偏；hover/focus 时平滑淡入并归位。这组只包含
+           "点击去 Pin"（未置顶时）、重命名、删除——已置顶状态的图标不在这组里，见 .pin-indicator。 */
+        .history-item-actions {
+            display: flex;
+            gap: 2px;
+            flex-shrink: 0;
+            opacity: 0;
+            transform: translateX(4px);
+            transition: opacity 0.15s ease, transform 0.15s ease;
+        }
+
+        .history-item:hover .history-item-actions,
+        .history-item:focus-within .history-item-actions {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        .history-action-btn {
+            background: transparent;
+            border: none;
+            color: #b4b4b4;
+            width: 22px;
+            height: 22px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.15s ease, color 0.15s ease;
+        }
+
+        .history-action-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            color: #ffffff;
+        }
+
+        .history-action-btn.pin-btn.is-pinned {
+            color: #06c167;
+        }
+
+        /* Persistent pin indicator (Gemini-style): rendered only when an item is pinned,
+           sits outside .history-item-actions so it stays visible at all times at a fixed
+           rightmost slot instead of only appearing on hover like the other action icons.
+           Clicking it again unpins (same data-action="pin" handler, toggles either way). */
+        .pin-indicator {
+            opacity: 1;
+        }
+
+        .sidebar-empty-state {
+            color: #8e8e8e;
+            font-size: 0.8rem;
+            padding: 10px;
+            line-height: 1.5;
+        }
+
+        /* ---- Inline rename input (replaces .history-item-title while editing) ---- */
+        .history-rename-input {
+            flex: 1;
+            min-width: 0;
+            font-size: 0.85rem;
+            font-family: inherit;
+            color: #1a1a1a;
+            background: #ffffff;
+            border: 1px solid #06c167;
+            border-radius: 4px;
+            padding: 2px 6px;
+            outline: none;
+        }
+
+        /* The global `input:focus` rule (below) has higher specificity than a bare class
+           selector and would otherwise force background-color:#ffffff while leaving this
+           input's text color unset, making the near-white default text unreadable the
+           instant it's focused (which happens immediately on creation). Pin both explicitly
+           here so the text stays legible in the focused state too. */
+        .history-rename-input:focus {
+            color: #1a1a1a;
+            background: #ffffff;
+            border-color: #06c167;
+            box-shadow: none;
+        }
+
+        /* ---- Toast for failed optimistic history actions ---- */
+        .history-error-toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #2a1414;
+            color: #ff9d9d;
+            border: 1px solid rgba(255, 100, 100, 0.4);
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+            z-index: 400;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .history-error-toast.visible {
+            opacity: 1;
+        }
+
+        /* ---- Delete-confirmation modal (replaces the native `confirm()` popup for
+           deleting a history entry) ---- */
+        .confirm-modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.55);
+            z-index: 500;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .confirm-modal-overlay.visible {
+            display: flex;
+        }
+
+        .confirm-modal {
+            background: #171717;
+            color: #ececec;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 24px;
+            width: 90%;
+            max-width: 360px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+
+        .confirm-modal-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        .confirm-modal-body {
+            font-size: 0.9rem;
+            color: #c7c7c7;
+            line-height: 1.5;
+            margin-bottom: 22px;
+            word-break: break-word;
+        }
+
+        .confirm-modal-body strong {
+            color: #ececec;
+            font-weight: 700;
+        }
+
+        .confirm-modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        .confirm-modal-btn {
+            padding: 8px 18px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            cursor: pointer;
+            border: none;
+            transition: background-color 0.15s ease;
+        }
+
+        .confirm-modal-btn-cancel {
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #ececec;
+        }
+
+        .confirm-modal-btn-cancel:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .confirm-modal-btn-delete {
+            background: #d93b3b;
+            color: #ffffff;
+        }
+
+        .confirm-modal-btn-delete:hover {
+            background: #c22f2f;
+        }
+
+        /* ---- Mobile sidebar overlay (hidden on desktop; used only <=520px) ---- */
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.4);
+            z-index: 250;
+        }
+
+        .sidebar-overlay.visible {
+            display: block;
         }
 
         /* ---- Main content ---- */
@@ -309,12 +687,63 @@
             /* 核心修改：删掉可能导致 Chrome 渲染尺寸抖动的 box-shadow */
         }
 
+        /* 选中态：整卡边框沿用 hover 同款绿色，由 JS 在 toggle 时同步添加/移除
+           is-checked class（不依赖 :has() 选择器，避免旧版浏览器兼容问题）。 */
+        .provider-checkbox.is-checked {
+            border-color: #06c167;
+        }
+
+        /* <input> 是替换元素（replaced element），规范上不保证支持 ::before/::after，
+           多个浏览器下自绘的勾选对勾会残缺（只剩一条边，看起来像斜线）。
+           改为彻底隐藏原生 input，用紧跟其后的 <span class="checkbox-box"> 承载
+           所有视觉样式，::after 只作用在普通 span 上，跨浏览器稳定渲染。 */
         .provider-checkbox input {
-            width: 16px !important;
-            height: 16px !important;
+            position: absolute;
+            width: 0;
+            height: 0;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .checkbox-box {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            min-width: 18px;
+            min-height: 18px;
             margin-right: 12px;
-            accent-color: #06c167;
+            border: 2px solid #cfd8d4;
+            border-radius: 2px;
+            background: #ffffff;
+            box-sizing: border-box;
             flex-shrink: 0; /* 强制不允许 Chrome 挤压这个勾选框 */
+            transition: background-color 0.1s ease, border-color 0.1s ease;
+        }
+
+        .provider-trigger:checked + .checkbox-box {
+            background: #06c167;
+            border-color: #06c167;
+        }
+
+        .checkbox-box::after {
+            content: '';
+            display: block;
+            width: 5px;
+            height: 10px;
+            border: solid #1a1a1a;
+            border-width: 0 3px 3px 0;
+            transform: rotate(45deg);
+            margin-top: -3px; /* 抵消对勾旋转后视觉重心偏下的错觉，使其在正方形内真正居中 */
+            opacity: 0;
+        }
+
+        .provider-trigger:checked + .checkbox-box::after {
+            opacity: 1;
         }
 
         .provider-meta {
@@ -745,6 +1174,26 @@
             .header-short {
                 display: inline;
             }
+
+            /* ---- Mobile sidebar: hidden by default, slides in as an overlay drawer ---- */
+            .hamburger-btn {
+                display: flex;
+            }
+
+            .left-sidebar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                height: 100vh;
+                z-index: 300;
+                transform: translateX(-100%);
+                transition: transform 0.25s ease;
+                box-shadow: 4px 0 24px rgba(0, 0, 0, 0.25);
+            }
+
+            .left-sidebar.sidebar-open {
+                transform: translateX(0);
+            }
         }
 </style>
 </head>
@@ -752,9 +1201,14 @@
 
     <nav class="navbar">
         <div class="nav-container">
-            <a href="{{ url_for('index') }}" class="nav-logo">
-                <span class="logo-full">LLM Aggregator</span><span class="logo-short">G4F</span>
-            </a>
+            <div class="nav-left">
+                <button type="button" class="hamburger-btn" id="hamburgerBtn" aria-label="Toggle sidebar">
+                    <span></span><span></span><span></span>
+                </button>
+                <a href="{{ url_for('index') }}" class="nav-logo">
+                    <span class="logo-full">LLM Aggregator</span><span class="logo-short">G4F</span>
+                </a>
+            </div>
             <ul class="nav-links">
                 {% if session.user_id %}
                     <li><span class="nav-welcome">Welcome, {{ session.username }}</span></li>
@@ -771,12 +1225,30 @@
 
     {% if session.is_guest and not session.user_id %}
     <div class="guest-banner">
-        您当前正在以游客身份体验，数据无法保存。
-        <a href="{{ url_for('auth.login') }}">登录</a> 或
-        <a href="{{ url_for('auth.register') }}">注册</a> 以保存您的历史记录。
+        You are currently browsing as a guest and your data will not be saved.
+        <a href="{{ url_for('auth.login') }}">Log in</a> or
+        <a href="{{ url_for('auth.register') }}">sign up</a> to save your history.
     </div>
     {% endif %}
 
+    <div class="app-layout">
+        <aside class="left-sidebar" id="leftSidebar">
+            <div class="sidebar-top">
+                <button type="button" class="new-chat-btn" id="newChatBtn">+ New Chat</button>
+            </div>
+            <div class="sidebar-section-label">Recents</div>
+            <div class="sidebar-recents" id="sidebarRecents">
+                <div class="sidebar-skeleton" id="sidebarSkeleton">
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line short"></div>
+                </div>
+            </div>
+        </aside>
+        <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+        <div class="main-content">
     <div class="container">
 
         {% with messages = get_flashed_messages(with_categories=true) %}
@@ -812,6 +1284,7 @@
                             {% for p in providers %}
                                 <label class="provider-checkbox">
                                     <input type="checkbox" name="providers" value="{{ p.name }}" class="provider-trigger">
+                                    <span class="checkbox-box"></span>
                                     <div class="provider-meta">
                                         <span>{{ p.name }}</span>
                                         <small>Default: {{ p.default_model }}</small>
@@ -861,6 +1334,8 @@
             <div id="resultsContainer"></div>
         </div>
     </div>
+        </div>
+    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
     <script>
@@ -881,6 +1356,36 @@
         });
 
         const providerModelsMap = {{ provider_models_json | default({}) | tojson | safe }};
+        const isLoggedIn = {{ 'true' if session.user_id else 'false' }};
+        // Guest identity: history is never persisted server-side, so all CRUD operations
+        // (add/pin/rename/delete) happen against this in-memory array only, and are lost
+        // when the tab closes. Kept on window so it survives across script re-reads (bfcache).
+        window.guestHistory = window.guestHistory || [];
+
+        // ---- Mobile sidebar toggle (hamburger + backdrop) ----
+        const hamburgerBtn = document.getElementById('hamburgerBtn');
+        const leftSidebar = document.getElementById('leftSidebar');
+        const sidebarOverlay = document.getElementById('sidebarOverlay');
+
+        function openSidebar() {
+            leftSidebar.classList.add('sidebar-open');
+            sidebarOverlay.classList.add('visible');
+        }
+
+        function closeSidebar() {
+            leftSidebar.classList.remove('sidebar-open');
+            sidebarOverlay.classList.remove('visible');
+        }
+
+        hamburgerBtn.addEventListener('click', () => {
+            if (leftSidebar.classList.contains('sidebar-open')) {
+                closeSidebar();
+            } else {
+                openSidebar();
+            }
+        });
+
+        sidebarOverlay.addEventListener('click', closeSidebar);
 
         const providerTriggers = document.querySelectorAll('.provider-trigger');
         const modelSelect = document.getElementById('modelSelect');
@@ -992,10 +1497,20 @@
        let debounceTimer;
         const providerCards = document.querySelectorAll('.provider-checkbox');
 
+        // 让整卡边框（.is-checked）与 input.checked 状态保持同步，
+        // 覆盖点击、键盘操作（Tab+Space）以及浏览器 bfcache 回退恢复勾选态等所有路径。
+        function syncCardChecked(card) {
+            const checkbox = card.querySelector('.provider-trigger');
+            card.classList.toggle('is-checked', checkbox.checked);
+        }
+
         providerCards.forEach(card => {
+            syncCardChecked(card); // 初始状态同步（含 bfcache 恢复的已勾选情况）
+
             card.addEventListener('click', function(e) {
                 // 如果用户直接点到了 input 勾选框本身，让它正常走，不做干涉
                 if (e.target.tagName === 'INPUT') {
+                    syncCardChecked(this);
                     clearTimeout(debounceTimer);
                     debounceTimer = setTimeout(() => {
                         updateModelDropdown();
@@ -1005,9 +1520,10 @@
 
                 // 如果用户点的是大方块的其他区域，手动切换勾选状态
                 e.preventDefault(); // 核心：干掉 Chrome 默认的 label 投射行为，防止二次触发
-                
+
                 const checkbox = this.querySelector('.provider-trigger');
                 checkbox.checked = !checkbox.checked;
+                syncCardChecked(this);
 
                 // 手动触发一次刷新
                 clearTimeout(debounceTimer);
@@ -1071,6 +1587,22 @@
                 }
 
                 displayResults(data);
+
+                if (data.history_id) {
+                    loadSidebarHistory();
+                } else if (!isLoggedIn) {
+                    // Guests never get a history_id back (nothing is persisted server-side),
+                    // so simulate the same "new chat lands in Recents" UX purely in memory.
+                    window.guestHistory.unshift({
+                        id: 'guest-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                        title: prompt.length > 15 ? prompt.slice(0, 15) + '...' : prompt,
+                        prompt: prompt,
+                        results: data.results,
+                        created_at: new Date().toISOString(),
+                        is_pinned: false
+                    });
+                    loadSidebarHistory();
+                }
             } catch (error) {
                 console.error('Error comparing providers:', error);
                 alert('Error comparing providers. Please try again.');
@@ -1083,6 +1615,8 @@
             document.getElementById('results').style.display = 'none';
             document.getElementById('prompt').value = '';
             providerTriggers.forEach(cb => cb.checked = false);
+            providerCards.forEach(syncCardChecked);
+            modelSelect.value = '';
             updateModelDropdown();
         });
 
@@ -1105,6 +1639,432 @@
                 .replace(/"/g, '&quot;');
         }
 
+        // ==================================================
+        // Sidebar: Recents history list (Today / Yesterday / Previous 7 Days / Older)
+        // ==================================================
+        function formatGroupLabel(createdAt) {
+            const date = new Date(createdAt);
+            if (isNaN(date.getTime())) return 'Older';
+
+            const now = new Date();
+            const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const startOfYesterday = new Date(startOfToday);
+            startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+            const sevenDaysAgo = new Date(startOfToday);
+            sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+            if (date >= startOfToday) return 'Today';
+            if (date >= startOfYesterday) return 'Yesterday';
+            if (date >= sevenDaysAgo) return 'Previous 7 Days';
+            return 'Older';
+        }
+
+        function groupHistoryByDate(items) {
+            const order = ['Today', 'Yesterday', 'Previous 7 Days', 'Older'];
+            const buckets = {};
+            items.forEach(item => {
+                const label = formatGroupLabel(item.created_at);
+                if (!buckets[label]) buckets[label] = [];
+                buckets[label].push(item);
+            });
+            return order
+                .filter(label => buckets[label] && buckets[label].length > 0)
+                .map(label => ({ label, items: buckets[label] }));
+        }
+
+        function renderHistoryItem(item) {
+            const isPinned = !!item.is_pinned;
+            const safeId = escapeHtml(item.id);
+            const safeTitle = escapeHtml(item.title || '');
+            // Gemini-style pin affordance: unpinned items get a hover-only pin button inside
+            // the regular action group (same as rename/delete); pinned items instead get a
+            // persistent, always-visible pin indicator outside that group (.pin-indicator,
+            // see CSS) so pinned state is visible at a glance without hovering, and clicking
+            // it again unpins. Never render both for the same item.
+            const pinButton = isPinned
+                ? ''
+                : `<button type="button" class="history-action-btn pin-btn" title="Pin" data-action="pin">📌</button>`;
+            const pinIndicator = isPinned
+                ? `<button type="button" class="history-action-btn pin-btn pin-indicator is-pinned" title="Unpin" data-action="pin">📌</button>`
+                : '';
+            return `
+                <div class="history-item" data-id="${safeId}">
+                    <span class="history-item-title" title="${safeTitle}">${safeTitle}</span>
+                    <div class="history-item-right">
+                        <div class="history-item-actions">
+                            ${pinButton}
+                            <button type="button" class="history-action-btn edit-btn" title="Rename" data-action="rename">✏️</button>
+                            <button type="button" class="history-action-btn delete-btn" title="Delete" data-action="delete">🗑️</button>
+                        </div>
+                        ${pinIndicator}
+                    </div>
+                </div>`;
+        }
+
+        function renderHistoryGroups(groups) {
+            if (groups.length === 0) {
+                return '<div class="sidebar-empty-state">No conversations yet.</div>';
+            }
+            return groups.map(g => `
+                <div class="history-group">
+                    <div class="history-group-label">${escapeHtml(g.label)}</div>
+                    ${g.items.map(renderHistoryItem).join('')}
+                </div>
+            `).join('');
+        }
+
+        // Backing store for whatever is currently rendered in #sidebarRecents: either the
+        // last page fetched from /api/history (logged-in) or window.guestHistory itself
+        // (guest — same array reference, so in-place mutations here are the "save").
+        let currentHistoryItems = [];
+
+        // Mirrors the backend's get_chat_history_list ordering on a copy, so a local pin/
+        // unpin toggle actually moves the item instead of just flipping its icon in place.
+        // Returns a new array — never mutates currentHistoryItems / window.guestHistory,
+        // whose order must stay insertion order.
+        //
+        // Pinned items form a block ahead of unpinned ones. Within the pinned block, order
+        // is by pinned_at ascending — i.e. by *when each item was pinned*, oldest pin first
+        // — so the first thing you pin stays on top and each later pin lands below it,
+        // instead of every new pin displacing the previous one to the top (2026-07-02 user-
+        // reported bug: pinning a second item was jumping above the first because sorting
+        // pinned items by created_at meant a more-recently-created conversation could still
+        // outrank an earlier one that had actually been pinned first). Within the unpinned
+        // block, order is by created_at descending (most recent conversation first).
+        function sortHistoryItems(items) {
+            return [...items].sort((a, b) => {
+                const aPinned = !!a.is_pinned;
+                const bPinned = !!b.is_pinned;
+                if (aPinned !== bPinned) return aPinned ? -1 : 1;
+                if (aPinned) {
+                    return new Date(a.pinned_at || 0) - new Date(b.pinned_at || 0);
+                }
+                return new Date(b.created_at) - new Date(a.created_at);
+            });
+        }
+
+        function renderCurrentHistory() {
+            const recents = document.getElementById('sidebarRecents');
+            if (currentHistoryItems.length === 0 && !isLoggedIn) {
+                recents.innerHTML = '<div class="sidebar-empty-state">Log in to save and view your conversation history.</div>';
+                return;
+            }
+            const groups = groupHistoryByDate(sortHistoryItems(currentHistoryItems));
+            recents.innerHTML = renderHistoryGroups(groups);
+        }
+
+        function showHistoryErrorToast(message) {
+            let toast = document.getElementById('historyErrorToast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'historyErrorToast';
+                toast.className = 'history-error-toast';
+                document.body.appendChild(toast);
+            }
+            toast.textContent = message;
+            clearTimeout(toast._hideTimer);
+            toast.classList.add('visible');
+            toast._hideTimer = setTimeout(() => {
+                toast.classList.remove('visible');
+            }, 3000);
+        }
+
+        async function loadSidebarHistory() {
+            const recents = document.getElementById('sidebarRecents');
+            if (!isLoggedIn) {
+                currentHistoryItems = window.guestHistory;
+                renderCurrentHistory();
+                return;
+            }
+            try {
+                const response = await fetch('/api/history?page=1&limit=20');
+                if (!response.ok) {
+                    recents.innerHTML = '<div class="sidebar-empty-state">Could not load history.</div>';
+                    return;
+                }
+                const data = await response.json();
+                currentHistoryItems = data.history || [];
+                renderCurrentHistory();
+            } catch (error) {
+                console.error('Error loading history:', error);
+                recents.innerHTML = '<div class="sidebar-empty-state">Could not load history.</div>';
+            }
+        }
+
+        // ---- Optimistic pin/unpin: flip local state + re-render immediately, fire the
+        // request in the background, and roll back with a toast if it fails. Guests never
+        // hit the network — window.guestHistory (== currentHistoryItems) is the only source
+        // of truth for them, so the local mutation above is already the "commit".
+        function toggleHistoryPin(id) {
+            const item = currentHistoryItems.find(h => h.id === id);
+            if (!item) return;
+            const previousPinned = !!item.is_pinned;
+            const previousPinnedAt = item.pinned_at;
+            item.is_pinned = !previousPinned;
+            // pinned_at records *when this pin action happened*, purely client-side — it
+            // drives sortHistoryItems' ordering within the pinned block (see there). Cleared
+            // on unpin so a later re-pin gets a fresh timestamp instead of resurrecting its
+            // old position. The backend independently stamps its own server-side pinned_at
+            // on confirm (see auth/db.py toggle_pin_chat_history) used when the page reloads
+            // and re-fetches from /api/history; the two are never reconciled field-by-field,
+            // only is_pinned is (see below), since ordering only needs to be consistent
+            // within a session and both sides stamp pin actions in the same chronological
+            // order anyway.
+            item.pinned_at = item.is_pinned ? new Date().toISOString() : null;
+            renderCurrentHistory();
+
+            if (!isLoggedIn) return;
+
+            fetch(`/api/history/${encodeURIComponent(id)}/toggle-pin`, { method: 'POST' })
+                .then(response => {
+                    if (!response.ok) throw new Error('toggle-pin failed: ' + response.status);
+                    return response.json();
+                })
+                .then(data => {
+                    // Only re-render if the server actually disagrees with what we already
+                    // set optimistically (e.g. a concurrent toggle from another tab) — in the
+                    // overwhelmingly common case data.is_pinned matches what we set above, and
+                    // re-rendering here unconditionally used to tear down and rebuild every
+                    // history-item DOM node a second time right after the first optimistic
+                    // render, which made the row visibly flash/blink twice on every pin click
+                    // (2026-07-02 user-reported bug).
+                    if (typeof data.is_pinned === 'boolean' && data.is_pinned !== item.is_pinned) {
+                        item.is_pinned = data.is_pinned;
+                        renderCurrentHistory();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error toggling pin:', error);
+                    item.is_pinned = previousPinned;
+                    item.pinned_at = previousPinnedAt;
+                    renderCurrentHistory();
+                    showHistoryErrorToast('Could not update pin. Please try again.');
+                });
+        }
+
+        // Custom centered confirmation dialog (replaces the native `confirm()` popup, which
+        // couldn't be styled to match the app and only showed a generic message rather than
+        // naming the entry being deleted). Builds/reuses a single overlay+dialog pair and
+        // resolves a promise with true/false depending on which button (or Escape / a click
+        // on the backdrop) closed it.
+        function showDeleteConfirmModal(entryTitle) {
+            return new Promise((resolve) => {
+                let overlay = document.getElementById('confirmModalOverlay');
+                if (!overlay) {
+                    overlay = document.createElement('div');
+                    overlay.id = 'confirmModalOverlay';
+                    overlay.className = 'confirm-modal-overlay';
+                    overlay.innerHTML = `
+                        <div class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
+                            <div class="confirm-modal-title" id="confirmModalTitle">Delete this chat?</div>
+                            <div class="confirm-modal-body">This will delete <strong id="confirmModalEntryName"></strong></div>
+                            <div class="confirm-modal-actions">
+                                <button type="button" class="confirm-modal-btn confirm-modal-btn-cancel" id="confirmModalCancelBtn">Cancel</button>
+                                <button type="button" class="confirm-modal-btn confirm-modal-btn-delete" id="confirmModalDeleteBtn">Delete</button>
+                            </div>
+                        </div>
+                    `;
+                    document.body.appendChild(overlay);
+                }
+
+                // textContent (not innerHTML) so the entry title can never inject markup.
+                overlay.querySelector('#confirmModalEntryName').textContent = entryTitle || 'this conversation';
+                overlay.classList.add('visible');
+
+                const cancelBtn = overlay.querySelector('#confirmModalCancelBtn');
+                const deleteBtn = overlay.querySelector('#confirmModalDeleteBtn');
+
+                const cleanup = (result) => {
+                    overlay.classList.remove('visible');
+                    cancelBtn.removeEventListener('click', onCancel);
+                    deleteBtn.removeEventListener('click', onDelete);
+                    overlay.removeEventListener('click', onOverlayClick);
+                    document.removeEventListener('keydown', onKeydown);
+                    resolve(result);
+                };
+                const onCancel = () => cleanup(false);
+                const onDelete = () => cleanup(true);
+                const onOverlayClick = (e) => { if (e.target === overlay) cleanup(false); };
+                const onKeydown = (e) => { if (e.key === 'Escape') cleanup(false); };
+
+                cancelBtn.addEventListener('click', onCancel);
+                deleteBtn.addEventListener('click', onDelete);
+                overlay.addEventListener('click', onOverlayClick);
+                document.addEventListener('keydown', onKeydown);
+                deleteBtn.focus();
+            });
+        }
+
+        // ---- Optimistic delete: remove from the local array + re-render immediately,
+        // restore at the original index if the backend request fails.
+        async function deleteHistoryItem(id) {
+            const targetItem = currentHistoryItems.find(h => h.id === id);
+            if (!targetItem) return;
+            const confirmed = await showDeleteConfirmModal(targetItem.title);
+            if (!confirmed) return;
+
+            document.getElementById('clearBtn').click();
+
+            const index = currentHistoryItems.findIndex(h => h.id === id);
+            if (index === -1) return;
+            const [removedItem] = currentHistoryItems.splice(index, 1);
+            renderCurrentHistory();
+
+            if (!isLoggedIn) return;
+
+            fetch(`/api/history/${encodeURIComponent(id)}`, { method: 'DELETE' })
+                .then(response => {
+                    if (!response.ok) throw new Error('delete failed: ' + response.status);
+                })
+                .catch(error => {
+                    console.error('Error deleting history:', error);
+                    currentHistoryItems.splice(index, 0, removedItem);
+                    renderCurrentHistory();
+                    showHistoryErrorToast('Could not delete conversation. Please try again.');
+                });
+        }
+
+        // ---- Optimistic rename: mutate local title + re-render, PATCH in the background,
+        // roll back to the previous title with a toast on failure.
+        function commitRename(id, newTitle) {
+            const item = currentHistoryItems.find(h => h.id === id);
+            if (!item) return;
+            const previousTitle = item.title;
+            item.title = newTitle;
+            renderCurrentHistory();
+
+            if (!isLoggedIn) return;
+
+            fetch(`/api/history/${encodeURIComponent(id)}/title`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_title: newTitle })
+            })
+                .then(response => {
+                    if (!response.ok) throw new Error('rename failed: ' + response.status);
+                })
+                .catch(error => {
+                    console.error('Error renaming history:', error);
+                    item.title = previousTitle;
+                    renderCurrentHistory();
+                    showHistoryErrorToast('Could not rename conversation. Please try again.');
+                });
+        }
+
+        // Swaps a history item's title span for a live <input>; Enter/blur commits,
+        // Escape cancels. Triggered by the edit icon or a double-click on the title.
+        function startInlineRename(itemEl, id) {
+            if (itemEl.querySelector('.history-rename-input')) return;
+            const titleEl = itemEl.querySelector('.history-item-title');
+            const item = currentHistoryItems.find(h => h.id === id);
+            const originalTitle = item ? (item.title || '') : (titleEl ? titleEl.textContent : '');
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'history-rename-input';
+            input.value = originalTitle;
+            titleEl.replaceWith(input);
+            input.focus();
+            input.select();
+
+            let settled = false;
+            const commit = () => {
+                if (settled) return;
+                settled = true;
+                const newTitle = input.value.trim();
+                if (!newTitle || newTitle === originalTitle) {
+                    renderCurrentHistory();
+                    return;
+                }
+                commitRename(id, newTitle);
+            };
+            const cancel = () => {
+                if (settled) return;
+                settled = true;
+                renderCurrentHistory();
+            };
+
+            input.addEventListener('blur', commit);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    input.blur();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancel();
+                }
+            });
+        }
+
+        // Loads a past conversation into the main panel: the prompt textarea gets that
+        // entry's original prompt, and the results panel gets that entry's saved snapshot
+        // (the exact 8-key result list from the /api/compare response at save time), not
+        // whatever happens to currently be on screen. If the snapshot has no results (should
+        // not normally happen — every save includes the full result list — but defensively
+        // handled), the results panel is cleared/hidden rather than left showing a stale,
+        // unrelated conversation's results.
+        function loadHistorySnapshot(id) {
+            const item = currentHistoryItems.find(h => h.id === id);
+            if (!item) return;
+
+            document.getElementById('prompt').value = item.prompt || '';
+
+            const results = Array.isArray(item.results) ? item.results : [];
+            if (results.length === 0) {
+                document.getElementById('results').style.display = 'none';
+                document.getElementById('resultsContainer').innerHTML = '';
+                document.getElementById('stats').innerHTML = '';
+            } else {
+                displayResults({
+                    results,
+                    total_providers: results.length,
+                    successful_providers: results.filter(r => r.success).length
+                });
+            }
+
+            closeSidebar();
+        }
+
+        // Event delegation on the recents container: item DOM nodes are fully replaced on
+        // every render, so listeners are attached once here rather than per-item.
+        const sidebarRecentsEl = document.getElementById('sidebarRecents');
+
+        sidebarRecentsEl.addEventListener('click', (e) => {
+            const actionBtn = e.target.closest('[data-action]');
+            if (actionBtn) {
+                const itemEl = actionBtn.closest('.history-item');
+                if (!itemEl) return;
+                const id = itemEl.dataset.id;
+                const action = actionBtn.dataset.action;
+                if (action === 'pin') toggleHistoryPin(id);
+                else if (action === 'rename') startInlineRename(itemEl, id);
+                else if (action === 'delete') deleteHistoryItem(id);
+                return;
+            }
+
+            // Clicking the row itself (not an action icon, and not the rename <input> while
+            // mid-edit) loads that conversation's prompt + results snapshot.
+            if (e.target.closest('.history-rename-input')) return;
+            const itemEl = e.target.closest('.history-item');
+            if (!itemEl) return;
+            loadHistorySnapshot(itemEl.dataset.id);
+        });
+
+        sidebarRecentsEl.addEventListener('dblclick', (e) => {
+            const titleEl = e.target.closest('.history-item-title');
+            if (!titleEl) return;
+            const itemEl = titleEl.closest('.history-item');
+            if (!itemEl) return;
+            startInlineRename(itemEl, itemEl.dataset.id);
+        });
+
+        document.getElementById('newChatBtn').addEventListener('click', () => {
+            document.getElementById('clearBtn').click();
+            closeSidebar();
+        });
+
+        loadSidebarHistory();
+
         function togglePeerReview(uid) {
             const list = document.getElementById('pr-list-' + uid);
             if (list) {
@@ -1116,15 +2076,15 @@
             if (!reviews || reviews.length === 0) return '';
             const items = reviews.map(r => `
                 <div class="peer-review-item">
-                    <span class="reviewer-tag">来自 ${escapeHtml(r.reviewer_provider)} 的盲评</span>
-                    <span class="review-score-badge">${r.score}分</span>
-                    <span class="review-comment-text">：${escapeHtml(r.comment)}</span>
+                    <span class="reviewer-tag">Blind review from ${escapeHtml(r.reviewer_provider)}</span>
+                    <span class="review-score-badge">${r.score} pts</span>
+                    <span class="review-comment-text">: ${escapeHtml(r.comment)}</span>
                 </div>
             `).join('');
             return `
                 <div class="peer-review-section">
                     <button class="peer-review-toggle" onclick="togglePeerReview('${uid}')">
-                        查看其他 AI 盲评 (${reviews.length})
+                        View other AI blind reviews (${reviews.length})
                     </button>
                     <div class="peer-review-list" id="pr-list-${uid}" style="display:none">
                         ${items}

@@ -9,6 +9,71 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import main
 
 
+class TestIndexPageSidebarMarkup(unittest.TestCase):
+    """GET / must render the left-sidebar layout (Recents history UI, 2026-07-02)
+    for authenticated/guest visitors, but must still route anonymous visitors
+    to home.html (which has no sidebar) per the identity state contract."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def test_logged_in_user_sees_sidebar_markup(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+                sess['username'] = 'alice'
+            response = client.get('/')
+        html = response.data.decode()
+        for marker in ('left-sidebar', 'sidebar-overlay', 'main-content',
+                       'app-layout', 'hamburger-btn', 'sidebarRecents'):
+            self.assertIn(marker, html, msg=f'"{marker}" missing from logged-in index page')
+
+    def test_guest_sees_sidebar_markup(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['is_guest'] = True
+            response = client.get('/')
+        html = response.data.decode()
+        self.assertIn('left-sidebar', html)
+        self.assertIn('hamburger-btn', html)
+
+    def test_anonymous_visitor_does_not_get_index_sidebar(self):
+        """Anonymous (no user_id, no is_guest) must render home.html, which has
+        no sidebar — the identity router must not regress to always showing index.html."""
+        with main.app.test_client() as client:
+            response = client.get('/')
+        html = response.data.decode()
+        self.assertNotIn('left-sidebar', html)
+
+    def test_sidebar_contains_new_chat_button(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            response = client.get('/')
+        self.assertIn('newChatBtn', response.data.decode())
+
+    def test_sidebar_skeleton_present_before_js_hydration(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            response = client.get('/')
+        self.assertIn('sidebar-skeleton', response.data.decode())
+
+    def test_is_logged_in_js_flag_true_for_authenticated_user(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            response = client.get('/')
+        self.assertIn('const isLoggedIn = true;', response.data.decode())
+
+    def test_is_logged_in_js_flag_false_for_guest(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['is_guest'] = True
+            response = client.get('/')
+        self.assertIn('const isLoggedIn = false;', response.data.decode())
+
+
 class TestHealthEndpoint(unittest.TestCase):
 
     def setUp(self):
@@ -557,6 +622,27 @@ class TestPeerReview(unittest.TestCase):
                 self.assertNotEqual(item['reviewer_provider'], result['provider'])
 
     @patch('main.g4f.ChatCompletion.create')
+    def test_default_judge_prefix_used_when_model_not_in_peer_review_map(self, mock_create):
+        """When a reviewer model has no PEER_REVIEW_PROMPTS_MAP entry, the English
+        default judge prefix must be prepended to the review prompt sent to g4f."""
+        providers = self._make_two_providers()
+        mock_create.return_value = '{"score": 80, "comment": "ok"}'
+        with patch('main.G4F_PROVIDERS', providers), \
+             patch('main.PROVIDER_MODELS_MAP', {'ProviderA': ['gpt-3.5-turbo'], 'ProviderB': ['aria']}), \
+             patch('main.ROUTE_PROMPTS_MAP', {}), \
+             patch('main.PEER_REVIEW_PROMPTS_MAP', {}):
+            response = self._post_compare(providers=['ProviderA', 'ProviderB'])
+        self.assertEqual(response.status_code, 200)
+        sent_contents = [
+            call.kwargs['messages'][0]['content'] for call in mock_create.call_args_list
+        ]
+        default_prefix_calls = [
+            c for c in sent_contents
+            if c.startswith('Please evaluate the quality of the following answer')
+        ]
+        self.assertEqual(len(default_prefix_calls), 2)
+
+    @patch('main.g4f.ChatCompletion.create')
     def test_two_successful_providers_each_reviewed_once(self, mock_create):
         providers = self._make_two_providers()
         mock_create.return_value = 'test response'
@@ -570,6 +656,342 @@ class TestPeerReview(unittest.TestCase):
         if len(successful) == 2:
             for result in successful:
                 self.assertEqual(len(result['peer_reviews']), 1)
+
+
+@unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
+class TestCompareHistoryPersistence(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    @patch('main.save_chat_history')
+    @patch('main.g4f.ChatCompletion.create')
+    def test_logged_in_user_triggers_save_with_correct_args(self, mock_create, mock_save):
+        mock_create.return_value = 'Mock response'
+        mock_save.return_value = {'id': 'hist123'}
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            payload = {'prompt': 'Hello', 'providers': ['Yqcloud']}
+            response = client.post(
+                '/api/compare', data=json.dumps(payload), content_type='application/json'
+            )
+        self.assertEqual(response.status_code, 200)
+        mock_save.assert_called_once()
+        self.assertEqual(mock_save.call_args[0][0], 'uid1')
+        self.assertEqual(mock_save.call_args[0][1], 'Hello')
+
+    @patch('main.save_chat_history')
+    @patch('main.g4f.ChatCompletion.create')
+    def test_response_includes_history_id_from_save(self, mock_create, mock_save):
+        mock_create.return_value = 'Mock response'
+        mock_save.return_value = {'id': 'hist123'}
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            payload = {'prompt': 'Hello', 'providers': ['Yqcloud']}
+            response = client.post(
+                '/api/compare', data=json.dumps(payload), content_type='application/json'
+            )
+        data = json.loads(response.data)
+        self.assertEqual(data['history_id'], 'hist123')
+
+    @patch('main.save_chat_history')
+    @patch('main.g4f.ChatCompletion.create')
+    def test_guest_does_not_trigger_save(self, mock_create, mock_save):
+        mock_create.return_value = 'Mock response'
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['is_guest'] = True
+            payload = {'prompt': 'Hello', 'providers': ['Yqcloud']}
+            response = client.post(
+                '/api/compare', data=json.dumps(payload), content_type='application/json'
+            )
+        mock_save.assert_not_called()
+        data = json.loads(response.data)
+        self.assertIsNone(data['history_id'])
+
+    @patch('main.save_chat_history')
+    @patch('main.g4f.ChatCompletion.create')
+    def test_anonymous_does_not_trigger_save(self, mock_create, mock_save):
+        mock_create.return_value = 'Mock response'
+        with main.app.test_client() as client:
+            payload = {'prompt': 'Hello', 'providers': ['Yqcloud']}
+            response = client.post(
+                '/api/compare', data=json.dumps(payload), content_type='application/json'
+            )
+        mock_save.assert_not_called()
+        data = json.loads(response.data)
+        self.assertIsNone(data['history_id'])
+
+
+class TestHistoryAuthGuard(unittest.TestCase):
+    """All /api/history* routes must reject unauthenticated (incl. guest) requests with 401."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+
+    def test_get_history_without_session_returns_401(self):
+        response = self.client.get('/api/history')
+        self.assertEqual(response.status_code, 401)
+
+    def test_get_history_as_guest_returns_401(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['is_guest'] = True
+            response = client.get('/api/history')
+        self.assertEqual(response.status_code, 401)
+
+    def test_update_title_without_session_returns_401(self):
+        response = self.client.patch(
+            '/api/history/hist1/title',
+            data=json.dumps({'new_title': 'New'}),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_delete_without_session_returns_401(self):
+        response = self.client.delete('/api/history/hist1')
+        self.assertEqual(response.status_code, 401)
+
+    def test_toggle_pin_without_session_returns_401(self):
+        response = self.client.post('/api/history/hist1/toggle-pin')
+        self.assertEqual(response.status_code, 401)
+
+    def test_401_response_has_error_json(self):
+        response = self.client.get('/api/history')
+        data = json.loads(response.data)
+        self.assertIn('error', data)
+
+
+class TestGetHistoryEndpoint(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def _login(self, client, user_id='uid1'):
+        with client.session_transaction() as sess:
+            sess['user_id'] = user_id
+
+    @patch('main.get_chat_history_list')
+    def test_returns_200_when_logged_in(self, mock_get_list):
+        mock_get_list.return_value = []
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.get('/api/history')
+        self.assertEqual(response.status_code, 200)
+
+    @patch('main.get_chat_history_list')
+    def test_response_contains_history_list(self, mock_get_list):
+        mock_get_list.return_value = [{'id': 'h1', 'title': 'x...'}]
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.get('/api/history')
+        data = json.loads(response.data)
+        self.assertEqual(data['history'], [{'id': 'h1', 'title': 'x...'}])
+
+    @patch('main.get_chat_history_list')
+    def test_default_pagination_values(self, mock_get_list):
+        mock_get_list.return_value = []
+        with main.app.test_client() as client:
+            self._login(client)
+            client.get('/api/history')
+        mock_get_list.assert_called_once_with('uid1', limit=20, offset=0)
+
+    @patch('main.get_chat_history_list')
+    def test_page_and_limit_params_map_to_offset(self, mock_get_list):
+        mock_get_list.return_value = []
+        with main.app.test_client() as client:
+            self._login(client)
+            client.get('/api/history?page=3&limit=10')
+        mock_get_list.assert_called_once_with('uid1', limit=10, offset=20)
+
+    @patch('main.get_chat_history_list')
+    def test_limit_clamped_to_100(self, mock_get_list):
+        mock_get_list.return_value = []
+        with main.app.test_client() as client:
+            self._login(client)
+            client.get('/api/history?limit=99999')
+        mock_get_list.assert_called_once_with('uid1', limit=100, offset=0)
+
+    @patch('main.get_chat_history_list')
+    def test_page_below_one_clamped_to_one(self, mock_get_list):
+        mock_get_list.return_value = []
+        with main.app.test_client() as client:
+            self._login(client)
+            client.get('/api/history?page=0')
+        mock_get_list.assert_called_once_with('uid1', limit=20, offset=0)
+
+    @patch('main.get_chat_history_list')
+    def test_non_numeric_query_params_fall_back_to_defaults(self, mock_get_list):
+        mock_get_list.return_value = []
+        with main.app.test_client() as client:
+            self._login(client)
+            client.get('/api/history?page=abc&limit=xyz')
+        mock_get_list.assert_called_once_with('uid1', limit=20, offset=0)
+
+    @patch('main.get_chat_history_list', side_effect=RuntimeError('boom'))
+    def test_internal_error_returns_500_friendly_message(self, mock_get_list):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.get('/api/history')
+        self.assertEqual(response.status_code, 500)
+        data = json.loads(response.data)
+        self.assertEqual(data['error'], 'Service temporarily unavailable. Please try again later.')
+
+
+class TestUpdateHistoryTitleEndpoint(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def _login(self, client, user_id='uid1'):
+        with client.session_transaction() as sess:
+            sess['user_id'] = user_id
+
+    def _patch_title(self, client, history_id, new_title):
+        return client.patch(
+            f'/api/history/{history_id}/title',
+            data=json.dumps({'new_title': new_title}),
+            content_type='application/json'
+        )
+
+    @patch('main.update_chat_history_title', return_value=True)
+    def test_success_returns_200(self, mock_update):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = self._patch_title(client, 'hist1', 'New Title')
+        self.assertEqual(response.status_code, 200)
+
+    @patch('main.update_chat_history_title', return_value=True)
+    def test_calls_update_with_session_user_id_not_client_supplied(self, mock_update):
+        with main.app.test_client() as client:
+            self._login(client, user_id='uid1')
+            self._patch_title(client, 'hist1', 'New Title')
+        mock_update.assert_called_once_with('uid1', 'hist1', 'New Title')
+
+    @patch('main.update_chat_history_title', return_value=False)
+    def test_not_owned_or_missing_returns_404(self, mock_update):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = self._patch_title(client, 'ghost', 'New Title')
+        self.assertEqual(response.status_code, 404)
+
+    def test_missing_new_title_returns_400(self):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.patch(
+                '/api/history/hist1/title',
+                data=json.dumps({}),
+                content_type='application/json'
+            )
+        self.assertEqual(response.status_code, 400)
+
+    def test_blank_new_title_returns_400(self):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = self._patch_title(client, 'hist1', '   ')
+        self.assertEqual(response.status_code, 400)
+
+    @patch('main.update_chat_history_title', side_effect=RuntimeError('boom'))
+    def test_internal_error_returns_500_friendly_message(self, mock_update):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = self._patch_title(client, 'hist1', 'New Title')
+        self.assertEqual(response.status_code, 500)
+        data = json.loads(response.data)
+        self.assertEqual(data['error'], 'Service temporarily unavailable. Please try again later.')
+
+
+class TestDeleteHistoryEndpoint(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def _login(self, client, user_id='uid1'):
+        with client.session_transaction() as sess:
+            sess['user_id'] = user_id
+
+    @patch('main.delete_chat_history', return_value=True)
+    def test_success_returns_200(self, mock_delete):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.delete('/api/history/hist1')
+        self.assertEqual(response.status_code, 200)
+
+    @patch('main.delete_chat_history', return_value=True)
+    def test_calls_delete_with_session_user_id(self, mock_delete):
+        with main.app.test_client() as client:
+            self._login(client, user_id='uid1')
+            client.delete('/api/history/hist1')
+        mock_delete.assert_called_once_with('uid1', 'hist1')
+
+    @patch('main.delete_chat_history', return_value=False)
+    def test_not_owned_or_missing_returns_404(self, mock_delete):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.delete('/api/history/ghost')
+        self.assertEqual(response.status_code, 404)
+
+    @patch('main.delete_chat_history', side_effect=RuntimeError('boom'))
+    def test_internal_error_returns_500_friendly_message(self, mock_delete):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.delete('/api/history/hist1')
+        self.assertEqual(response.status_code, 500)
+        data = json.loads(response.data)
+        self.assertEqual(data['error'], 'Service temporarily unavailable. Please try again later.')
+
+
+class TestTogglePinEndpoint(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def _login(self, client, user_id='uid1'):
+        with client.session_transaction() as sess:
+            sess['user_id'] = user_id
+
+    @patch('main.toggle_pin_chat_history', return_value=True)
+    def test_success_returns_200(self, mock_toggle):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.post('/api/history/hist1/toggle-pin')
+        self.assertEqual(response.status_code, 200)
+
+    @patch('main.toggle_pin_chat_history', return_value=True)
+    def test_response_contains_new_is_pinned_true(self, mock_toggle):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.post('/api/history/hist1/toggle-pin')
+        data = json.loads(response.data)
+        self.assertTrue(data['is_pinned'])
+
+    @patch('main.toggle_pin_chat_history', return_value=False)
+    def test_response_reflects_new_is_pinned_false_not_confused_with_failure(self, mock_toggle):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.post('/api/history/hist1/toggle-pin')
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertFalse(data['is_pinned'])
+
+    @patch('main.toggle_pin_chat_history', return_value=None)
+    def test_not_owned_or_missing_returns_404(self, mock_toggle):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.post('/api/history/ghost/toggle-pin')
+        self.assertEqual(response.status_code, 404)
+
+    @patch('main.toggle_pin_chat_history', side_effect=RuntimeError('boom'))
+    def test_internal_error_returns_500_friendly_message(self, mock_toggle):
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.post('/api/history/hist1/toggle-pin')
+        self.assertEqual(response.status_code, 500)
+        data = json.loads(response.data)
+        self.assertEqual(data['error'], 'Service temporarily unavailable. Please try again later.')
 
 
 if __name__ == '__main__':
