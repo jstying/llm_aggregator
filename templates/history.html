@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>G4F LLM Aggregator</title>
+    <title>History - G4F LLM Aggregator</title>
     <style>
         * {
             margin: 0;
@@ -16,21 +16,9 @@
             --page-zoom: 0.88;
         }
 
-        /* 完全隐藏原生的整页纵向滚动条（Firefox 用 scrollbar-width:none，Chrome/Safari
-           用 ::-webkit-scrollbar{display:none}），改由下方 #pageScrollThumb 提供一个
-           完全自绘、JS 驱动、可拖拽的滚动指示器（2026-07-03 第二轮修复，用户报告"整体
-           右侧的 scrollbar 也要进行类似修改"，呼应下面 .sidebar-recents 的同源整改）。
-
-           这里刻意不再沿用"用 overflow-y:scroll 强制常驻显示原生滚动条"的旧写法——
-           原生滚动条渲染在浏览器 UI 自己的合成层里，天然盖在任何页面内容之上，**没有
-           任何页面内元素能盖过它**；只要原生滚动条还占据哪怕一像素的可交互区域，自绘
-           指示器的 mousedown 事件就永远抢不到那个像素点，"可拖拽"这个需求在原生滚动
-           条仍然存在时根本做不到，也是"黑色 Recents 列右侧出现 2 个滚动条"（原生 +
-           自绘）这一用户报告的同类根因。改为让原生滚动条本身**恒为 0 宽度**（无论内容
-           是否溢出，两种状态下都不占用任何布局宽度）：这仍然满足"宽度在两种状态之间
-           保持不变、不会引发水平位移"这条最初引入 overflow-y:scroll 的理由——只是从
-           "恒为某个非零值"换成了"恒为 0"，两者都是"不变"，都不会导致 nav-container/
-           .container 的可用宽度来回变化。 */
+        /* 完全隐藏原生的整页纵向滚动条 -- 与 templates/index.html 逐字同步，见其对应
+           规则的完整注释（2026-07-03 第二轮修复，改用 #pageScrollThumb 提供完全自绘、
+           可拖拽、不依赖浏览器原生滚动条渲染的滚动指示器）。 */
         html {
             -ms-overflow-style: none;
             scrollbar-width: none;
@@ -217,43 +205,20 @@
             box-sizing: border-box;
 
             /* Pin the sidebar to the viewport (ChatGPT-style) instead of letting
-               `align-items:stretch` grow it to match .main-content's height. Previously
-               .left-sidebar had no height of its own — it simply stretched to whatever
-               height .main-content happened to need, which meant #sidebarRecents (a
-               flex:1 child) never actually overflowed: it just grew tall enough to show
-               every item, so no scrollbar ever appeared and the `scroll` listener that
-               drives loadMoreSidebarHistory() never fired. Net effect (2026-07-03 user
-               report): once a user had more than one page of history, refreshing Recents
-               after a new /api/compare would re-fetch only page 1 (20 items) and there
-               was no reachable way to load page 2+, so older entries appeared to just
-               vanish. Giving the sidebar its own bounded, viewport-pinned height makes
-               #sidebar-recents a real scroll container again. `top`/`height` are driven
-               by syncSidebarStickyMetrics() (see bottom of file) via CSS custom
-               properties rather than a fixed rem/vh guess, because the space above the
+               `align-items:stretch` grow it to match .main-content's height. See the
+               identical comment in templates/index.html's .left-sidebar rule for the full
+               "why" (2026-07-03 fix): without a bounded height, #sidebarRecents never
+               actually overflowed, so it never scrolled and loadMoreSidebarHistory() was
+               unreachable — older history entries appeared to just vanish once there was
+               more than one page of them. `top`/`height` are set by
+               syncSidebarStickyMetrics() (bottom of file) since the space above the
                sidebar (navbar + optional .guest-banner) varies with login state and
-               screen width; the var() defaults below are just the pre-JS fallback. */
-            /* `height` is resolved natively by CSS calc() against `100vh` rather than being
-               pre-computed in JS from window.innerHeight and injected as a literal px value
-               (as this rule used to do via --sidebar-sticky-height). window.innerHeight is an
-               integer, browser-rounded measurement taken in JS, while the layout engine
-               resolves `vh` with its own (sub-pixel-accurate) precision at render/paint time —
-               going through JS float math on top of an already-rounded window.innerHeight,
-               further compounded by the /--page-zoom division, was the source of a visible
-               gap below the sidebar at some *browser* zoom levels (2026-07-03 user report,
-               reproducible at e.g. 150% browser zoom after scrolling the page all the way
-               down: small rounding errors invisible at 100% zoom become large enough to
-               notice once the whole page is itself rescaled again by the browser). Deferring
-               the vh resolution to native CSS calc() sidesteps that: only
-               --sidebar-header-height (a single JS-measured value, converted once from
-               on-screen px back to pre-zoom "logical" px, see syncSidebarStickyMetrics())
-               still needs JS. The trailing `+ 2px` is a small safety margin biasing any
-               remaining sub-pixel rounding toward the sidebar being very slightly *taller*
-               than strictly necessary (harmless — a couple of extra px of dark background
-               below the fold) rather than shorter (a visible gap, the actual bug). This same
-               imprecision was also the root cause of the Recents scroll indicator needing
-               ~110% zoom to appear (see .sidebar-recents-scroll-indicator/
-               updateSidebarScrollIndicator()): an inaccurately-computed #sidebarRecents
-               height made whether its content genuinely overflowed zoom-dependent too. */
+               screen width. */
+            /* `height` resolved natively via CSS calc() against `100vh` -- identical to
+               templates/index.html's .left-sidebar rule, see its comment for the full "why"
+               (2026-07-03 second-round fix: JS-computed window.innerHeight-based heights
+               left a visible gap below the sidebar at some browser zoom levels once
+               scrolled to the bottom of a long page). */
             position: sticky;
             top: var(--sidebar-header-height, 0px);
             height: calc(100vh / var(--page-zoom) - var(--sidebar-header-height, 0px) + 2px);
@@ -304,27 +269,11 @@
                .left-sidebar has a real bounded height instead of growing to fit content. */
             min-height: 0;
             overflow-y: auto;
-            /* Native scrollbar fully hidden (Firefox + WebKit) — #sidebarRecentsScrollThumb
-               below is the *only* scrollbar rendered here now.
-               2026-07-03 (second round, user report): a fully `transparent` track (as this
-               used to be) is exactly the condition that lets Chrome fall back to its
-               OS-level *overlay* scrollbar for this element — an overlay scrollbar reserves
-               no track space and only flashes into view for ~1s while actively scrolling or
-               hovering, then fades back to nothing. Giving the track a real, non-transparent
-               background didn't reliably fix that either (verified: offsetWidth === clientWidth
-               even with that styling, i.e. no space was actually reserved) — Chrome's overlay
-               mode simply isn't reliably overridable this way on every build/platform.
-               2026-07-03 (third round, user report): even where the overlay scrollbar *did*
-               flash into view, it showed up *alongside* the custom indicator thumb below,
-               i.e. two visible scrollbars at once. And since a browser-native scrollbar
-               always renders in the browser's own UI compositing layer — above *any* page
-               content, unconditionally — nothing rendered in the page can ever intercept
-               mouse events over it; as long as a real (even if normally invisible/overlay)
-               native scrollbar occupies this space at all, a custom thumb drawn in the same
-               spot can never actually be draggable, since clicks there are captured by the
-               native one first. Hiding it outright (0 width, in every state) is what makes
-               the custom thumb genuinely interactive, and is simpler than fighting Chrome's
-               overlay-mode heuristics to begin with. */
+            /* Native scrollbar fully hidden -- identical to templates/index.html's copy of
+               this rule, see its comment for the full "why" (2026-07-03 third-round fix: a
+               real, even if normally-invisible, native scrollbar always renders above page
+               content and would otherwise capture drags meant for #sidebarRecentsScrollThumb,
+               plus it could show up alongside it as a second, redundant scrollbar). */
             scrollbar-width: none;
         }
 
@@ -332,16 +281,11 @@
             display: none;
         }
 
-        /* Custom scroll indicator + scrollbar for #sidebarRecents (see the HTML comment next
-           to #sidebarRecentsScrollThumb for the full "why" it exists instead of the native
-           scrollbar). Positioned absolutely against .left-sidebar, which is already
-           `position: sticky` and therefore already establishes the containing block this
-           needs -- no extra wrapper required. `top`/`height` are set inline by
-           updateSidebarScrollIndicator() in JS; this rule only owns the static visual
-           styling. 2026-07-03 (third round): now genuinely draggable (see setupThumbDrag()
-           in JS) now that the native scrollbar has been fully removed from this space —
-           previously this was `pointer-events: none` since it was purely decorative and
-           actual scrolling only ever happened via wheel/touch over #sidebarRecents itself. */
+        /* Custom scroll indicator + scrollbar for #sidebarRecents -- identical to
+           templates/index.html's copy of this rule; see the HTML comment next to
+           #sidebarRecentsScrollThumb and the matching CSS comment in templates/index.html for
+           the full "why". Now draggable (setupThumbDrag() in JS) now that the native
+           scrollbar has been fully removed from this space. */
         .sidebar-recents-scroll-indicator {
             position: absolute;
             right: 3px;
@@ -366,16 +310,8 @@
             cursor: grabbing;
         }
 
-        /* ---- Whole-page custom scroll indicator (2026-07-03, user report: "整体右侧的
-           scrollbar 也要进行类似修改") — replaces the native browser scrollbar for the
-           entire document, mirroring #sidebarRecentsScrollThumb above. `position: fixed` +
-           `right: 3px` overlays the last few px of the viewport instead of reserving its
-           own dedicated gutter, exactly like the sidebar's indicator overlays inside
-           .left-sidebar without a separate track column. Styled dark-on-light (opposite of
-           the sidebar's light-on-dark thumb) since the main page background is light.
-           `top`/`height` are set inline by updatePageScrollIndicator() in JS. Sits above the
-           delete-confirmation modal (z-index 500) and the mobile sidebar drawer (300) so
-           it's always reachable regardless of what overlay is currently open. */
+        /* ---- Whole-page custom scroll indicator -- identical to templates/index.html's
+           copy of this rule; see its CSS comment for the full "why". ---- */
         .page-scroll-indicator {
             position: fixed;
             right: 3px;
@@ -699,7 +635,7 @@
         .header p {
             font-size: 1.05rem;
             color: #545e5a;
-            line-height: 1.5; /* 多行文案（如 history.html 的两句提示语）行距舒适，单行文案不受影响 */
+            line-height: 1.5; /* 多行文案（本页的两句提示语）行距舒适，单行文案不受影响 */
             max-width: 600px; /* 限制宽度，防止长句在宽屏上两头拉得太开 */
             margin: 0 auto; /* 配合 max-width 实现段落整体居中 */
         }
@@ -714,6 +650,43 @@
         }
 
         .form-group {
+            margin-bottom: 26px;
+        }
+
+        /* ---- Read-only prompt display (history.html has no editable compareForm at all —
+           this page only ever shows a saved conversation, it never lets you resubmit it) ---- */
+        .prompt-readonly-text {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            font-size: 15px;
+            line-height: 1.6;
+            background-color: rgba(6, 193, 103, 0.015);
+            color: #09110e;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* #promptDisplayContainer only ever has this one .form-group inside it -- unlike
+           index.html's form-container, where several .form-group blocks stack and its
+           margin-bottom exists to separate each one from the next. Here there's nothing
+           after it inside the container, so that margin was just adding on top of the
+           container's own bottom padding, making the empty space below the prompt box
+           noticeably taller than the space above it (between the container's top edge and
+           the "Original Prompt:" label). Zeroing it out here brings both sides back to the
+           same 36px (the container's own padding on all four sides). */
+        #promptDisplayContainer .form-group {
+            margin-bottom: 0;
+        }
+
+        .history-not-found {
+            background: #fff2f2;
+            color: #ff3b30;
+            padding: 20px;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 600;
             margin-bottom: 26px;
         }
 
@@ -936,127 +909,6 @@
             color: #545e5a;
             font-size: 12px;
             margin-top: 2px;
-        }
-
-        /* Image mode's provider checkboxes reuse the exact same visuals as the text
-           compare form's .provider-checkbox/.provider-trigger, but need their own class
-           names on the <label>/<input> themselves (not just the shared inner
-           .checkbox-box/.provider-meta spans) because the compare form's JS queries
-           `.provider-checkbox`/`.provider-trigger` globally via document.querySelectorAll
-           (not scoped to #providerSelection) — reusing the identical class there would
-           make image-mode's checkboxes get swept up into the text form's selected-provider
-           list and Clear-button reset logic, and vice versa, even though the two forms are
-           never visible at the same time. Keeping the JS-facing class names distinct avoids
-           that cross-contamination while still sharing 100% of the CSS via these compound
-           selectors. */
-        .provider-checkbox,
-        .image-provider-checkbox {
-            display: flex;
-            align-items: center;
-            padding: 14px;
-            background: #ffffff;
-            border: 1px solid #e8e8e8;
-            border-radius: 6px;
-            cursor: pointer;
-            height: 66px;
-            box-sizing: border-box;
-            overflow: hidden;
-            transition: background-color 0.1s ease, border-color 0.1s ease;
-        }
-
-        .image-provider-checkbox:hover {
-            background: rgba(6, 193, 103, 0.03);
-            border-color: #06c167;
-        }
-
-        .image-provider-checkbox.is-checked {
-            border-color: #06c167;
-        }
-
-        .image-provider-checkbox input {
-            position: absolute;
-            width: 0;
-            height: 0;
-            margin: 0;
-            padding: 0;
-            border: 0;
-            opacity: 0;
-            pointer-events: none;
-        }
-
-        .image-provider-trigger:checked + .checkbox-box {
-            background: #06c167;
-            border-color: #06c167;
-        }
-
-        .image-provider-trigger:checked + .checkbox-box::after {
-            opacity: 1;
-        }
-
-        /* ---- Image generation mode: sidebar entry point + results grid ---- */
-        .generate-image-btn {
-            width: 100%;
-            background: transparent;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            color: #ececec;
-            padding: 10px 12px;
-            border-radius: 8px;
-            font-size: 0.85rem;
-            font-weight: 600;
-            cursor: pointer;
-            text-align: left;
-            transition: background-color 0.15s ease;
-            margin-top: 8px;
-        }
-
-        .generate-image-btn:hover {
-            background: rgba(255, 255, 255, 0.08);
-        }
-
-        /* Fixed 2-column grid per the "最多容纳 2 个" requirement — each cell is one
-           Provider+Model combination's generated image, not an auto-fit/auto-fill grid
-           (which would let more than 2 land on a single row on very wide viewports). */
-        .image-results-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 20px;
-        }
-
-        @media (max-width: 700px) {
-            .image-results-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        .image-result-card {
-            background: #ffffff;
-            border: 1px solid #e8e8e8;
-            border-radius: 6px;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-        }
-
-        .image-result-body {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .generated-image {
-            width: 100%;
-            height: auto;
-            display: block;
-            border-radius: 6px;
-            border: 1px solid #e8e8e8;
-            background: #f4f4f5;
-        }
-
-        .image-download-btn {
-            align-self: flex-start;
-            padding: 8px 18px;
-            font-size: 0.85rem;
         }
 
         .button-group {
@@ -1545,7 +1397,6 @@
         <aside class="left-sidebar" id="leftSidebar">
             <div class="sidebar-top">
                 <button type="button" class="new-chat-btn" id="newChatBtn">+ New Chat</button>
-                <button type="button" class="generate-image-btn" id="generateImageBtn">🎨 Generate Image</button>
             </div>
             <div class="sidebar-section-label">Recents</div>
             <div class="sidebar-recents" id="sidebarRecents">
@@ -1556,17 +1407,10 @@
                     <div class="skeleton-line short"></div>
                 </div>
             </div>
-            <!-- Custom scroll indicator, positioned/sized by updateSidebarScrollIndicator().
-                 Native scrollbars turned out to be unreliable here: modern Chrome (at least
-                 on some platforms/builds) renders "overlay" scrollbars for overflowing
-                 elements that reserve zero layout width and only flash into view for ~1s
-                 while actively scrolling/hovering, then fade back to nothing -- invisible in
-                 a static tab you're just reading, and *not* something `::-webkit-scrollbar`
-                 styling can force back into a persistent "classic" scrollbar in every build
-                 (verified: offsetWidth === clientWidth on #sidebarRecents even with that
-                 styling applied, i.e. zero space was actually reserved). This element is a
-                 fully custom, JS-driven visual affordance instead, so it's guaranteed to
-                 render identically regardless of the browser's own scrollbar theming. -->
+            <!-- Custom scroll indicator -- identical to templates/index.html's copy; see the
+                 comment there for the full "why" (native overlay scrollbars in Chrome don't
+                 reserve space and aren't reliably forced into "classic" mode via
+                 ::-webkit-scrollbar styling). -->
             <div class="sidebar-recents-scroll-indicator" id="sidebarRecentsScrollThumb"></div>
         </aside>
         <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -1584,70 +1428,21 @@
             {% endif %}
         {% endwith %}
 
-        <div id="compareModeContainer">
         <div class="header">
-            <h1><span class="header-full">G4F LLM Aggregator</span><span class="header-short">LLM Aggregator</span></h1>
-            {% if session.user_id %}
-                <p>Welcome back, {{ session.username }}. Compare AI provider responses below.</p>
-            {% else %}
-                <p>Aggregate and compare responses from different AI providers in real time</p>
-            {% endif %}
+            <h1><span class="header-full">Conversation History</span><span class="header-short">History</span></h1>
+            <p>Read-only view of a saved comparison.<br>Nothing here can be edited or resubmitted.</p>
         </div>
 
-        <div class="form-container">
-            <form id="compareForm">
-                <div class="form-group">
-                    <label for="prompt">Your Prompt:</label>
-                    <textarea id="prompt" name="prompt" placeholder="Enter your question or prompt here..." required></textarea>
-                </div>
-
-                <div class="form-group">
-                    <label>Select Providers (leave all unchecked to test all):</label>
-                    <div class="provider-selection" id="providerSelection">
-                        {% if providers %}
-                            {% for p in providers %}
-                                <label class="provider-checkbox">
-                                    <input type="checkbox" name="providers" value="{{ p.name }}" class="provider-trigger">
-                                    <span class="checkbox-box"></span>
-                                    <div class="provider-meta">
-                                        <span>{{ p.name }}</span>
-                                        <small>Default: {{ p.default_model }}</small>
-                                    </div>
-                                </label>
-                            {% endfor %}
-                        {% else %}
-                            <span class="no-providers">No providers available.</span>
-                        {% endif %}
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label>Select Model (Single Selection):</label>
-                    <div class="custom-select-wrapper" id="customSelectWrapper">
-                        <div class="custom-select-trigger" id="customSelectTrigger">-- Use Provider's Default Model --</div>
-                        <div class="custom-options" id="customOptions">
-                            </div>
-                    </div>
-                    <select id="modelSelect" name="model" style="display: none;">
-                        <option value="">-- Use Provider's Default Model --</option>
-                    </select>
-                </div>
-
-                <div class="button-group">
-                    <button type="submit" class="btn btn-primary" id="compareBtn">
-                        Compare Providers
-                    </button>
-                    <button type="button" class="btn btn-secondary" id="clearBtn">
-                        Clear Results
-                    </button>
-                </div>
-            </form>
+        <div class="history-not-found" id="historyNotFound" style="display: none;">
+            This history entry could not be found. It may have been deleted, or the browser
+            data it was stored in (for guest sessions) has been cleared.
         </div>
 
-        <div class="loading" id="loading">
-            <div class="spinner"></div>
-            <h3>Testing providers...</h3>
-            <p>This may take a few moments</p>
+        <div class="form-container" id="promptDisplayContainer">
+            <div class="form-group">
+                <label>Original Prompt:</label>
+                <div class="prompt-readonly-text" id="promptDisplay"></div>
+            </div>
         </div>
 
         <div class="results" id="results">
@@ -1657,95 +1452,12 @@
             </div>
             <div id="resultsContainer"></div>
         </div>
-        </div>
-
-        <!-- Image generation mode: hidden by default, toggled in from the sidebar's
-             "Generate Image" button via switchToImageMode()/switchToCompareMode() (see
-             the inline script at the bottom of this file). Reuses the exact same page chrome
-             (.header/.form-container/.loading/.results classes) as compareModeContainer
-             above so the two modes read as one consistent app rather than a bolted-on
-             separate page, but with its own <form>/results container so the two are
-             fully independent -- submitting one never touches the other's state. -->
-        <div id="imageModeContainer" style="display: none;">
-        <div class="header">
-            <h1><span class="header-full">G4F Image Generator</span><span class="header-short">Image Gen</span></h1>
-            <p>Generate images with free, no-key g4f providers and compare them side by side.</p>
-        </div>
-
-        <div class="form-container">
-            <form id="imageForm">
-                <div class="form-group">
-                    <label for="imagePrompt">Image Prompt:</label>
-                    <textarea id="imagePrompt" name="imagePrompt" placeholder="Describe the image you want to generate..." required></textarea>
-                </div>
-
-                <div class="form-group">
-                    <label>Select Image Providers (leave all unchecked to test all):</label>
-                    <div class="provider-selection" id="imageProviderSelection">
-                        {% if image_providers %}
-                            {% for p in image_providers %}
-                                <label class="image-provider-checkbox">
-                                    <input type="checkbox" name="image_providers" value="{{ p.name }}" class="image-provider-trigger">
-                                    <span class="checkbox-box"></span>
-                                    <div class="provider-meta">
-                                        <span>{{ p.name }}</span>
-                                        <small>Default: {{ p.default_model }}</small>
-                                    </div>
-                                </label>
-                            {% endfor %}
-                        {% else %}
-                            <span class="no-providers">No image providers available.</span>
-                        {% endif %}
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label>Select Model (Single Selection):</label>
-                    <div class="custom-select-wrapper" id="imageCustomSelectWrapper">
-                        <div class="custom-select-trigger" id="imageCustomSelectTrigger">-- Use Provider's Default Model --</div>
-                        <div class="custom-options" id="imageCustomOptions">
-                            </div>
-                    </div>
-                    <select id="imageModelSelect" name="model" style="display: none;">
-                        <option value="">-- Use Provider's Default Model --</option>
-                    </select>
-                </div>
-
-                <div class="button-group">
-                    <button type="submit" class="btn btn-primary" id="generateImagesBtn">
-                        Generate Images
-                    </button>
-                    <button type="button" class="btn btn-secondary" id="clearImagesBtn">
-                        Clear Results
-                    </button>
-                </div>
-            </form>
-        </div>
-
-        <div class="loading" id="imageLoading">
-            <div class="spinner"></div>
-            <h3>Generating images...</h3>
-            <p>This may take up to a minute per provider -- some backends need to cold-start</p>
-        </div>
-
-        <div class="results" id="imageResults">
-            <div class="results-header">
-                <h2>Generated Images</h2>
-                <div class="stats" id="imageStats"></div>
-            </div>
-            <div class="image-results-grid" id="imageResultsContainer"></div>
-        </div>
-        </div>
     </div>
         </div>
     </div>
 
-    <!-- Whole-page custom scroll indicator/scrollbar, positioned/sized by
-         updatePageScrollIndicator() and made draggable by setupThumbDrag() in JS. See the
-         CSS comment on .page-scroll-indicator for the full "why" -- in short, mirrors
-         #sidebarRecentsScrollThumb: the native browser scrollbar is now fully hidden
-         (see the html{scrollbar-width:none...} rule) since it always renders above page
-         content and would otherwise capture drags meant for a custom thumb. -->
+    <!-- Whole-page custom scroll indicator/scrollbar -- identical to templates/index.html's
+         copy of this element; see its HTML comment for the full "why". -->
     <div class="page-scroll-indicator" id="pageScrollThumb"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
@@ -1766,9 +1478,21 @@
             }, 3000);
         });
 
-        const providerModelsMap = {{ provider_models_json | default({}) | tojson | safe }};
-        const imageProviderModelsMap = {{ image_provider_models_json | default({}) | tojson | safe }};
         const isLoggedIn = {{ 'true' if session.user_id else 'false' }};
+
+        // Whether this page is showing a guest's client-only entry (true) or a logged-in
+        // user's Firestore-backed one (false, includes the "not logged in/guest at all"
+        // case which never reaches this template — see main.py view_history()).
+        const isGuestView = {{ 'true' if is_guest_view else 'false' }};
+        // The <history_id> path segment from the URL. For the logged-in path this is only
+        // used for display bookkeeping (the entry itself already arrived pre-fetched via
+        // serverHistoryEntry below); for the guest path it's the only way to know which
+        // element of the rehydrated guestHistory array to render.
+        const targetHistoryId = {{ history_id | tojson }};
+        // Populated server-side only for the logged-in path: main.py already fetched this
+        // exact entry from Firestore (with its ownership check) before rendering the page,
+        // so no extra client-side request is needed to show it.
+        const serverHistoryEntry = {{ history_entry | tojson if history_entry else 'null' }};
 
         // Guest identity: history is never persisted server-side. It used to live purely in
         // an in-memory array, which was fine while everything happened on this one page — but
@@ -1831,44 +1555,11 @@
 
         sidebarOverlay.addEventListener('click', closeSidebar);
 
-        // ---- Compare mode vs. image generation mode ----
-        // Both modes share the same .main-content/.container chrome (nav, sidebar, flash
-        // messages) and simply toggle which of the two top-level containers is visible --
-        // there is no client-side router, just two mutually-exclusive <div>s.
-        const compareModeContainer = document.getElementById('compareModeContainer');
-        const imageModeContainer = document.getElementById('imageModeContainer');
-
-        function switchToImageMode() {
-            compareModeContainer.style.display = 'none';
-            imageModeContainer.style.display = 'block';
-            closeSidebar();
-        }
-
-        function switchToCompareMode() {
-            imageModeContainer.style.display = 'none';
-            compareModeContainer.style.display = 'block';
-        }
-
-        document.getElementById('generateImageBtn').addEventListener('click', switchToImageMode);
-
         // ---- Keep .left-sidebar's sticky offset/height in sync with the real,
         // currently-rendered height of whatever sits above it (.navbar + the optional
-        // .guest-banner) ----
-        // .left-sidebar is `position:sticky` so its dark background always spans the full
-        // viewport (never truncated, even when .main-content grows very tall with results)
-        // while still letting #sidebarRecents scroll internally within a bounded height —
-        // see the comment on .left-sidebar's CSS rule for the full "why" of this fix
-        // (2026-07-03 user report: Recents never scrolled/paginated because nothing ever
-        // overflowed). The header's height isn't a fixed constant — it changes with login
-        // state (Welcome/Profile/Logout vs Guest Mode badge vs anonymous), the presence of
-        // the guest banner, and viewport width — so it's measured at runtime rather than
-        // guessed with a hardcoded rem value.
+        // .guest-banner) ---- (identical to templates/index.html's copy of this function;
+        // see the comment there and on .left-sidebar's CSS rule for the full "why".)
         function syncSidebarStickyMetrics() {
-            // Below the desktop breakpoint the sidebar is a `position:fixed` overlay drawer
-            // (see the `@media (max-width: 520px)` block), entirely unrelated to this
-            // sticky/scroll math; its own literal `top`/`height` rules win over these CSS
-            // variables by source order regardless, but skip the measurement anyway since
-            // it'd be wasted work.
             if (window.innerWidth <= 520) return;
 
             const zoom = parseFloat(
@@ -1877,38 +1568,21 @@
 
             const navbarEl = document.querySelector('.navbar');
             const bannerEl = document.querySelector('.guest-banner');
-            // getBoundingClientRect() reports already-zoomed, on-screen pixels. CSS length
-            // values (like the `top` this gets plugged into) are "logical" pre-zoom lengths
-            // that the browser re-scales by `zoom` when rendering — so a real 56px navbar
-            // naively set as `top: 56px` would render at the wrong on-screen size once `zoom`
-            // is applied again (smaller than 56px at the current zoom:0.88; larger than
-            // 56px if zoom>1, e.g. the former 1.1), leaving a mismatched gap or overlap either way.
-            // Dividing by `zoom` here undoes that ahead of time, the same trick already used
-            // for `body`'s `min-height: calc(100vh / var(--page-zoom))` above.
             let realHeaderHeight = navbarEl ? navbarEl.getBoundingClientRect().height : 0;
             if (bannerEl) {
                 realHeaderHeight += bannerEl.getBoundingClientRect().height;
             }
 
-            // Only the header height needs JS measurement + this zoom back-conversion; the
-            // sidebar's `height` is now resolved natively via `calc(100vh / ...)` in the
-            // .left-sidebar CSS rule itself (see its comment for why) instead of also being
-            // computed here from window.innerHeight — that JS-side integer measurement,
-            // compounded with browser-level page zoom, was the source of a visible gap below
-            // the sidebar at high zoom levels once scrolled to the bottom of a long page.
+            // Only the header height needs JS measurement -- .left-sidebar's `height` is now
+            // resolved natively via CSS calc(100vh / ...) instead of also being computed here
+            // from window.innerHeight (see .left-sidebar's CSS comment for the full "why").
             document.documentElement.style.setProperty(
                 '--sidebar-header-height', (realHeaderHeight / zoom) + 'px'
             );
         }
 
-        // Keeps #sidebarRecentsScrollThumb's position/size in sync with #sidebarRecents'
-        // actual scroll state. See the HTML comment next to #sidebarRecentsScrollThumb and
-        // the CSS comment on .sidebar-recents-scroll-indicator for why this fully custom
-        // indicator exists instead of relying on the browser's native scrollbar rendering.
-        // #sidebarRecents' own `scroll` listener (further down, alongside
-        // loadMoreSidebarHistory), renderCurrentHistory(), and the resize listener below
-        // all call this after anything that could change scroll position, content height,
-        // or the sidebar's own bounded height.
+        // Keeps #sidebarRecentsScrollThumb in sync -- identical to templates/index.html's
+        // copy of this function; see the comment there for the full "why".
         function updateSidebarScrollIndicator() {
             const recents = document.getElementById('sidebarRecents');
             const thumb = document.getElementById('sidebarRecentsScrollThumb');
@@ -1916,17 +1590,14 @@
             if (!recents || !thumb || !sidebar) return;
             const { scrollTop, scrollHeight, clientHeight } = recents;
             if (scrollHeight <= clientHeight + 1) {
-                // Nothing to scroll -- hide rather than show a full-height, pointless thumb.
                 thumb.classList.remove('visible');
                 return;
             }
             // getBoundingClientRect() returns already-zoomed, on-screen pixels, but
             // `style.top`/`style.height` are "logical" pre-zoom lengths that get re-scaled
             // by `zoom` again when rendered -- the same trap already handled in
-            // syncSidebarStickyMetrics() above. Skipping this division here originally
-            // made the thumb render at the wrong position/size (scaled down an extra time),
-            // caught during verification: it rendered ~15px too high and stopped ~160px
-            // short of the recents pane's actual bottom edge when scrolled all the way down.
+            // syncSidebarStickyMetrics() above; see templates/index.html's copy of this
+            // function for the full "why" and the verification that caught it.
             const zoom = parseFloat(
                 getComputedStyle(document.documentElement).getPropertyValue('--page-zoom')
             ) || 1;
@@ -1943,24 +1614,10 @@
             thumb.classList.add('visible');
         }
 
-        // Makes a custom scroll-indicator thumb (`thumbEl`) actually draggable, mapping
-        // vertical mouse/touch movement onto the scrollable region it represents.
-        // `opts.getScrollTop/getScrollHeight/getClientHeight/setScrollTop` abstract over
-        // whatever is actually being scrolled -- #sidebarRecents (a regular element) or the
-        // whole document (via window.scrollY/scrollTo), since both #sidebarRecentsScrollThumb
-        // and #pageScrollThumb reuse this same drag logic.
-        //
-        // Deliberately does *not* do any --page-zoom division here, unlike
-        // updateSidebarScrollIndicator()/updatePageScrollIndicator(): that division is only
-        // needed when *assigning* a JS-computed length to a CSS style.top/height property
-        // (which gets re-scaled by `zoom` again on render). Here, `e.clientY` (an on-screen,
-        // already-zoomed mouse coordinate) is only ever combined with scrollTop/scrollHeight/
-        // clientHeight -- which are themselves already-zoomed local layout measurements, the
-        // same coordinate space as clientY -- so the ratio math below is zoom-consistent
-        // without any conversion. The resulting scroll position is then applied via
-        // setScrollTop(), and the next native `scroll` event naturally triggers
-        // updateSidebarScrollIndicator()/updatePageScrollIndicator() to reposition the thumb
-        // visually (those *do* still need the zoom conversion, for the reason above).
+        // Makes a custom scroll-indicator thumb draggable -- identical to
+        // templates/index.html's copy of this function; see its comment for the full "why"
+        // and why no --page-zoom division is needed here (unlike the position/size
+        // functions above and below).
         function setupThumbDrag(thumbEl, opts) {
             let dragging = false;
             let dragStartClientY = 0;
@@ -2004,7 +1661,6 @@
             });
             document.addEventListener('mouseup', endDrag);
 
-            // Touch support mirrors the mouse handlers above.
             thumbEl.addEventListener('touchstart', function(e) {
                 startDrag(e.touches[0].clientY);
             }, { passive: true });
@@ -2023,14 +1679,8 @@
             setScrollTop: (v) => { document.getElementById('sidebarRecents').scrollTop = v; }
         });
 
-        // Keeps #pageScrollThumb's position/size in sync with the whole document's scroll
-        // state -- the whole-page counterpart to updateSidebarScrollIndicator(), added
-        // 2026-07-03 ("整体右侧的 scrollbar 也要进行类似修改"). window.scrollY,
-        // document.documentElement.scrollHeight and window.innerHeight are all consistently
-        // already-zoomed measurements (same reasoning as scrollTop/scrollHeight/clientHeight
-        // above), so their *ratios* need no zoom conversion; only the final top/height pixel
-        // values assigned to thumb.style need dividing by --page-zoom, same as
-        // updateSidebarScrollIndicator().
+        // Keeps #pageScrollThumb in sync -- identical to templates/index.html's copy of this
+        // function; see its comment for the full "why".
         function updatePageScrollIndicator() {
             const thumb = document.getElementById('pageScrollThumb');
             if (!thumb) return;
@@ -2070,282 +1720,8 @@
             updatePageScrollIndicator();
         });
         window.addEventListener('scroll', updatePageScrollIndicator, { passive: true });
-        // Any content change that alters the document's rendered height (new results
-        // rendered, Clear Results collapsing them, a flash message auto-dismissing, etc.)
-        // needs to re-check whether the page overflows and reposition the thumb -- rather
-        // than hunting down and calling updatePageScrollIndicator() after every such call
-        // site individually, observing document.body's own size covers all of them
-        // automatically, including any future ones.
         if (typeof ResizeObserver !== 'undefined') {
             new ResizeObserver(updatePageScrollIndicator).observe(document.body);
-        }
-
-        const providerTriggers = document.querySelectorAll('.provider-trigger');
-        const modelSelect = document.getElementById('modelSelect');
-        
-        // 自定义组件的 DOM 节点
-        const customWrapper = document.getElementById('customSelectWrapper');
-        const customTrigger = document.getElementById('customSelectTrigger');
-        const customOptionsContainer = document.getElementById('customOptions');
-
-        // 与 .custom-options 收起动画的 CSS transition 时长（0.15s）保持一致，
-        // 黑色高亮的变更延后到这个时长之后才应用，此时下拉面板已经完全隐藏。
-        const MODEL_HIGHLIGHT_DELAY_MS = 150;
-        let modelHighlightTimer = null;
-
-        // 将 .selected（黑色高亮）与 modelSelect.value 的当前值重新同步。
-        // 每次调用都重新查询 DOM，避免 updateModelDropdown() 重建选项后引用失效。
-        function syncSelectedOptionHighlight() {
-            customOptionsContainer.querySelectorAll('.custom-option').forEach(opt => {
-                opt.classList.toggle('selected', opt.getAttribute('data-value') === modelSelect.value);
-            });
-        }
-
-        // 统一控制自定义下拉列表点击切换的逻辑
-        customTrigger.addEventListener('click', function(e) {
-            const opening = !customWrapper.classList.contains('open');
-            customWrapper.classList.toggle('open');
-            if (opening) {
-                // 重新打开时立即同步一次，防止上次延迟高亮还未来得及应用
-                clearTimeout(modelHighlightTimer);
-                syncSelectedOptionHighlight();
-            }
-            e.stopPropagation();
-        });
-
-        document.addEventListener('click', function() {
-            customWrapper.classList.remove('open');
-        });
-
-        function updateModelDropdown() {
-            // 解决鬼畜：在刷新选项前，强制关闭可能正处于打开状态的下拉面板
-            customWrapper.classList.remove('open');
-            // 面板是被重建的，任何还未触发的延迟高亮都已经不指向有效节点，直接作废
-            clearTimeout(modelHighlightTimer);
-
-            const selectedProviders = Array.from(providerTriggers)
-                .filter(cb => cb.checked)
-                .map(cb => cb.value);
-
-            let availableModels = new Set();
-
-            if (selectedProviders.length === 0) {
-                Object.values(providerModelsMap).forEach(models => {
-                    if (Array.isArray(models)) {
-                        models.forEach(m => availableModels.add(m));
-                    }
-                });
-            } else {
-                selectedProviders.forEach(name => {
-                    const models = providerModelsMap[name] || [];
-                    if (Array.isArray(models)) {
-                        models.forEach(m => availableModels.add(m));
-                    }
-                });
-            }
-
-            const currentSelectedValue = modelSelect.value;
-
-            // 1. 重置隐藏的原生 select 元素
-            modelSelect.innerHTML = '<option value="">-- Use Provider\'s Default Model --</option>';
-            
-            // 2. 清空并重置自定义下拉面板的选项
-            customOptionsContainer.innerHTML = '';
-            
-            // 创建自定义的默认选项
-            const defaultOpt = document.createElement('div');
-            defaultOpt.className = 'custom-option';
-            defaultOpt.textContent = "-- Use Provider's Default Model --";
-            defaultOpt.setAttribute('data-value', '');
-            customOptionsContainer.appendChild(defaultOpt);
-
-            // 动态填入新选项数据
-            Array.from(availableModels).sort().forEach(modelName => {
-                // 同步至原生标签
-                const option = document.createElement('option');
-                option.value = modelName;
-                option.textContent = modelName;
-                modelSelect.appendChild(option);
-
-                // 同步至自定义 div 标签
-                const customOpt = document.createElement('div');
-                customOpt.className = 'custom-option';
-                customOpt.textContent = modelName;
-                customOpt.setAttribute('data-value', modelName);
-                customOptionsContainer.appendChild(customOpt);
-            });
-
-            // 3. 恢复联动刷新前的选中项状态
-            if (availableModels.has(currentSelectedValue) && currentSelectedValue !== '') {
-                modelSelect.value = currentSelectedValue;
-                customTrigger.textContent = currentSelectedValue;
-            } else {
-                modelSelect.value = '';
-                customTrigger.textContent = "-- Use Provider's Default Model --";
-            }
-
-            // 4. 为新生成的自定义选项单独绑定点击选择事件
-            const allCustomOpts = customOptionsContainer.querySelectorAll('.custom-option');
-            allCustomOpts.forEach(opt => {
-                const optValue = opt.getAttribute('data-value');
-                
-                // 标记当前高亮选中的项
-                if (optValue === modelSelect.value) {
-                    opt.classList.add('selected');
-                }
-
-                opt.addEventListener('click', function() {
-                    customTrigger.textContent = this.textContent;
-                    modelSelect.value = optValue;
-
-                    // 派发原生 change 事件，确保上层表单感知数值变动
-                    modelSelect.dispatchEvent(new Event('change'));
-                    customWrapper.classList.remove('open');
-
-                    // 黑色高亮的切换延后到收起动画结束、面板已完全不可见之后再应用，
-                    // 避免用户点击时看到高亮瞬间跳变到新选项、视觉紊乱。
-                    clearTimeout(modelHighlightTimer);
-                    modelHighlightTimer = setTimeout(syncSelectedOptionHighlight, MODEL_HIGHLIGHT_DELAY_MS);
-                });
-            });
-        }
-
-       let debounceTimer;
-        const providerCards = document.querySelectorAll('.provider-checkbox');
-
-        // 让整卡边框（.is-checked）与 input.checked 状态保持同步，
-        // 覆盖点击、键盘操作（Tab+Space）以及浏览器 bfcache 回退恢复勾选态等所有路径。
-        function syncCardChecked(card) {
-            const checkbox = card.querySelector('.provider-trigger');
-            card.classList.toggle('is-checked', checkbox.checked);
-        }
-
-        providerCards.forEach(card => {
-            syncCardChecked(card); // 初始状态同步（含 bfcache 恢复的已勾选情况）
-
-            card.addEventListener('click', function(e) {
-                // 如果用户直接点到了 input 勾选框本身，让它正常走，不做干涉
-                if (e.target.tagName === 'INPUT') {
-                    syncCardChecked(this);
-                    clearTimeout(debounceTimer);
-                    debounceTimer = setTimeout(() => {
-                        updateModelDropdown();
-                    }, 50);
-                    return;
-                }
-
-                // 如果用户点的是大方块的其他区域，手动切换勾选状态
-                e.preventDefault(); // 核心：干掉 Chrome 默认的 label 投射行为，防止二次触发
-
-                const checkbox = this.querySelector('.provider-trigger');
-                checkbox.checked = !checkbox.checked;
-                syncCardChecked(this);
-
-                // 手动触发一次刷新
-                clearTimeout(debounceTimer);
-                debounceTimer = setTimeout(() => {
-                    updateModelDropdown();
-                }, 50);
-            });
-        });
-
-        updateModelDropdown();
-
-        document.getElementById('compareForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-
-            const prompt = document.getElementById('prompt').value.trim();
-            if (!prompt) {
-                alert('Please enter a prompt');
-                return;
-            }
-
-            const selectedProviders = Array.from(providerTriggers)
-                .filter(cb => cb.checked)
-                .map(cb => cb.value);
-
-            const targetModel = modelSelect.value || null;
-
-            showLoading();
-
-            try {
-                const requestBody = {
-                    prompt,
-                    providers: selectedProviders,
-                    max_workers: 5
-                };
-
-                if (targetModel) {
-                    requestBody.model = targetModel;
-                }
-
-                const response = await fetch('/api/compare', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestBody)
-                });
-
-                if (!response.ok) {
-                    let errorMsg = `Server error: ${response.status} ${response.statusText}`;
-                    try {
-                        const errData = await response.json();
-                        if (errData.error) errorMsg = errData.error;
-                    } catch (_) {}
-                    alert('Error: ' + errorMsg);
-                    return;
-                }
-
-                const data = await response.json();
-
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                    return;
-                }
-
-                displayResults(data);
-
-                if (data.history_id) {
-                    loadSidebarHistory();
-                } else if (!isLoggedIn) {
-                    // Guests never get a history_id back (nothing is persisted server-side),
-                    // so simulate the same "new chat lands in Recents" UX purely in memory.
-                    window.guestHistory.unshift({
-                        id: 'guest-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-                        title: prompt.length > 15 ? prompt.slice(0, 15) + '...' : prompt,
-                        prompt: prompt,
-                        results: data.results,
-                        created_at: new Date().toISOString(),
-                        is_pinned: false
-                    });
-                    persistGuestHistory();
-                    loadSidebarHistory();
-                }
-            } catch (error) {
-                console.error('Error comparing providers:', error);
-                alert('Error comparing providers. Please try again.');
-            } finally {
-                hideLoading();
-            }
-        });
-
-        document.getElementById('clearBtn').addEventListener('click', () => {
-            document.getElementById('results').style.display = 'none';
-            document.getElementById('prompt').value = '';
-            providerTriggers.forEach(cb => cb.checked = false);
-            providerCards.forEach(syncCardChecked);
-            modelSelect.value = '';
-            updateModelDropdown();
-        });
-
-        function showLoading() {
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('results').style.display = 'none';
-            document.getElementById('compareBtn').disabled = true;
-        }
-
-        function hideLoading() {
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('compareBtn').disabled = false;
         }
 
         function escapeHtml(str) {
@@ -2354,327 +1730,6 @@
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;');
-        }
-
-        // ==================================================
-        // Image generation mode: provider/model selection + form submit + results grid.
-        // Deliberately mirrors (rather than reuses) the compare form's provider-checkbox/
-        // model-dropdown wiring above -- same interaction pattern for consistency, but a
-        // fully separate set of DOM nodes/variables (see the .image-provider-checkbox CSS
-        // comment for why the class names can't be shared).
-        // ==================================================
-        const imageProviderTriggers = document.querySelectorAll('.image-provider-trigger');
-        const imageModelSelect = document.getElementById('imageModelSelect');
-        const imageCustomWrapper = document.getElementById('imageCustomSelectWrapper');
-        const imageCustomTrigger = document.getElementById('imageCustomSelectTrigger');
-        const imageCustomOptionsContainer = document.getElementById('imageCustomOptions');
-
-        imageCustomTrigger.addEventListener('click', function(e) {
-            imageCustomWrapper.classList.toggle('open');
-            e.stopPropagation();
-        });
-
-        document.addEventListener('click', function() {
-            imageCustomWrapper.classList.remove('open');
-        });
-
-        function updateImageModelDropdown() {
-            imageCustomWrapper.classList.remove('open');
-
-            const selectedProviders = Array.from(imageProviderTriggers)
-                .filter(cb => cb.checked)
-                .map(cb => cb.value);
-
-            let availableModels = new Set();
-
-            if (selectedProviders.length === 0) {
-                Object.values(imageProviderModelsMap).forEach(models => {
-                    if (Array.isArray(models)) {
-                        models.forEach(m => availableModels.add(m));
-                    }
-                });
-            } else {
-                selectedProviders.forEach(name => {
-                    const models = imageProviderModelsMap[name] || [];
-                    if (Array.isArray(models)) {
-                        models.forEach(m => availableModels.add(m));
-                    }
-                });
-            }
-
-            const currentSelectedValue = imageModelSelect.value;
-
-            imageModelSelect.innerHTML = '<option value="">-- Use Provider\'s Default Model --</option>';
-            imageCustomOptionsContainer.innerHTML = '';
-
-            const defaultOpt = document.createElement('div');
-            defaultOpt.className = 'custom-option';
-            defaultOpt.textContent = "-- Use Provider's Default Model --";
-            defaultOpt.setAttribute('data-value', '');
-            imageCustomOptionsContainer.appendChild(defaultOpt);
-
-            Array.from(availableModels).sort().forEach(modelName => {
-                const option = document.createElement('option');
-                option.value = modelName;
-                option.textContent = modelName;
-                imageModelSelect.appendChild(option);
-
-                const customOpt = document.createElement('div');
-                customOpt.className = 'custom-option';
-                customOpt.textContent = modelName;
-                customOpt.setAttribute('data-value', modelName);
-                imageCustomOptionsContainer.appendChild(customOpt);
-            });
-
-            if (availableModels.has(currentSelectedValue) && currentSelectedValue !== '') {
-                imageModelSelect.value = currentSelectedValue;
-                imageCustomTrigger.textContent = currentSelectedValue;
-            } else {
-                imageModelSelect.value = '';
-                imageCustomTrigger.textContent = "-- Use Provider's Default Model --";
-            }
-
-            imageCustomOptionsContainer.querySelectorAll('.custom-option').forEach(opt => {
-                const optValue = opt.getAttribute('data-value');
-
-                if (optValue === imageModelSelect.value) {
-                    opt.classList.add('selected');
-                }
-
-                opt.addEventListener('click', function() {
-                    imageCustomTrigger.textContent = this.textContent;
-                    imageModelSelect.value = optValue;
-                    imageModelSelect.dispatchEvent(new Event('change'));
-                    imageCustomWrapper.classList.remove('open');
-
-                    imageCustomOptionsContainer.querySelectorAll('.custom-option').forEach(o => o.classList.remove('selected'));
-                    this.classList.add('selected');
-                });
-            });
-        }
-
-        let imageDebounceTimer;
-        const imageProviderCards = document.querySelectorAll('.image-provider-checkbox');
-
-        function syncImageCardChecked(card) {
-            const checkbox = card.querySelector('.image-provider-trigger');
-            card.classList.toggle('is-checked', checkbox.checked);
-        }
-
-        imageProviderCards.forEach(card => {
-            syncImageCardChecked(card);
-
-            card.addEventListener('click', function(e) {
-                if (e.target.tagName === 'INPUT') {
-                    syncImageCardChecked(this);
-                    clearTimeout(imageDebounceTimer);
-                    imageDebounceTimer = setTimeout(updateImageModelDropdown, 50);
-                    return;
-                }
-
-                e.preventDefault();
-                const checkbox = this.querySelector('.image-provider-trigger');
-                checkbox.checked = !checkbox.checked;
-                syncImageCardChecked(this);
-
-                clearTimeout(imageDebounceTimer);
-                imageDebounceTimer = setTimeout(updateImageModelDropdown, 50);
-            });
-        });
-
-        updateImageModelDropdown();
-
-        document.getElementById('imageForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-
-            const prompt = document.getElementById('imagePrompt').value.trim();
-            if (!prompt) {
-                alert('Please enter an image prompt');
-                return;
-            }
-
-            const selectedProviders = Array.from(imageProviderTriggers)
-                .filter(cb => cb.checked)
-                .map(cb => cb.value);
-
-            const targetModel = imageModelSelect.value || null;
-
-            showImageLoading();
-
-            try {
-                const requestBody = {
-                    prompt,
-                    providers: selectedProviders,
-                    max_workers: 5
-                };
-
-                if (targetModel) {
-                    requestBody.model = targetModel;
-                }
-
-                const response = await fetch('/api/generate-images', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestBody)
-                });
-
-                if (!response.ok) {
-                    let errorMsg = `Server error: ${response.status} ${response.statusText}`;
-                    try {
-                        const errData = await response.json();
-                        if (errData.error) errorMsg = errData.error;
-                    } catch (_) {}
-                    alert('Error: ' + errorMsg);
-                    return;
-                }
-
-                const data = await response.json();
-
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                    return;
-                }
-
-                displayImageResults(data);
-            } catch (error) {
-                console.error('Error generating images:', error);
-                alert('Error generating images. Please try again.');
-            } finally {
-                hideImageLoading();
-            }
-        });
-
-        document.getElementById('clearImagesBtn').addEventListener('click', () => {
-            document.getElementById('imageResults').style.display = 'none';
-            document.getElementById('imagePrompt').value = '';
-            imageProviderTriggers.forEach(cb => cb.checked = false);
-            imageProviderCards.forEach(syncImageCardChecked);
-            imageModelSelect.value = '';
-            updateImageModelDropdown();
-        });
-
-        function showImageLoading() {
-            document.getElementById('imageLoading').style.display = 'block';
-            document.getElementById('imageResults').style.display = 'none';
-            document.getElementById('generateImagesBtn').disabled = true;
-        }
-
-        function hideImageLoading() {
-            document.getElementById('imageLoading').style.display = 'none';
-            document.getElementById('generateImagesBtn').disabled = false;
-        }
-
-        // Downloads a generated image as a real .png file rather than just a link that
-        // may or may not trigger a save depending on the browser. Deliberately does NOT
-        // route this through our own backend as a fetch-by-URL proxy: image URLs come
-        // from third-party g4f backends (pollinations.ai, *.hf.space, operacdn.com), and a
-        // server-side "fetch whatever URL the client hands you" endpoint is a textbook SSRF
-        // vector (a malicious client could ask the server to fetch an internal/metadata
-        // URL instead of an image one). Fetching client-side and falling back to opening
-        // the image in a new tab if that fetch is blocked by CORS keeps 100% of this
-        // feature off the server and avoids that risk entirely, at the cost of the
-        // fallback path only being a "save image as" rather than an automatic download.
-        async function downloadImage(source, isBase64, filename) {
-            try {
-                let blob;
-                if (isBase64) {
-                    const byteChars = atob(source);
-                    const byteNumbers = new Array(byteChars.length);
-                    for (let i = 0; i < byteChars.length; i++) {
-                        byteNumbers[i] = byteChars.charCodeAt(i);
-                    }
-                    blob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
-                } else {
-                    const resp = await fetch(source);
-                    blob = await resp.blob();
-                }
-                const objectUrl = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = objectUrl;
-                a.download = filename || 'generated-image.png';
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                URL.revokeObjectURL(objectUrl);
-            } catch (err) {
-                console.error('Direct download failed (likely CORS-restricted), opening the image in a new tab instead:', err);
-                window.open(source, '_blank');
-            }
-        }
-
-        function displayImageResults(data) {
-            const stats = document.getElementById('imageStats');
-            const container = document.getElementById('imageResultsContainer');
-
-            const successRate = data.total_providers > 0
-                ? ((data.successful_providers / data.total_providers) * 100).toFixed(1) + '%'
-                : '0%';
-
-            stats.innerHTML = `
-                <div class="stat">
-                    <div class="stat-value">${data.total_providers}</div>
-                    <div class="stat-label">Total Providers</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-value">${data.successful_providers}</div>
-                    <div class="stat-label">Successful</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-value">${successRate}</div>
-                    <div class="stat-label">Success Rate</div>
-                </div>
-            `;
-
-            // Kept out of the templated HTML string (rather than stuffed into a data-*
-            // attribute) purely because b64_json payloads can be long enough that escaping
-            // them into an HTML attribute is wasteful; the download buttons below look
-            // this array up by index instead.
-            window.__lastImageResults = data.results;
-
-            container.innerHTML = data.results.map((result, idx) => {
-                const imgSrc = result.success
-                    ? (result.url ? result.url : `data:image/png;base64,${result.b64_json}`)
-                    : '';
-                return `
-                    <div class="image-result-card">
-                        <div class="provider-header">
-                            <div class="provider-name">
-                                ${escapeHtml(result.provider)}
-                                <small>${escapeHtml(result.model)}</small>
-                            </div>
-                            <div class="provider-status">
-                                <span class="status-badge ${result.success ? 'status-success' : 'status-error'}">
-                                    ${result.success ? 'Success' : 'Failed'}
-                                </span>
-                                <span class="response-time">${result.response_time}s</span>
-                            </div>
-                        </div>
-                        ${result.success
-                            ? `<div class="image-result-body">
-                                <img src="${escapeHtml(imgSrc)}" alt="Image generated by ${escapeHtml(result.provider)}" class="generated-image">
-                                <button type="button" class="btn btn-secondary image-download-btn" data-idx="${idx}">Download PNG</button>
-                               </div>`
-                            : `<div class="provider-error">❌ ${escapeHtml(result.error)}</div>`
-                        }
-                    </div>
-                `;
-            }).join('');
-
-            container.querySelectorAll('.image-download-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const idx = parseInt(btn.getAttribute('data-idx'), 10);
-                    const result = window.__lastImageResults[idx];
-                    const filename = `${result.provider}-${result.model}.png`.replace(/[^a-z0-9.\-]/gi, '_');
-                    if (result.url) {
-                        downloadImage(result.url, false, filename);
-                    } else {
-                        downloadImage(result.b64_json, true, filename);
-                    }
-                });
-            });
-
-            document.getElementById('imageResults').style.display = 'block';
-            document.getElementById('imageResults').scrollIntoView({ behavior: 'smooth' });
         }
 
         // ==================================================
@@ -2790,9 +1845,6 @@
             }
             const groups = groupHistoryByDate(sortHistoryItems(currentHistoryItems));
             recents.innerHTML = renderHistoryGroups(groups);
-            // Content height just changed (initial render, a page appended by
-            // loadMoreSidebarHistory(), or a pin/rename/delete reorder) -- resync the
-            // custom scroll indicator's size/visibility to match.
             updateSidebarScrollIndicator();
         }
 
@@ -3010,7 +2062,14 @@
             const confirmed = await showDeleteConfirmModal(targetItem.title);
             if (!confirmed) return;
 
-            document.getElementById('clearBtn').click();
+            // This read-only page has no compare form to reset (contrast index.html's
+            // clearBtn.click() here). If the entry being deleted is the one currently shown
+            // in the main panel, there's nothing left to display, so leave for the app rather
+            // than showing a "ghost" of a conversation that no longer exists.
+            if (id === targetHistoryId) {
+                window.location.href = '/';
+                return;
+            }
 
             const index = currentHistoryItems.findIndex(h => h.id === id);
             if (index === -1) return;
@@ -3162,12 +2221,61 @@
         });
 
         document.getElementById('newChatBtn').addEventListener('click', () => {
-            switchToCompareMode();
-            document.getElementById('clearBtn').click();
-            closeSidebar();
+            // This page has no compare form to clear — "+ New Chat" here just means
+            // "leave the read-only history view and go start a real comparison."
+            window.location.href = '/';
         });
 
-        loadSidebarHistory();
+        // Renders one saved conversation's prompt + result snapshot into the main panel, or
+        // a "not found" message if it couldn't be resolved (deleted entry, id typed directly
+        // into the URL, or — for guests — sessionStorage was cleared/never populated because
+        // this browser never actually created that entry).
+        function renderHistoryEntry(entry) {
+            const notFoundEl = document.getElementById('historyNotFound');
+            const promptContainer = document.getElementById('promptDisplayContainer');
+            const resultsEl = document.getElementById('results');
+
+            if (!entry) {
+                notFoundEl.style.display = 'block';
+                promptContainer.style.display = 'none';
+                resultsEl.style.display = 'none';
+                return;
+            }
+
+            notFoundEl.style.display = 'none';
+            promptContainer.style.display = 'block';
+            document.getElementById('promptDisplay').textContent = entry.prompt || '';
+
+            const results = Array.isArray(entry.results) ? entry.results : [];
+            if (results.length === 0) {
+                resultsEl.style.display = 'none';
+                document.getElementById('resultsContainer').innerHTML = '';
+                document.getElementById('stats').innerHTML = '';
+            } else {
+                displayResults({
+                    results,
+                    total_providers: results.length,
+                    successful_providers: results.filter(r => r.success).length
+                });
+            }
+        }
+
+        // Logged-in entries are already fetched server-side (serverHistoryEntry, injected by
+        // main.py's view_history() with its Firestore ownership check already applied) — no
+        // extra request needed. Guest entries only ever exist in this browser's sessionStorage,
+        // so loadSidebarHistory() must run first to rehydrate window.guestHistory/
+        // currentHistoryItems before this page can look targetHistoryId up in it.
+        async function initHistoryPage() {
+            await loadSidebarHistory();
+            if (isGuestView) {
+                const target = currentHistoryItems.find(h => h.id === targetHistoryId);
+                renderHistoryEntry(target || null);
+            } else {
+                renderHistoryEntry(serverHistoryEntry);
+            }
+        }
+
+        initHistoryPage();
 
         function togglePeerReview(uid) {
             const list = document.getElementById('pr-list-' + uid);

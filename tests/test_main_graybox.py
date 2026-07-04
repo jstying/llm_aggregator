@@ -697,5 +697,310 @@ class TestPeerReviewOuterTimeoutValue(unittest.TestCase):
             self.assertEqual(result['peer_reviews'], [])
 
 
+def _make_image_result(provider, success, response_time, model='auto', url=None,
+                        b64_json=None, error=''):
+    return {
+        'provider': provider,
+        'success': success,
+        'url': url,
+        'b64_json': b64_json,
+        'error': '' if success else error,
+        'response_time': response_time,
+        'model': model,
+        'type': 'g4f_image'
+    }
+
+
+# ============================================================
+# 10. 文生图并发调度测试
+# POST /api/generate-images 是与 compare_providers() 同构的单阶段
+# 并发骨架（无互评），这里验证排序契约、max_workers 双重约束、
+# 硬超时熔断降级、以及 G4F_AVAILABLE 全局降级对图片路由同样生效。
+# ============================================================
+@unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
+class TestImageSortOrderInvariant(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+
+    def _post_generate(self, providers=None):
+        payload = {
+            'prompt': 'sort test',
+            'providers': providers or ['PollinationsImage', 'OperaAria']
+        }
+        return self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+
+    def test_two_successes_faster_provider_ranks_first(self):
+        def mock_test(provider, prompt, requested_model=None):
+            if provider.__name__ == 'PollinationsImage':
+                return _make_image_result('PollinationsImage', True, 3.0, url='https://x/a.png')
+            return _make_image_result('OperaAria', True, 1.0, model='aria', url='https://x/b.png')
+
+        with patch('main.test_g4f_image_provider', side_effect=mock_test):
+            response = self._post_generate()
+
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        results = data['results']
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]['provider'], 'OperaAria')
+        self.assertEqual(results[1]['provider'], 'PollinationsImage')
+
+    def test_success_ranks_before_failure_regardless_of_response_time(self):
+        def mock_test(provider, prompt, requested_model=None):
+            if provider.__name__ == 'PollinationsImage':
+                return _make_image_result('PollinationsImage', True, 5.0, url='https://x/a.png')
+            return _make_image_result('OperaAria', False, 0.1, model='aria', error='cold start failed')
+
+        with patch('main.test_g4f_image_provider', side_effect=mock_test):
+            response = self._post_generate()
+
+        data = json.loads(response.data)
+        results = data['results']
+        self.assertTrue(results[0]['success'])
+        self.assertEqual(results[0]['provider'], 'PollinationsImage')
+        self.assertFalse(results[1]['success'])
+
+    def test_successful_providers_count_matches_actual_successes(self):
+        def mock_test(provider, prompt, requested_model=None):
+            if provider.__name__ == 'PollinationsImage':
+                return _make_image_result('PollinationsImage', True, 2.0, url='https://x/a.png')
+            return _make_image_result('OperaAria', False, 0.5, model='aria', error='fail')
+
+        with patch('main.test_g4f_image_provider', side_effect=mock_test):
+            response = self._post_generate()
+
+        data = json.loads(response.data)
+        self.assertEqual(data['successful_providers'], 1)
+        self.assertEqual(data['total_providers'], 2)
+
+
+@unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
+class TestImageThreadTimeoutFallback(unittest.TestCase):
+    """Mirrors TestThreadTimeoutFallback: a thread raising TimeoutError must degrade to
+    a safe fallback image result (8-key DTO) rather than crashing the route."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+
+    def _generate_with_timeout(self, providers=None):
+        payload = {
+            'prompt': 'timeout test',
+            'providers': providers or ['PollinationsImage']
+        }
+        with patch('main.test_g4f_image_provider',
+                   side_effect=concurrent.futures.TimeoutError('simulated timeout')):
+            return self.client.post(
+                '/api/generate-images',
+                data=json.dumps(payload),
+                content_type='application/json'
+            )
+
+    def test_timeout_exception_does_not_crash_route(self):
+        response = self._generate_with_timeout()
+        self.assertEqual(response.status_code, 200)
+
+    def test_timeout_fallback_result_has_required_keys(self):
+        response = self._generate_with_timeout()
+        data = json.loads(response.data)
+        self.assertEqual(len(data['results']), 1)
+        result = data['results'][0]
+        expected_keys = {
+            'provider', 'success', 'url', 'b64_json', 'error',
+            'response_time', 'model', 'type'
+        }
+        self.assertEqual(set(result.keys()), expected_keys)
+
+    def test_timeout_fallback_success_is_false(self):
+        response = self._generate_with_timeout()
+        data = json.loads(response.data)
+        self.assertFalse(data['results'][0]['success'])
+
+    def test_timeout_fallback_error_message_is_friendly(self):
+        response = self._generate_with_timeout()
+        data = json.loads(response.data)
+        self.assertIn('system is busy', data['results'][0]['error'])
+
+    def test_timeout_fallback_type_is_g4f_image(self):
+        response = self._generate_with_timeout()
+        data = json.loads(response.data)
+        self.assertEqual(data['results'][0]['type'], 'g4f_image')
+
+    def test_timeout_fallback_model_follows_image_degradation_rules(self):
+        response = self._generate_with_timeout()
+        data = json.loads(response.data)
+        expected_model = main.determine_actual_image_model('PollinationsImage', None) or 'default'
+        self.assertEqual(data['results'][0]['model'], expected_model)
+
+    def test_non_timeout_execution_error_is_surfaced(self):
+        payload = {'prompt': 'boom test', 'providers': ['PollinationsImage']}
+        with patch('main.test_g4f_image_provider', side_effect=RuntimeError('kaboom')):
+            response = self.client.post(
+                '/api/generate-images',
+                data=json.dumps(payload),
+                content_type='application/json'
+            )
+        data = json.loads(response.data)
+        self.assertFalse(data['results'][0]['success'])
+        self.assertIn('kaboom', data['results'][0]['error'])
+
+
+@unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
+class TestImageMaxWorkersConstraint(unittest.TestCase):
+    """Mirrors TestMaxWorkersConstraint for /api/generate-images."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+        self._original_tpe = main.ThreadPoolExecutor
+
+    def tearDown(self):
+        main.ThreadPoolExecutor = self._original_tpe
+
+    def _build_capturing_tpe(self, captured_list):
+        original_tpe = self._original_tpe
+
+        class CapturingTPE:
+            def __init__(self, max_workers=None):
+                captured_list.append(max_workers)
+                self._inner = original_tpe(max_workers=max_workers)
+
+            def __enter__(self):
+                return self._inner.__enter__()
+
+            def __exit__(self, *args):
+                return self._inner.__exit__(*args)
+
+        return CapturingTPE
+
+    def test_max_workers_capped_at_5_when_large_value_sent(self):
+        captured = []
+        mock_result = _make_image_result('PollinationsImage', True, 1.0, url='https://x/a.png')
+
+        with patch('main.ThreadPoolExecutor', self._build_capturing_tpe(captured)), \
+             patch('main.test_g4f_image_provider', return_value=mock_result):
+            payload = {'prompt': 'test', 'providers': ['PollinationsImage'], 'max_workers': 100}
+            response = self.client.post(
+                '/api/generate-images',
+                data=json.dumps(payload),
+                content_type='application/json'
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(len(captured), 0)
+        for w in captured:
+            self.assertLessEqual(w, 5)
+
+    def test_max_workers_not_exceed_provider_count(self):
+        captured = []
+        mock_result = _make_image_result('PollinationsImage', True, 1.0, url='https://x/a.png')
+
+        with patch('main.ThreadPoolExecutor', self._build_capturing_tpe(captured)), \
+             patch('main.test_g4f_image_provider', return_value=mock_result):
+            payload = {'prompt': 'test', 'providers': ['PollinationsImage'], 'max_workers': 5}
+            response = self.client.post(
+                '/api/generate-images',
+                data=json.dumps(payload),
+                content_type='application/json'
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(len(captured), 0)
+        for w in captured:
+            self.assertLessEqual(w, 1)
+
+
+class TestImageGlobalDegradationState(unittest.TestCase):
+    """Mirrors TestGlobalDegradationState: G4F_AVAILABLE=False must degrade the image
+    routes the same way it does the text ones, not crash or leak stack traces."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+        self._original_g4f_available = main.G4F_AVAILABLE
+
+    def tearDown(self):
+        main.G4F_AVAILABLE = self._original_g4f_available
+
+    def test_image_providers_returns_empty_list_when_degraded(self):
+        main.G4F_AVAILABLE = False
+        response = self.client.get('/api/image-providers')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.data), [])
+
+    def test_generate_images_returns_503_when_degraded(self):
+        main.G4F_AVAILABLE = False
+        payload = {'prompt': 'a red apple'}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 503)
+
+
+# ============================================================
+# 11. 文生图硬超时数值回归测试
+# 与互评阶段的 32s outer timeout 同理：future.result() 必须以
+# IMAGE_GENERATION_OUTER_TIMEOUT（当前 45）等待，锁定该数值不被
+# 后续改动悄悄改小/改大而不同步更新 advisory timeout 与文档。
+# ============================================================
+@unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
+class TestImageOuterTimeoutValue(unittest.TestCase):
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+
+    def test_future_result_waits_up_to_45_seconds(self):
+        original_result = concurrent.futures.Future.result
+        captured_timeouts = []
+
+        def spy_result(self_future, timeout=None):
+            captured_timeouts.append(timeout)
+            return original_result(self_future, timeout=timeout)
+
+        mock_client_instance = MagicMock()
+        fake_response = MagicMock()
+        fake_response.data = [MagicMock(url='https://x/a.png', b64_json=None)]
+        mock_client_instance.images.generate.return_value = fake_response
+
+        with patch('main.G4FImageClient', return_value=mock_client_instance), \
+             patch.object(concurrent.futures.Future, 'result', spy_result):
+            response = self.client.post(
+                '/api/generate-images',
+                data=json.dumps({'prompt': 'test', 'providers': ['PollinationsImage']}),
+                content_type='application/json'
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(main.IMAGE_GENERATION_OUTER_TIMEOUT, captured_timeouts)
+        self.assertEqual(main.IMAGE_GENERATION_OUTER_TIMEOUT, 45)
+
+    def test_advisory_timeout_passed_to_generate_matches_constant(self):
+        mock_client_instance = MagicMock()
+        fake_response = MagicMock()
+        fake_response.data = [MagicMock(url='https://x/a.png', b64_json=None)]
+        mock_client_instance.images.generate.return_value = fake_response
+
+        with patch('main.G4FImageClient', return_value=mock_client_instance):
+            response = self.client.post(
+                '/api/generate-images',
+                data=json.dumps({'prompt': 'test', 'providers': ['PollinationsImage']}),
+                content_type='application/json'
+            )
+
+        self.assertEqual(response.status_code, 200)
+        call_kwargs = mock_client_instance.images.generate.call_args.kwargs
+        self.assertEqual(call_kwargs.get('timeout'), main.IMAGE_GENERATION_ADVISORY_TIMEOUT)
+        self.assertEqual(main.IMAGE_GENERATION_ADVISORY_TIMEOUT, 40)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

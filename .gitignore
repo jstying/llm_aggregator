@@ -28,5 +28,15 @@ provider_test_results*.txt
 # 忽略可用的服务商模型缓存文件
 available_providers_models.txt
 
+# 忽略图片生成 Provider 测试结果文本文件
+image_provider_test_results.txt
+
+# 忽略可用的图片生成 Provider/Model 扫描缓存文件与最终汇总文件
+available_image_providers_models.txt
+available_free_image_providers.txt
+
 # Firebase private key file
 firebase-key.json
+
+# 忽略generated media文件夹
+generated_media/

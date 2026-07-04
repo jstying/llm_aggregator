@@ -554,6 +554,287 @@ class TestParsePeerReviewJson(unittest.TestCase):
         self.assertIsInstance(comment, str)
 
 
+MOCK_IMAGE_PROVIDER_MODELS_MAP = {
+    'PollinationsImage': ['auto'],
+    'BlackForestLabs_Flux1Dev': ['flux-dev'],
+    'OperaAria': ['aria'],
+}
+
+
+class TestDetermineActualImageModel(unittest.TestCase):
+    """Image-generation counterpart of TestDetermineActualModel. Only rules A/B apply
+    here (see main.determine_actual_image_model's docstring-style comment): there is no
+    rule-C universal fallback model for text-to-image, since there's no image model name
+    that works across arbitrary providers the way 'gpt-3.5-turbo' does for chat."""
+
+    def setUp(self):
+        self.patcher_map = patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP)
+        self.patcher_map.start()
+
+    def tearDown(self):
+        self.patcher_map.stop()
+
+    def test_rule_a_model_in_supported_list(self):
+        import main
+        result = main.determine_actual_image_model('BlackForestLabs_Flux1Dev', 'flux-dev')
+        self.assertEqual(result, 'flux-dev')
+
+    def test_rule_b_model_not_in_list_falls_back_to_first(self):
+        import main
+        result = main.determine_actual_image_model('OperaAria', 'gpt-4')
+        self.assertEqual(result, 'aria')
+
+    def test_rule_b_none_model_falls_back_to_first(self):
+        import main
+        result = main.determine_actual_image_model('PollinationsImage', None)
+        self.assertEqual(result, 'auto')
+
+    def test_unknown_provider_returns_none_no_universal_fallback(self):
+        import main
+        result = main.determine_actual_image_model('GhostImageProvider', None)
+        self.assertIsNone(result)
+
+
+class TestInitImageResultObject(unittest.TestCase):
+
+    def setUp(self):
+        import main
+        self.init_image_result_object = main.init_image_result_object
+
+    def test_key_set_is_complete(self):
+        result = self.init_image_result_object('PollinationsImage', 'auto')
+        expected_keys = {'provider', 'success', 'url', 'b64_json', 'error', 'response_time', 'model', 'type'}
+        self.assertEqual(set(result.keys()), expected_keys)
+
+    def test_provider_and_model_fields(self):
+        result = self.init_image_result_object('BlackForestLabs_Flux1Dev', 'flux-dev')
+        self.assertEqual(result['provider'], 'BlackForestLabs_Flux1Dev')
+        self.assertEqual(result['model'], 'flux-dev')
+
+    def test_success_default_false(self):
+        result = self.init_image_result_object('PollinationsImage', 'auto')
+        self.assertFalse(result['success'])
+
+    def test_url_and_b64_json_default_none(self):
+        result = self.init_image_result_object('PollinationsImage', 'auto')
+        self.assertIsNone(result['url'])
+        self.assertIsNone(result['b64_json'])
+
+    def test_error_default_empty_string(self):
+        result = self.init_image_result_object('PollinationsImage', 'auto')
+        self.assertEqual(result['error'], '')
+
+    def test_response_time_default_zero(self):
+        result = self.init_image_result_object('PollinationsImage', 'auto')
+        self.assertEqual(result['response_time'], 0)
+
+    def test_type_always_g4f_image(self):
+        result = self.init_image_result_object('PollinationsImage', 'auto')
+        self.assertEqual(result['type'], 'g4f_image')
+
+    def test_no_extra_keys(self):
+        result = self.init_image_result_object('PollinationsImage', 'auto')
+        self.assertEqual(len(result), 8)
+
+    def test_independent_instances(self):
+        r1 = self.init_image_result_object('PollinationsImage', 'auto')
+        r2 = self.init_image_result_object('OperaAria', 'aria')
+        r1['success'] = True
+        self.assertFalse(r2['success'])
+
+
+class TestTestG4fImageProvider(unittest.TestCase):
+    """test_g4f_image_provider() is a fully separate call path from test_g4f_provider():
+    it goes through g4f.client.Client().images.generate() (patched here as
+    main.G4FImageClient) rather than g4f.ChatCompletion.create(), and returns the 8-key
+    image DTO rather than the 7-key text DTO."""
+
+    def _make_mock_provider(self, name='PollinationsImage'):
+        mock_provider = MagicMock()
+        mock_provider.__name__ = name
+        return mock_provider
+
+    def _make_fake_client(self, data=None, side_effect=None):
+        fake_client_instance = MagicMock()
+        if side_effect is not None:
+            fake_client_instance.images.generate.side_effect = side_effect
+        else:
+            fake_response = MagicMock()
+            fake_response.data = data
+            fake_client_instance.images.generate.return_value = fake_response
+        return fake_client_instance
+
+    def _make_fake_image(self, url=None, b64_json=None):
+        image = MagicMock()
+        image.url = url
+        image.b64_json = b64_json
+        return image
+
+    def test_success_with_url_sets_correct_fields(self):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = self._make_fake_client(data=[self._make_fake_image(url='https://example.com/a.png')])
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'a red apple')
+
+        self.assertTrue(result['success'])
+        self.assertEqual(result['url'], 'https://example.com/a.png')
+        self.assertIsNone(result['b64_json'])
+        self.assertEqual(result['error'], '')
+        self.assertEqual(result['provider'], 'PollinationsImage')
+        self.assertEqual(result['model'], 'auto')
+        self.assertEqual(result['type'], 'g4f_image')
+
+    def test_success_with_b64_json_sets_correct_fields(self):
+        mock_provider = self._make_mock_provider('OperaAria')
+        fake_client = self._make_fake_client(data=[self._make_fake_image(b64_json='ZmFrZWJhc2U2NA==')])
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'a blue whale', 'aria')
+
+        self.assertTrue(result['success'])
+        self.assertIsNone(result['url'])
+        self.assertEqual(result['b64_json'], 'ZmFrZWJhc2U2NA==')
+
+    def test_url_preferred_when_both_present(self):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = self._make_fake_client(
+            data=[self._make_fake_image(url='https://example.com/a.png', b64_json='ignored')]
+        )
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertEqual(result['url'], 'https://example.com/a.png')
+        self.assertIsNone(result['b64_json'])
+
+    def test_empty_data_list_sets_error(self):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = self._make_fake_client(data=[])
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertFalse(result['success'])
+        self.assertIn('no image data', result['error'])
+
+    def test_no_url_or_b64_json_sets_error(self):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = self._make_fake_client(data=[self._make_fake_image()])
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertFalse(result['success'])
+        self.assertIn('no image data', result['error'])
+
+    def test_exception_sets_error_and_success_false(self):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = self._make_fake_client(side_effect=RuntimeError('backend exploded'))
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertFalse(result['success'])
+        self.assertIn('backend exploded', result['error'])
+
+    def test_network_error_shows_friendly_message(self):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = self._make_fake_client(side_effect=Exception('connection timed out'))
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertFalse(result['success'])
+        self.assertIn('system is busy', result['error'])
+
+    def test_response_time_is_positive_float(self):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = self._make_fake_client(data=[self._make_fake_image(url='https://example.com/a.png')])
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertIsInstance(result['response_time'], float)
+        self.assertGreaterEqual(result['response_time'], 0)
+
+    def test_model_omitted_from_kwargs_when_auto(self):
+        """PollinationsImage's 'auto' placeholder must NOT be forwarded as model= to
+        images.generate() -- it signals "let the provider use its own default", and g4f
+        has no model literally named 'auto'."""
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = self._make_fake_client(data=[self._make_fake_image(url='https://example.com/a.png')])
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        call_kwargs = fake_client.images.generate.call_args.kwargs
+        self.assertNotIn('model', call_kwargs)
+
+    def test_model_forwarded_when_not_auto(self):
+        mock_provider = self._make_mock_provider('BlackForestLabs_Flux1Dev')
+        fake_client = self._make_fake_client(data=[self._make_fake_image(url='https://example.com/a.png')])
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        call_kwargs = fake_client.images.generate.call_args.kwargs
+        self.assertEqual(call_kwargs.get('model'), 'flux-dev')
+
+    def test_provider_instance_forwarded_to_generate(self):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = self._make_fake_client(data=[self._make_fake_image(url='https://example.com/a.png')])
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        call_kwargs = fake_client.images.generate.call_args.kwargs
+        self.assertIs(call_kwargs.get('provider'), mock_provider)
+
+    def test_result_key_set_on_success(self):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = self._make_fake_client(data=[self._make_fake_image(url='https://example.com/a.png')])
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        expected_keys = {'provider', 'success', 'url', 'b64_json', 'error', 'response_time', 'model', 'type'}
+        self.assertEqual(set(result.keys()), expected_keys)
+
+    def test_result_key_set_on_exception(self):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = self._make_fake_client(side_effect=ValueError('bad input'))
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        expected_keys = {'provider', 'success', 'url', 'b64_json', 'error', 'response_time', 'model', 'type'}
+        self.assertEqual(set(result.keys()), expected_keys)
+
+    def test_display_model_falls_back_to_default_for_unknown_provider(self):
+        mock_provider = self._make_mock_provider('GhostImageProvider')
+        fake_client = self._make_fake_client(data=[self._make_fake_image(url='https://example.com/a.png')])
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', {}), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertEqual(result['model'], 'default')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
 

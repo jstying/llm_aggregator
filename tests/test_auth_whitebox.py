@@ -472,6 +472,82 @@ class TestGetChatHistoryList(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestGetChatHistoryById(unittest.TestCase):
+    """Backs the read-only /history/<id> page (2026-07-03): a single-document fetch with
+    the same ownership-check contract as delete/update/toggle-pin (doc must exist AND belong
+    to the requesting user), returning the fully hydrated dict (with 'id') on success or None
+    otherwise — the route layer treats None as "not found" and can't distinguish "doesn't
+    exist" from "belongs to someone else" from "Firebase unavailable", same as the other
+    three CRUD functions' contract."""
+
+    def _build_mock_db(self, exists=True, owner_id='uid1', extra_fields=None):
+        mock_db = MagicMock()
+        mock_doc = MagicMock()
+        mock_doc.exists = exists
+        mock_doc.id = 'hist1'
+        data = {'user_id': owner_id, 'prompt': 'hello', 'results': []}
+        if extra_fields:
+            data.update(extra_fields)
+        mock_doc.to_dict.return_value = data
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+        return mock_db
+
+    def test_returns_entry_when_owned(self):
+        from auth import db as auth_db
+        mock_db = self._build_mock_db(exists=True, owner_id='uid1')
+
+        with patch.object(auth_db, 'db', mock_db):
+            result = auth_db.get_chat_history_by_id('uid1', 'hist1')
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['prompt'], 'hello')
+
+    def test_result_includes_id_key(self):
+        from auth import db as auth_db
+        mock_db = self._build_mock_db(exists=True, owner_id='uid1')
+
+        with patch.object(auth_db, 'db', mock_db):
+            result = auth_db.get_chat_history_by_id('uid1', 'hist1')
+
+        self.assertEqual(result['id'], 'hist1')
+
+    def test_returns_none_when_owned_by_another_user(self):
+        from auth import db as auth_db
+        mock_db = self._build_mock_db(exists=True, owner_id='someone_else')
+
+        with patch.object(auth_db, 'db', mock_db):
+            result = auth_db.get_chat_history_by_id('uid1', 'hist1')
+
+        self.assertIsNone(result)
+
+    def test_returns_none_when_document_does_not_exist(self):
+        from auth import db as auth_db
+        mock_db = self._build_mock_db(exists=False)
+
+        with patch.object(auth_db, 'db', mock_db):
+            result = auth_db.get_chat_history_by_id('uid1', 'ghost')
+
+        self.assertIsNone(result)
+
+    def test_returns_none_when_firebase_unavailable(self):
+        from auth import db as auth_db
+
+        with patch.object(auth_db, 'FIREBASE_AVAILABLE', False):
+            result = auth_db.get_chat_history_by_id('uid1', 'hist1')
+
+        self.assertIsNone(result)
+
+    def test_does_not_mutate_the_stored_document(self):
+        from auth import db as auth_db
+        mock_db = self._build_mock_db(exists=True, owner_id='uid1')
+
+        with patch.object(auth_db, 'db', mock_db):
+            auth_db.get_chat_history_by_id('uid1', 'hist1')
+
+        mock_db.collection.return_value.document.return_value.update.assert_not_called()
+        mock_db.collection.return_value.document.return_value.delete.assert_not_called()
+
+
 class TestDeleteChatHistory(unittest.TestCase):
 
     def _build_mock_db(self, exists=True, owner_id='uid1'):

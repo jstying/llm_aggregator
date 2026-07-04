@@ -100,6 +100,20 @@
             width: 100%;
         }
 
+        /* Page title inside the card (Login/Register/Profile). Used to be an inline
+           `style="color: #333; margin-bottom: 2rem;"` on each page's <h2> -- #333 and the
+           unset font-weight/letter-spacing didn't match the #09110e + 800-weight + tight
+           letter-spacing typographic scale used by every other heading in the app (welcome-
+           card h1, .header h1, .user-info h3), so these three pages' titles looked visibly
+           thinner/greyer/less tightly tracked than the rest of the UI. */
+        .card-title {
+            color: #09110e;
+            font-size: 1.6rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            margin-bottom: 28px;
+        }
+
         .form-group {
             margin-bottom: 22px;
         }

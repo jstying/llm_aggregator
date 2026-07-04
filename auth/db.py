@@ -125,6 +125,22 @@ def get_chat_history_list(user_id, limit=20, offset=0):
     return history_list[offset:offset + limit]
 
 
+def get_chat_history_by_id(user_id, history_id):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("get_chat_history_by_id called but Firebase unavailable")
+        return None
+
+    doc_ref = db.collection('history').document(history_id)
+    doc = doc_ref.get()
+    if not doc.exists or doc.to_dict().get('user_id') != user_id:
+        logger.warning(f"get_chat_history_by_id denied: {history_id} not owned by {user_id}")
+        return None
+
+    item = doc.to_dict()
+    item['id'] = doc.id
+    return item
+
+
 def delete_chat_history(user_id, history_id):
     if not FIREBASE_AVAILABLE:
         logger.warning("delete_chat_history called but Firebase unavailable")

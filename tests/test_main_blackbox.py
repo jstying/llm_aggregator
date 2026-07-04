@@ -74,6 +74,158 @@ class TestIndexPageSidebarMarkup(unittest.TestCase):
         self.assertIn('const isLoggedIn = false;', response.data.decode())
 
 
+class TestViewHistoryPage(unittest.TestCase):
+    """GET /history/<history_id> (2026-07-03): the read-only history.html detail page.
+    Logged-in visitors get the entry fetched from Firestore by id (with the usual ownership
+    check delegated to get_chat_history_by_id); guests get an empty shell that hydrates
+    client-side from sessionStorage (nothing to fetch/verify server-side for them, since
+    guest history is never persisted); anonymous visitors must be routed away entirely,
+    matching the identity state contract used by index()."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def _fake_entry(self, **overrides):
+        entry = {
+            'id': 'hist1',
+            'user_id': 'uid1',
+            'prompt': 'What is 2+2?',
+            'title': 'What is 2+2?',
+            'results': [
+                {
+                    'provider': 'Yqcloud', 'success': True, 'response': 'It is 4.',
+                    'error': '', 'response_time': 1.1, 'model': 'gpt-3.5-turbo',
+                    'type': 'g4f', 'peer_reviews': [],
+                }
+            ],
+            'is_pinned': False,
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_anonymous_visitor_is_redirected_away(self):
+        with main.app.test_client() as client:
+            response = client.get('/history/some-id')
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/', response.headers['Location'])
+
+    def test_anonymous_visitor_never_reaches_history_html(self):
+        with main.app.test_client() as client:
+            response = client.get('/history/some-id', follow_redirects=True)
+        self.assertNotIn('isGuestView', response.data.decode())
+
+    @patch('main.get_chat_history_by_id')
+    def test_logged_in_found_returns_200(self, mock_get):
+        mock_get.return_value = self._fake_entry()
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            response = client.get('/history/hist1')
+        self.assertEqual(response.status_code, 200)
+
+    @patch('main.get_chat_history_by_id')
+    def test_logged_in_found_calls_db_with_session_user_id_not_url(self, mock_get):
+        mock_get.return_value = self._fake_entry()
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            client.get('/history/hist1')
+        mock_get.assert_called_once_with('uid1', 'hist1')
+
+    @patch('main.get_chat_history_by_id')
+    def test_logged_in_found_embeds_prompt_and_results_for_js(self, mock_get):
+        mock_get.return_value = self._fake_entry()
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            response = client.get('/history/hist1')
+        html = response.data.decode()
+        self.assertIn('What is 2+2?', html)
+        self.assertIn('It is 4.', html)
+
+    @patch('main.get_chat_history_by_id')
+    def test_logged_in_found_sets_is_guest_view_false(self, mock_get):
+        mock_get.return_value = self._fake_entry()
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            response = client.get('/history/hist1')
+        self.assertIn('isGuestView = false', response.data.decode())
+
+    @patch('main.get_chat_history_by_id')
+    def test_logged_in_not_found_redirects_to_index(self, mock_get):
+        mock_get.return_value = None
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            response = client.get('/history/ghost')
+        self.assertEqual(response.status_code, 302)
+
+    @patch('main.get_chat_history_by_id')
+    def test_logged_in_not_found_flashes_message(self, mock_get):
+        mock_get.return_value = None
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            response = client.get('/history/ghost', follow_redirects=True)
+        self.assertIn('History entry not found', response.data.decode())
+
+    def test_guest_gets_200_without_querying_firestore(self):
+        with patch('main.get_chat_history_by_id') as mock_get:
+            with main.app.test_client() as client:
+                with client.session_transaction() as sess:
+                    sess['is_guest'] = True
+                response = client.get('/history/guest-abc-123')
+            mock_get.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+
+    def test_guest_sets_is_guest_view_true(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['is_guest'] = True
+            response = client.get('/history/guest-abc-123')
+        self.assertIn('isGuestView = true', response.data.decode())
+
+    def test_guest_embeds_target_history_id_from_url(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['is_guest'] = True
+            response = client.get('/history/guest-abc-123')
+        self.assertIn('"guest-abc-123"', response.data.decode())
+
+    def test_guest_has_no_compare_form_markup(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['is_guest'] = True
+            response = client.get('/history/guest-abc-123')
+        html = response.data.decode()
+        self.assertNotIn('id="compareForm"', html)
+        self.assertNotIn('id="providerSelection"', html)
+        self.assertNotIn('id="customSelectWrapper"', html)
+        self.assertNotIn('id="clearBtn"', html)
+
+    def test_logged_in_found_has_no_compare_form_markup(self):
+        with patch('main.get_chat_history_by_id', return_value=self._fake_entry()):
+            with main.app.test_client() as client:
+                with client.session_transaction() as sess:
+                    sess['user_id'] = 'uid1'
+                response = client.get('/history/hist1')
+        html = response.data.decode()
+        self.assertNotIn('id="compareForm"', html)
+        self.assertNotIn('id="providerSelection"', html)
+        self.assertNotIn('id="customSelectWrapper"', html)
+        self.assertNotIn('id="clearBtn"', html)
+
+    def test_guest_sidebar_markup_present(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['is_guest'] = True
+            response = client.get('/history/guest-abc-123')
+        html = response.data.decode()
+        for marker in ('left-sidebar', 'sidebarRecents', 'newChatBtn'):
+            self.assertIn(marker, html)
+
+
 class TestHealthEndpoint(unittest.TestCase):
 
     def setUp(self):
@@ -176,6 +328,57 @@ class TestGetProvidersEndpoint(unittest.TestCase):
         data = json.loads(response.data)
         for provider in data:
             self.assertEqual(provider['status'], 'available')
+
+
+class TestGetImageProvidersEndpoint(unittest.TestCase):
+    """Mirrors TestGetProvidersEndpoint above, for the independent image-generation
+    Provider list (GET /api/image-providers, backed by IMAGE_PROVIDER_MODELS_MAP)."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+
+    def test_returns_200(self):
+        response = self.client.get('/api/image-providers')
+        self.assertEqual(response.status_code, 200)
+
+    def test_returns_list(self):
+        response = self.client.get('/api/image-providers')
+        data = json.loads(response.data)
+        self.assertIsInstance(data, list)
+
+    def test_each_provider_has_required_fields(self):
+        response = self.client.get('/api/image-providers')
+        data = json.loads(response.data)
+        required_fields = {'name', 'models', 'default_model', 'type', 'status'}
+        for provider in data:
+            for field in required_fields:
+                self.assertIn(field, provider,
+                    msg=f"Field '{field}' missing from image provider: {provider.get('name')}")
+
+    def test_provider_default_model_is_in_models(self):
+        response = self.client.get('/api/image-providers')
+        data = json.loads(response.data)
+        for provider in data:
+            self.assertIn(provider['default_model'], provider['models'],
+                msg=f"default_model not in models list for {provider.get('name')}")
+
+    def test_provider_type_is_g4f_image(self):
+        response = self.client.get('/api/image-providers')
+        data = json.loads(response.data)
+        for provider in data:
+            self.assertEqual(provider['type'], 'g4f_image')
+
+    def test_expected_five_researched_providers_present(self):
+        """The five combinations confirmed usable in availability_g4f's 2026-07-03 research
+        (see availability_g4f/available_free_image_providers.txt) must all be exposed."""
+        response = self.client.get('/api/image-providers')
+        data = json.loads(response.data)
+        names = {p['name'] for p in data}
+        self.assertEqual(names, {
+            'PollinationsImage', 'BlackForestLabs_Flux1Dev', 'AnyProvider',
+            'StabilityAI_SD35Large', 'OperaAria',
+        })
 
 
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
@@ -500,6 +703,232 @@ class TestCompareEndpoint(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         data = json.loads(response.data)
         self.assertIn('error', data)
+
+
+def _fake_image(url=None, b64_json=None):
+    image = MagicMock()
+    image.url = url
+    image.b64_json = b64_json
+    return image
+
+
+def _fake_image_response(images):
+    response = MagicMock()
+    response.data = images
+    return response
+
+
+class TestGenerateImagesEndpoint(unittest.TestCase):
+    """POST /api/generate-images -- the text-to-image counterpart of TestCompareEndpoint.
+    Mocks main.G4FImageClient (the g4f.client.Client class reference) rather than
+    main.g4f.ChatCompletion.create, since image generation is a completely separate g4f
+    call path (see main.test_g4f_image_provider)."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+
+    @patch('main.G4FImageClient')
+    def test_success_returns_200(self, mock_client_cls):
+        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
+            [_fake_image(url='https://example.com/a.png')]
+        )
+        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 200)
+
+    @patch('main.G4FImageClient')
+    def test_success_response_has_required_top_level_keys(self, mock_client_cls):
+        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
+            [_fake_image(url='https://example.com/a.png')]
+        )
+        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        data = json.loads(response.data)
+        for key in ('prompt', 'total_providers', 'successful_providers', 'results'):
+            self.assertIn(key, data)
+
+    @patch('main.G4FImageClient')
+    def test_no_history_id_field_leaked_into_image_response(self, mock_client_cls):
+        """Image results are intentionally not persisted to chat history (see CLAUDE.md) --
+        the response body must not carry a stray history_id key copied from /api/compare."""
+        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
+            [_fake_image(url='https://example.com/a.png')]
+        )
+        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        data = json.loads(response.data)
+        self.assertNotIn('history_id', data)
+
+    @patch('main.G4FImageClient')
+    def test_each_result_has_required_keys(self, mock_client_cls):
+        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
+            [_fake_image(url='https://example.com/a.png')]
+        )
+        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage', 'OperaAria']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        data = json.loads(response.data)
+        required_keys = {'provider', 'success', 'url', 'b64_json', 'error', 'response_time', 'model', 'type'}
+        for result in data['results']:
+            self.assertTrue(required_keys.issubset(set(result.keys())),
+                msg=f"Result missing keys: {required_keys - set(result.keys())}")
+
+    @patch('main.G4FImageClient')
+    def test_total_providers_matches_results_length(self, mock_client_cls):
+        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
+            [_fake_image(url='https://example.com/a.png')]
+        )
+        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage', 'OperaAria']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        data = json.loads(response.data)
+        self.assertEqual(data['total_providers'], len(data['results']))
+
+    @patch('main.G4FImageClient')
+    def test_results_sorted_successful_before_failed(self, mock_client_cls):
+        def side_effect(**kwargs):
+            provider_arg = kwargs.get('provider')
+            if provider_arg.__name__ == 'PollinationsImage':
+                return _fake_image_response([_fake_image(url='https://example.com/a.png')])
+            raise Exception('Simulated failure')
+
+        mock_client_cls.return_value.images.generate.side_effect = side_effect
+
+        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage', 'OperaAria']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        data = json.loads(response.data)
+        results = data['results']
+
+        if len(results) > 1:
+            found_failure = False
+            for result in results:
+                if not result['success']:
+                    found_failure = True
+                if found_failure:
+                    self.assertFalse(result['success'],
+                        msg='A successful result appeared after a failed one')
+
+    @patch('main.G4FImageClient')
+    def test_prompt_field_in_response_matches_input(self, mock_client_cls):
+        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
+            [_fake_image(url='https://example.com/a.png')]
+        )
+        original_prompt = 'a small cactus wearing sunglasses'
+        payload = {'prompt': original_prompt, 'providers': ['PollinationsImage']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        data = json.loads(response.data)
+        self.assertEqual(data['prompt'], original_prompt)
+
+    @patch('main.G4FImageClient')
+    def test_no_providers_selected_defaults_to_all_image_providers(self, mock_client_cls):
+        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
+            [_fake_image(url='https://example.com/a.png')]
+        )
+        payload = {'prompt': 'a red apple'}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        data = json.loads(response.data)
+        self.assertEqual(data['total_providers'], len(main.IMAGE_PROVIDERS))
+
+    def test_missing_prompt_returns_400(self):
+        payload = {'providers': ['PollinationsImage']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 400)
+        data = json.loads(response.data)
+        self.assertIn('error', data)
+
+    def test_empty_body_returns_400(self):
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps({}),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 400)
+        data = json.loads(response.data)
+        self.assertIn('error', data)
+
+    def test_no_valid_providers_in_list_returns_400(self):
+        payload = {'prompt': 'a red apple', 'providers': ['GhostImageProvider']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 400)
+        data = json.loads(response.data)
+        self.assertIn('error', data)
+
+    @patch('main.G4F_AVAILABLE', False)
+    def test_g4f_unavailable_returns_503(self):
+        payload = {'prompt': 'a red apple'}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 503)
+
+    @patch('main.G4FImageClient')
+    def test_provider_error_message_surfaced_on_failure(self, mock_client_cls):
+        mock_client_cls.return_value.images.generate.side_effect = RuntimeError('backend exploded')
+        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        data = json.loads(response.data)
+        self.assertFalse(data['results'][0]['success'])
+        self.assertIn('backend exploded', data['results'][0]['error'])
+
+    @patch('main.G4FImageClient')
+    def test_text_provider_name_is_rejected_as_invalid(self, mock_client_cls):
+        """Providers is scoped to IMAGE_PROVIDERS, not G4F_PROVIDERS -- passing a valid
+        text-chat provider name here must not silently match anything."""
+        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
+            [_fake_image(url='https://example.com/a.png')]
+        )
+        payload = {'prompt': 'a red apple', 'providers': ['Yqcloud']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 400)
 
 
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
