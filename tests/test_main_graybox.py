@@ -948,7 +948,8 @@ class TestImageGlobalDegradationState(unittest.TestCase):
 # ============================================================
 # 11. 文生图硬超时数值回归测试
 # 与互评阶段的 32s outer timeout 同理：future.result() 必须以
-# IMAGE_GENERATION_OUTER_TIMEOUT（当前 45）等待，锁定该数值不被
+# IMAGE_GENERATION_OUTER_TIMEOUT（当前 50，2026-07-04 从 45 调宽，为
+# test_g4f_image_provider 内新增的 429/queue 重试腾出缓冲）等待，锁定该数值不被
 # 后续改动悄悄改小/改大而不同步更新 advisory timeout 与文档。
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
@@ -958,7 +959,7 @@ class TestImageOuterTimeoutValue(unittest.TestCase):
         main.app.config['TESTING'] = True
         self.client = main.app.test_client()
 
-    def test_future_result_waits_up_to_45_seconds(self):
+    def test_future_result_waits_up_to_50_seconds(self):
         original_result = concurrent.futures.Future.result
         captured_timeouts = []
 
@@ -981,7 +982,7 @@ class TestImageOuterTimeoutValue(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(main.IMAGE_GENERATION_OUTER_TIMEOUT, captured_timeouts)
-        self.assertEqual(main.IMAGE_GENERATION_OUTER_TIMEOUT, 45)
+        self.assertEqual(main.IMAGE_GENERATION_OUTER_TIMEOUT, 50)
 
     def test_advisory_timeout_passed_to_generate_matches_constant(self):
         mock_client_instance = MagicMock()
@@ -1000,6 +1001,49 @@ class TestImageOuterTimeoutValue(unittest.TestCase):
         call_kwargs = mock_client_instance.images.generate.call_args.kwargs
         self.assertEqual(call_kwargs.get('timeout'), main.IMAGE_GENERATION_ADVISORY_TIMEOUT)
         self.assertEqual(main.IMAGE_GENERATION_ADVISORY_TIMEOUT, 40)
+
+    def test_any_provider_gets_overridden_longer_timeouts(self):
+        """AnyProvider is a g4f meta-provider that chains through several real image
+        backends internally, so it needs a much longer budget than the default —
+        otherwise future.result() abandons it while the underlying call (and the
+        image download to get_media_dir()) is still legitimately in progress."""
+        advisory, outer = main.get_image_timeouts('AnyProvider')
+        self.assertGreater(advisory, main.IMAGE_GENERATION_ADVISORY_TIMEOUT)
+        self.assertGreater(outer, main.IMAGE_GENERATION_OUTER_TIMEOUT)
+        # outer must retain a buffer over advisory for scheduling overhead, same
+        # invariant as the default pair.
+        self.assertGreater(outer, advisory)
+
+    def test_unlisted_provider_falls_back_to_default_timeouts(self):
+        advisory, outer = main.get_image_timeouts('PollinationsImage')
+        self.assertEqual(advisory, main.IMAGE_GENERATION_ADVISORY_TIMEOUT)
+        self.assertEqual(outer, main.IMAGE_GENERATION_OUTER_TIMEOUT)
+
+    def test_any_provider_override_used_as_outer_future_timeout(self):
+        original_result = concurrent.futures.Future.result
+        captured_timeouts = []
+
+        def spy_result(self_future, timeout=None):
+            captured_timeouts.append(timeout)
+            return original_result(self_future, timeout=timeout)
+
+        mock_client_instance = MagicMock()
+        fake_response = MagicMock()
+        fake_response.data = [MagicMock(url='https://x/a.png', b64_json=None)]
+        mock_client_instance.images.generate.return_value = fake_response
+
+        with patch('main.G4FImageClient', return_value=mock_client_instance), \
+             patch.object(concurrent.futures.Future, 'result', spy_result):
+            response = self.client.post(
+                '/api/generate-images',
+                data=json.dumps({'prompt': 'test', 'providers': ['AnyProvider']}),
+                content_type='application/json'
+            )
+
+        self.assertEqual(response.status_code, 200)
+        _, expected_outer = main.get_image_timeouts('AnyProvider')
+        self.assertIn(expected_outer, captured_timeouts)
+        self.assertNotIn(main.IMAGE_GENERATION_OUTER_TIMEOUT, captured_timeouts)
 
 
 if __name__ == '__main__':

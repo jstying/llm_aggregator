@@ -2664,7 +2664,14 @@
                 btn.addEventListener('click', () => {
                     const idx = parseInt(btn.getAttribute('data-idx'), 10);
                     const result = window.__lastImageResults[idx];
-                    const filename = `${result.provider}-${result.model}.png`.replace(/[^a-z0-9.\-]/gi, '_');
+                    // 下载文件名的扩展名跟随实际图片格式（jpg/png/webp 等），而不是硬编码
+                    // .png——否则真实字节与扩展名不匹配时，部分系统看图工具会拒绝打开。
+                    let ext = 'png';
+                    if (result.url) {
+                        const extMatch = result.url.split('?')[0].match(/\.([a-z0-9]+)$/i);
+                        if (extMatch) ext = extMatch[1];
+                    }
+                    const filename = `${result.provider}-${result.model}.${ext}`.replace(/[^a-z0-9.\-]/gi, '_');
                     if (result.url) {
                         downloadImage(result.url, false, filename);
                     } else {

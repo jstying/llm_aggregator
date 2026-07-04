@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Flask Web框架相关模块
-from flask import Flask, request, jsonify, render_template, redirect, session, url_for, flash
+from flask import Flask, request, jsonify, render_template, redirect, session, url_for, flash, send_from_directory
 
 # 计时模块（统计模型响应时间）
 import time
@@ -48,6 +48,7 @@ from auth.db import (  # noqa: E402
 try:
     import g4f
     from g4f.client import Client as G4FImageClient
+    from g4f.image.copy_images import get_media_dir
 
     G4F_AVAILABLE = True
     logger.info("g4f imported successfully")
@@ -119,6 +120,7 @@ except ImportError as e:
     IMAGE_PROVIDERS = []
     IMAGE_PROVIDER_MODELS_MAP = {}
     G4FImageClient = None
+    get_media_dir = lambda: './generated_media'
     logger.warning(f"g4f not available: {e}")
 
 except Exception as e:
@@ -130,6 +132,7 @@ except Exception as e:
     IMAGE_PROVIDERS = []
     IMAGE_PROVIDER_MODELS_MAP = {}
     G4FImageClient = None
+    get_media_dir = lambda: './generated_media'
     logger.warning(f"g4f initialization failed: {e}")
 
 
@@ -236,6 +239,16 @@ CONTENT_POLICY_ERROR_KEYWORDS = [
     'responsible ai',
 ]
 
+# GPU 配额类错误关键词（文生图专属，HuggingFace ZeroGPU Space 后端如
+# BlackForestLabs_Flux1Dev / StabilityAI_SD35Large 命中）：命中时说明免费 GPU 配额
+# 已被用尽，是该 Provider 自身资源限制，而非网络抖动——与网络类错误区分开单独给出
+# 友好提示，否则前端会直接展示原始英文 JSON 报错（见 test_g4f_image_provider）
+GPU_QUOTA_ERROR_KEYWORDS = [
+    'zerogpu',
+    'gpu token limit',
+    'gpu quota',
+]
+
 
 # ==================================================
 # 辅助函数：检测重复文本并截断，同时过滤敏感内容
@@ -328,8 +341,28 @@ def test_g4f_provider(provider, prompt, requested_model=None):
 # HuggingFace Space 后端（BlackForestLabs_Flux1Dev/StabilityAI_SD35Large）存在真实的冷启动/
 # 排队延迟，比纯文本对话慢得多，因此取值明显高于文本路径的 20s；outer 硬截断
 # （见 generate_images() 的 future.result(timeout=...)）必须留有缓冲，两者需同步调整。
+# outer 相对 advisory 的缓冲从 5s 加宽到 10s：test_g4f_image_provider 在 429/queue 类
+# 瞬时错误上会重试一次（见该函数内的重试循环），多出的一次网络往返 + 重试前的等待
+# 需要计入 outer 预算，否则重试期间可能被 future.result() 提前判超时打断。
 IMAGE_GENERATION_ADVISORY_TIMEOUT = 40
-IMAGE_GENERATION_OUTER_TIMEOUT = 45
+IMAGE_GENERATION_OUTER_TIMEOUT = 50
+
+# 单个 Provider 的超时覆盖表：多数图片 Provider 用上面的默认值即可，但 AnyProvider
+# 是 g4f 的"聚合再路由"型 Provider——内部会依次尝试多个真实图片后端直到成功或全部
+# 耗尽，耗时明显更长、方差也更大（实测偶发超过默认 outer timeout 才真正返回，但那时
+# 图片其实已经生成并下载到本地 get_media_dir()，只是因为 future.result() 提前超时、
+# 结果被丢弃，前端展示为 Failed）。给它单独更宽松的预算；其余 Provider 不受影响，
+# 因为 outer timeout 是每个 future 独立计算的，不会拖慢同批次里其他 Provider 的等待时间。
+IMAGE_PROVIDER_TIMEOUT_OVERRIDES = {
+    'AnyProvider': {'advisory': 70, 'outer': 80},
+}
+
+
+def get_image_timeouts(provider_name):
+    override = IMAGE_PROVIDER_TIMEOUT_OVERRIDES.get(provider_name)
+    if override:
+        return override['advisory'], override['outer']
+    return IMAGE_GENERATION_ADVISORY_TIMEOUT, IMAGE_GENERATION_OUTER_TIMEOUT
 
 
 # ==================================================
@@ -344,49 +377,70 @@ def test_g4f_image_provider(provider, prompt, requested_model=None):
     provider_name = provider.__name__
     actual_model = determine_actual_image_model(provider_name, requested_model)
     display_model = actual_model or 'default'
+    advisory_timeout, _ = get_image_timeouts(provider_name)
 
     start_time = time.time()
     result = init_image_result_object(provider_name, display_model)
 
-    try:
-        client = G4FImageClient()
-        generate_kwargs = {
-            'prompt': prompt,
-            'provider': provider,
-            'timeout': IMAGE_GENERATION_ADVISORY_TIMEOUT,
-        }
-        # 'auto'（当前仅 PollinationsImage 使用）代表"不指定具体模型，让 Provider
-        # 自己走它的 default_image_model"，因此故意不传 model 关键字参数。
-        if actual_model and actual_model != 'auto':
-            generate_kwargs['model'] = actual_model
+    # 与 run_peer_review() 同构的重试策略：仅 429 / queue-full 这类瞬时限流错误值得
+    # 重试一次，其余异常（含 GPU 配额耗尽、内容策略等）重试无意义，直接跳出。
+    for attempt in range(2):
+        try:
+            client = G4FImageClient()
+            generate_kwargs = {
+                'prompt': prompt,
+                'provider': provider,
+                'timeout': advisory_timeout,
+            }
+            # 'auto'（当前仅 PollinationsImage 使用）代表"不指定具体模型，让 Provider
+            # 自己走它的 default_image_model"，因此故意不传 model 关键字参数。
+            if actual_model and actual_model != 'auto':
+                generate_kwargs['model'] = actual_model
 
-        response = client.images.generate(**generate_kwargs)
+            response = client.images.generate(**generate_kwargs)
 
-        image_data = response.data[0] if response and response.data else None
-        url = getattr(image_data, 'url', None) if image_data else None
-        b64_json = getattr(image_data, 'b64_json', None) if image_data else None
+            image_data = response.data[0] if response and response.data else None
+            url = getattr(image_data, 'url', None) if image_data else None
+            b64_json = getattr(image_data, 'b64_json', None) if image_data else None
 
-        if url:
-            result['success'] = True
-            result['url'] = url
-        elif b64_json:
-            result['success'] = True
-            result['b64_json'] = b64_json
-        else:
-            result['error'] = 'Provider returned no image data.'
+            if url:
+                result['success'] = True
+                result['url'] = url
+            elif b64_json:
+                result['success'] = True
+                result['b64_json'] = b64_json
+            else:
+                result['error'] = 'Provider returned no image data.'
+            break
 
-    except Exception as e:
-        err_str = str(e).lower()
-        if any(kw in err_str for kw in NETWORK_ERROR_KEYWORDS):
-            result['error'] = 'The system is busy and trying to reconnect. Please try again shortly.'
-        else:
-            result['error'] = str(e)
+        except Exception as e:
+            err_str = str(e).lower()
+            if attempt == 0 and ('429' in err_str or 'queue' in err_str):
+                wait = 2 + random.uniform(0, 1)
+                logger.warning(
+                    f"Image provider {provider_name} 429/queue, retrying in {wait:.1f}s"
+                )
+                time.sleep(wait)
+                continue
+            if any(kw in err_str for kw in GPU_QUOTA_ERROR_KEYWORDS):
+                result['error'] = (
+                    "This provider's free GPU quota is temporarily exhausted. "
+                    "Try again later or pick a different provider."
+                )
+            # 用 PEER_REVIEW_NETWORK_ERROR_KEYWORDS（含 429/queue）而不是
+            # NETWORK_ERROR_KEYWORDS：本函数和 run_peer_review 一样会对 429/queue
+            # 重试一次，重试耗尽后仍需把这两类错误归为"系统正忙"友好文案，而不是原始
+            # "Error 429: ..." 字符串漏给前端。
+            elif any(kw in err_str for kw in PEER_REVIEW_NETWORK_ERROR_KEYWORDS):
+                result['error'] = 'The system is busy and trying to reconnect. Please try again shortly.'
+            else:
+                result['error'] = str(e)
+            break
 
-    finally:
-        result['response_time'] = round(
-            time.time() - start_time,
-            2
-        )
+    result['response_time'] = round(
+        time.time() - start_time,
+        2
+    )
 
     return result
 
@@ -902,21 +956,25 @@ def generate_images():
             }
 
             for future, provider in futures.items():
+                name = provider.__name__
+                # 每个 Provider 各自的 outer timeout 独立计算（见 get_image_timeouts()），
+                # 慢速的聚合型 Provider（如 AnyProvider）不会拖慢同批次里其他 Provider
+                # 的等待时间，也不会被默认预算过早判定超时。
+                _, outer_timeout = get_image_timeouts(name)
                 try:
-                    result = future.result(timeout=IMAGE_GENERATION_OUTER_TIMEOUT)
+                    result = future.result(timeout=outer_timeout)
                     results.append(result)
                     logger.info(
                         f"Image generation completed: {result['provider']} "
                         f"success={result['success']}"
                     )
                 except Exception as e:
-                    name = provider.__name__
                     fallback_model = determine_actual_image_model(name, requested_model) or 'default'
                     fallback_result = init_image_result_object(name, fallback_model)
                     if isinstance(e, TimeoutError):
                         fallback_result['error'] = 'The system is busy and trying to reconnect. Please try again shortly.'
                         logger.warning(
-                            f"Image provider {name} timed out after {IMAGE_GENERATION_OUTER_TIMEOUT}s"
+                            f"Image provider {name} timed out after {outer_timeout}s"
                         )
                     else:
                         fallback_result['error'] = f'Execution error: {str(e)}'
@@ -945,6 +1003,25 @@ def generate_images():
         return jsonify({
             'error': 'Service temporarily unavailable. Please try again later.'
         }), 500
+
+
+# ==================================================
+# GET /media/<filename>
+#
+# g4f.client.Client().images.generate() 在返回前已经把生成的图片同步下载到本地
+# get_media_dir() 目录（./generated_images 优先，否则 ./generated_media），并把
+# Result DTO 的 url 字段设为形如 "/media/<filename>?url=<原始外部地址>" 的相对路径——
+# 这是 g4f 自带 GUI/API 服务器注册的路由约定，本项目并未运行那套服务器，因此必须
+# 自己补上这条静态文件路由，否则前端 <img> 与下载按钮请求 /media/<filename> 会 404
+# （下载按钮会把 404 错误页当成图片字节存下来，导致"不支持的文件格式"）。
+# 只读取本地已生成的文件，不按 url 查询参数发起任何服务端抓取——与"下载按钮不做
+# 服务端代理"的 SSRF 规避原则一致。
+# ==================================================
+@app.route('/media/<path:filename>')
+def serve_generated_media(filename):
+    safe_filename = os.path.basename(filename)
+    media_dir = os.path.abspath(get_media_dir())
+    return send_from_directory(media_dir, safe_filename)
 
 
 # ==================================================

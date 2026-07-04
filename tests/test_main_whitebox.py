@@ -834,9 +834,170 @@ class TestTestG4fImageProvider(unittest.TestCase):
 
         self.assertEqual(result['model'], 'default')
 
+    def test_gpu_quota_error_shows_friendly_message(self):
+        """StabilityAI_SD35Large / BlackForestLabs_Flux1Dev run on HuggingFace ZeroGPU
+        Spaces: when the free GPU quota is exhausted they raise a raw JSON-ish error
+        string mentioning 'ZeroGPU quota'. That must be translated into an actionable
+        friendly message instead of leaking the raw payload to the frontend."""
+        mock_provider = self._make_mock_provider('StabilityAI_SD35Large')
+        fake_client = self._make_fake_client(side_effect=Exception(
+            'GPU token limit exceeded: data: {"error": "You have exceeded your '
+            'ZeroGPU quota (65s requested vs. 0s left)."}'
+        ))
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
 
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
+        self.assertFalse(result['success'])
+        self.assertIn('GPU quota', result['error'])
+        self.assertNotIn('ZeroGPU', result['error'])
+        self.assertNotIn('{"error"', result['error'])
+
+    def test_gpu_quota_error_takes_priority_over_network_keywords(self):
+        """'exceeded your zerogpu quota... 0s left' does not contain a NETWORK_ERROR_
+        KEYWORDS hit today, but this pins the intended priority so a future keyword
+        addition (e.g. 'unavailable') can't silently swap the message back to the
+        generic 'system is busy' text."""
+        mock_provider = self._make_mock_provider('BlackForestLabs_Flux1Dev')
+        fake_client = self._make_fake_client(side_effect=Exception(
+            'You have exceeded your ZeroGPU quota (112s requested vs. 0s left).'
+        ))
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertIn('GPU quota', result['error'])
+        self.assertNotIn('system is busy', result['error'])
+
+
+class TestTestG4fImageProviderRetryAndTimeouts(unittest.TestCase):
+    """Whitebox tests for the 429/queue retry logic and per-provider timeout lookup
+    added to test_g4f_image_provider (mirrors run_peer_review's retry pattern)."""
+
+    def _make_mock_provider(self, name='PollinationsImage'):
+        mock_provider = MagicMock()
+        mock_provider.__name__ = name
+        return mock_provider
+
+    def _make_fake_image(self, url=None, b64_json=None):
+        image = MagicMock()
+        image.url = url
+        image.b64_json = b64_json
+        return image
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    def test_429_triggers_retry_and_succeeds(self, mock_rand, mock_sleep):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_success = MagicMock()
+        fake_success.data = [self._make_fake_image(url='https://example.com/a.png')]
+        fake_client = MagicMock()
+        fake_client.images.generate.side_effect = [
+            Exception('Error 429: Queue full for IP'),
+            fake_success,
+        ]
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertEqual(fake_client.images.generate.call_count, 2)
+        mock_sleep.assert_called_once()
+        self.assertTrue(result['success'])
+        self.assertEqual(result['url'], 'https://example.com/a.png')
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    def test_queue_full_error_also_triggers_retry(self, mock_rand, mock_sleep):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_success = MagicMock()
+        fake_success.data = [self._make_fake_image(url='https://example.com/a.png')]
+        fake_client = MagicMock()
+        fake_client.images.generate.side_effect = [
+            Exception('queue is full'),
+            fake_success,
+        ]
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertEqual(fake_client.images.generate.call_count, 2)
+        self.assertTrue(result['success'])
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    def test_non_retryable_error_does_not_retry(self, mock_rand, mock_sleep):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = MagicMock()
+        fake_client.images.generate.side_effect = Exception('backend exploded')
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertEqual(fake_client.images.generate.call_count, 1)
+        mock_sleep.assert_not_called()
+        self.assertFalse(result['success'])
+        self.assertIn('backend exploded', result['error'])
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    def test_gpu_quota_error_does_not_retry(self, mock_rand, mock_sleep):
+        """Retrying immediately against an exhausted GPU quota just wastes another
+        request against an already-strained free resource -- must not retry."""
+        mock_provider = self._make_mock_provider('StabilityAI_SD35Large')
+        fake_client = MagicMock()
+        fake_client.images.generate.side_effect = Exception(
+            'You have exceeded your ZeroGPU quota (65s requested vs. 0s left).'
+        )
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertEqual(fake_client.images.generate.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0.5)
+    def test_429_then_retry_also_fails_returns_friendly_message(self, mock_rand, mock_sleep):
+        mock_provider = self._make_mock_provider('PollinationsImage')
+        fake_client = MagicMock()
+        fake_client.images.generate.side_effect = [
+            Exception('Error 429: Queue full'),
+            Exception('Error 429: Queue full'),
+        ]
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            result = main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        self.assertEqual(fake_client.images.generate.call_count, 2)
+        self.assertIn('system is busy', result['error'])
+
+    def test_any_provider_gets_longer_advisory_timeout_forwarded(self):
+        """AnyProvider is a g4f meta/aggregator provider that internally chains through
+        several real backends, so it must be given the longer IMAGE_PROVIDER_TIMEOUT_
+        OVERRIDES advisory budget rather than the default -- otherwise g4f itself may
+        give up on it before the underlying (legitimately slower) call can finish."""
+        mock_provider = self._make_mock_provider('AnyProvider')
+        fake_client = MagicMock()
+        fake_response = MagicMock()
+        fake_response.data = [self._make_fake_image(url='https://example.com/a.png')]
+        fake_client.images.generate.return_value = fake_response
+
+        with patch('main.IMAGE_PROVIDER_MODELS_MAP', MOCK_IMAGE_PROVIDER_MODELS_MAP), \
+             patch('main.G4FImageClient', return_value=fake_client):
+            import main
+            main.test_g4f_image_provider(mock_provider, 'prompt')
+
+        call_kwargs = fake_client.images.generate.call_args.kwargs
+        expected_advisory, _ = main.get_image_timeouts('AnyProvider')
+        self.assertEqual(call_kwargs.get('timeout'), expected_advisory)
+        self.assertGreater(expected_advisory, main.IMAGE_GENERATION_ADVISORY_TIMEOUT)
 
 
 if __name__ == '__main__':

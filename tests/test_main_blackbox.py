@@ -1,6 +1,7 @@
 import json
 import sys
 import os
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -916,6 +917,27 @@ class TestGenerateImagesEndpoint(unittest.TestCase):
         self.assertIn('backend exploded', data['results'][0]['error'])
 
     @patch('main.G4FImageClient')
+    def test_gpu_quota_error_surfaced_as_friendly_message(self, mock_client_cls):
+        """StabilityAI_SD35Large / BlackForestLabs_Flux1Dev run on HuggingFace ZeroGPU
+        Spaces and raise a raw JSON-ish 'ZeroGPU quota' error once the free quota is
+        exhausted -- end to end through the route, that must come back as an
+        actionable friendly message, not the raw payload."""
+        mock_client_cls.return_value.images.generate.side_effect = Exception(
+            'GPU token limit exceeded: data: {"error": "You have exceeded your '
+            'ZeroGPU quota (65s requested vs. 0s left)."}'
+        )
+        payload = {'prompt': 'a red apple', 'providers': ['StabilityAI_SD35Large']}
+        response = self.client.post(
+            '/api/generate-images',
+            data=json.dumps(payload),
+            content_type='application/json'
+        )
+        data = json.loads(response.data)
+        self.assertFalse(data['results'][0]['success'])
+        self.assertIn('GPU quota', data['results'][0]['error'])
+        self.assertNotIn('ZeroGPU', data['results'][0]['error'])
+
+    @patch('main.G4FImageClient')
     def test_text_provider_name_is_rejected_as_invalid(self, mock_client_cls):
         """Providers is scoped to IMAGE_PROVIDERS, not G4F_PROVIDERS -- passing a valid
         text-chat provider name here must not silently match anything."""
@@ -929,6 +951,62 @@ class TestGenerateImagesEndpoint(unittest.TestCase):
             content_type='application/json'
         )
         self.assertEqual(response.status_code, 400)
+
+
+class TestServeGeneratedMediaEndpoint(unittest.TestCase):
+    """GET /media/<filename> -- static file route added to serve the images that
+    g4f.client.Client().images.generate() already downloads to get_media_dir() before
+    returning. Image Result DTO 'url' values look like '/media/<filename>?url=<original>';
+    without this route the frontend <img> tag and the download button both 404 (and the
+    download button ends up saving the 404 HTML body as if it were image bytes)."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.get_media_dir_patcher = patch('main.get_media_dir', return_value=self.tmpdir.name)
+        self.get_media_dir_patcher.start()
+        self.addCleanup(self.get_media_dir_patcher.stop)
+
+    def _write_file(self, name, content=b'fake-image-bytes'):
+        path = os.path.join(self.tmpdir.name, name)
+        with open(path, 'wb') as f:
+            f.write(content)
+        return path
+
+    def test_existing_file_returns_200_with_bytes(self):
+        self._write_file('sample.jpg', b'jpeg-bytes')
+        response = self.client.get('/media/sample.jpg')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, b'jpeg-bytes')
+
+    def test_query_string_from_g4f_url_field_is_ignored_not_required(self):
+        """Result DTO url values carry a '?url=<original external url>' suffix; the route
+        must serve the local file regardless of (and without needing) that query string."""
+        self._write_file('sample.png', b'png-bytes')
+        response = self.client.get('/media/sample.png?url=https://example.com/original.png')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, b'png-bytes')
+
+    def test_missing_file_returns_404(self):
+        response = self.client.get('/media/does-not-exist.jpg')
+        self.assertEqual(response.status_code, 404)
+
+    def test_content_type_matches_extension(self):
+        self._write_file('sample.jpg', b'jpeg-bytes')
+        response = self.client.get('/media/sample.jpg')
+        self.assertIn('image/jpeg', response.content_type)
+
+    def test_path_traversal_outside_media_dir_is_blocked(self):
+        """A crafted filename must not escape get_media_dir() to read arbitrary files
+        (e.g. main.py) elsewhere on disk."""
+        response = self.client.get('/media/..%2F..%2Fmain.py')
+        self.assertNotEqual(response.status_code, 200)
+
+    def test_path_traversal_dotdot_segment_is_blocked(self):
+        response = self.client.get('/media/%2e%2e/%2e%2e/main.py')
+        self.assertNotEqual(response.status_code, 200)
 
 
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
