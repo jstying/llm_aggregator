@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>History - G4F LLM Aggregator</title>
+    <title>History - LLM Aggregator</title>
     <style>
         * {
             margin: 0;
@@ -236,6 +236,9 @@
 
         .new-chat-btn {
             width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 8px;
             background: transparent;
             border: 1px solid rgba(255, 255, 255, 0.15);
             color: #ececec;
@@ -249,6 +252,43 @@
         }
 
         .new-chat-btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        /* Fixed-width icon column shared by .new-chat-btn/.generate-image-btn -- identical
+           to templates/index.html's copy of this rule, see its comment for the full "why"
+           (keeps "New"/"Generate Image" text starting at the same x position regardless of
+           how wide the leading glyph renders). */
+        .btn-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.3em;
+            flex-shrink: 0;
+        }
+
+        /* This read-only page previously had no mode-toggle button at all -- 2026-07-04
+           addition brings it in line with templates/index.html's/image_history.html's
+           mode-aware sidebar-top pair (see the HTML comment on #generateImageBtn below). */
+        .generate-image-btn {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #ececec;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: left;
+            transition: background-color 0.15s ease;
+            margin-top: 8px;
+        }
+
+        .generate-image-btn:hover {
             background: rgba(255, 255, 255, 0.08);
         }
 
@@ -1368,7 +1408,7 @@
                     <span></span><span></span><span></span>
                 </button>
                 <a href="{{ url_for('index') }}" class="nav-logo">
-                    <span class="logo-full">LLM Aggregator</span><span class="logo-short">G4F</span>
+                    <span class="logo-full">LLM Aggregator</span><span class="logo-short">LLM Aggregator</span>
                 </a>
             </div>
             <ul class="nav-links">
@@ -1396,7 +1436,16 @@
     <div class="app-layout">
         <aside class="left-sidebar" id="leftSidebar">
             <div class="sidebar-top">
-                <button type="button" class="new-chat-btn" id="newChatBtn">+ New Chat</button>
+                <!-- Mode-aware button pair, matching templates/index.html's sidebar-top (see
+                     its HTML comment for the full "why"): #newChatBtn always reads "+ New"
+                     and never forces a mode switch; #generateImageBtn is the mode-toggle --
+                     this read-only page only ever represents chat mode, so it's pinned to the
+                     "offer to switch to image mode" icon/label pair ("🎨"+"Generate Image")
+                     rather than flipping at runtime like index.html's copy does. Both buttons
+                     just navigate elsewhere (see the click handlers below) since this page has
+                     no live compare form of its own to clear in place. -->
+                <button type="button" class="new-chat-btn" id="newChatBtn"><span class="btn-icon">+</span><span class="btn-label">New</span></button>
+                <button type="button" class="generate-image-btn" id="generateImageBtn"><span class="btn-icon">🎨</span><span class="btn-label">Generate Image</span></button>
             </div>
             <div class="sidebar-section-label">Recents</div>
             <div class="sidebar-recents" id="sidebarRecents">
@@ -2221,9 +2270,16 @@
         });
 
         document.getElementById('newChatBtn').addEventListener('click', () => {
-            // This page has no compare form to clear — "+ New Chat" here just means
-            // "leave the read-only history view and go start a real comparison."
+            // This page has no compare form to clear — "+ New" here just means
+            // "leave the read-only history view and start a fresh comparison in chat mode."
             window.location.href = '/';
+        });
+
+        // Mode-toggle button: this read-only page only ever shows chat history, so it always
+        // offers to switch to image mode -- mirrors templates/image_history.html's equivalent
+        // button navigating the other direction (see its comment).
+        document.getElementById('generateImageBtn').addEventListener('click', () => {
+            window.location.href = '/?mode=image';
         });
 
         // Renders one saved conversation's prompt + result snapshot into the main panel, or

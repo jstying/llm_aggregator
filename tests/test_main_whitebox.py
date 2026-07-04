@@ -1000,5 +1000,106 @@ class TestTestG4fImageProviderRetryAndTimeouts(unittest.TestCase):
         self.assertGreater(expected_advisory, main.IMAGE_GENERATION_ADVISORY_TIMEOUT)
 
 
+class TestCleanupOldGeneratedMedia(unittest.TestCase):
+    """generated_media/ has no per-user/session namespacing -- every request from every
+    user or guest writes into the same shared get_media_dir() (see CLAUDE.md risks). This
+    is a lazy age-based sweep (called at the top of generate_images()) meant to bound
+    unbounded local-disk growth WITHOUT wiping files that a concurrent request/tab may
+    still be displaying or downloading -- only files older than the threshold are removed."""
+
+    def setUp(self):
+        import main
+        import tempfile
+        import time
+        self.main = main
+        self.time = time
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+
+    def _write_file(self, name, age_seconds):
+        path = os.path.join(self.tmpdir.name, name)
+        with open(path, 'wb') as f:
+            f.write(b'x')
+        mtime = self.time.time() - age_seconds
+        os.utime(path, (mtime, mtime))
+        return path
+
+    def test_file_older_than_threshold_is_removed(self):
+        stale = self._write_file('old.jpg', age_seconds=3601)
+        with patch('main.get_media_dir', return_value=self.tmpdir.name):
+            self.main.cleanup_old_generated_media(max_age_seconds=3600)
+        self.assertFalse(os.path.exists(stale))
+
+    def test_file_younger_than_threshold_is_kept(self):
+        fresh = self._write_file('fresh.jpg', age_seconds=10)
+        with patch('main.get_media_dir', return_value=self.tmpdir.name):
+            self.main.cleanup_old_generated_media(max_age_seconds=3600)
+        self.assertTrue(os.path.exists(fresh))
+
+    def test_file_exactly_at_threshold_boundary_is_kept(self):
+        """Only files strictly OLDER than max_age_seconds should be removed -- a file
+        exactly at the boundary is treated as still-recent (cutoff uses strict <)."""
+        boundary = self._write_file('boundary.jpg', age_seconds=0)
+        mtime = self.time.time()
+        os.utime(boundary, (mtime, mtime))
+        with patch('main.get_media_dir', return_value=self.tmpdir.name):
+            self.main.cleanup_old_generated_media(max_age_seconds=3600)
+        self.assertTrue(os.path.exists(boundary))
+
+    def test_mixed_ages_only_stale_ones_removed(self):
+        stale1 = self._write_file('stale1.jpg', age_seconds=7200)
+        stale2 = self._write_file('stale2.png', age_seconds=5000)
+        fresh1 = self._write_file('fresh1.jpg', age_seconds=30)
+        with patch('main.get_media_dir', return_value=self.tmpdir.name):
+            self.main.cleanup_old_generated_media(max_age_seconds=3600)
+        self.assertFalse(os.path.exists(stale1))
+        self.assertFalse(os.path.exists(stale2))
+        self.assertTrue(os.path.exists(fresh1))
+
+    def test_missing_media_dir_does_not_raise(self):
+        missing = os.path.join(self.tmpdir.name, 'does-not-exist')
+        with patch('main.get_media_dir', return_value=missing):
+            self.main.cleanup_old_generated_media(max_age_seconds=3600)
+
+    def test_subdirectory_inside_media_dir_is_left_alone(self):
+        """Only regular files are candidates for removal -- os.path.isfile() guards
+        against treating a stray subdirectory as a deletable stale file."""
+        subdir = os.path.join(self.tmpdir.name, 'nested')
+        os.makedirs(subdir)
+        old_time = self.time.time() - 7200
+        os.utime(subdir, (old_time, old_time))
+        with patch('main.get_media_dir', return_value=self.tmpdir.name):
+            self.main.cleanup_old_generated_media(max_age_seconds=3600)
+        self.assertTrue(os.path.isdir(subdir))
+
+    def test_unremovable_file_does_not_abort_cleanup_of_others(self):
+        """A single file failing to delete (e.g. permission error) must not prevent the
+        rest of the stale batch from being cleaned up."""
+        stale1 = self._write_file('locked.jpg', age_seconds=7200)
+        stale2 = self._write_file('removable.jpg', age_seconds=7200)
+        real_remove = os.remove
+
+        def flaky_remove(path):
+            if path == stale1:
+                raise OSError('permission denied')
+            real_remove(path)
+
+        with patch('main.get_media_dir', return_value=self.tmpdir.name), \
+             patch('main.os.remove', side_effect=flaky_remove):
+            self.main.cleanup_old_generated_media(max_age_seconds=3600)
+        self.assertTrue(os.path.exists(stale1))
+        self.assertFalse(os.path.exists(stale2))
+
+    def test_default_max_age_matches_module_constant(self):
+        """Calling with no explicit max_age_seconds should use
+        GENERATED_MEDIA_MAX_AGE_SECONDS, not some other hardcoded value."""
+        just_inside = self._write_file('just_inside.jpg', age_seconds=self.main.GENERATED_MEDIA_MAX_AGE_SECONDS - 30)
+        just_outside = self._write_file('just_outside.jpg', age_seconds=self.main.GENERATED_MEDIA_MAX_AGE_SECONDS + 30)
+        with patch('main.get_media_dir', return_value=self.tmpdir.name):
+            self.main.cleanup_old_generated_media()
+        self.assertTrue(os.path.exists(just_inside))
+        self.assertFalse(os.path.exists(just_outside))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

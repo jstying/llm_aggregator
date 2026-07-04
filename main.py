@@ -39,6 +39,12 @@ from auth.db import (  # noqa: E402
     delete_chat_history,
     update_chat_history_title,
     toggle_pin_chat_history,
+    save_image_history,
+    get_image_history_list,
+    get_image_history_by_id,
+    delete_image_history,
+    update_image_history_title,
+    toggle_pin_image_history,
 )
 
 
@@ -341,28 +347,75 @@ def test_g4f_provider(provider, prompt, requested_model=None):
 # HuggingFace Space 后端（BlackForestLabs_Flux1Dev/StabilityAI_SD35Large）存在真实的冷启动/
 # 排队延迟，比纯文本对话慢得多，因此取值明显高于文本路径的 20s；outer 硬截断
 # （见 generate_images() 的 future.result(timeout=...)）必须留有缓冲，两者需同步调整。
-# outer 相对 advisory 的缓冲从 5s 加宽到 10s：test_g4f_image_provider 在 429/queue 类
-# 瞬时错误上会重试一次（见该函数内的重试循环），多出的一次网络往返 + 重试前的等待
-# 需要计入 outer 预算，否则重试期间可能被 future.result() 提前判超时打断。
+#
+# outer 的缓冲公式是 2 * advisory + IMAGE_GENERATION_RETRY_SCHEDULING_BUFFER，不是
+# "advisory + 固定小缓冲"（2026-07-04 前的旧公式，固定缓冲 10s）。原因：
+# test_g4f_image_provider 对 429/queue 类瞬时错误会重试一次，而"第一次尝试要多久才
+# 抛出 429"和"重试后的第二次尝试要多久才成功"都可能各自跑到接近 advisory_timeout
+# 才结束（不是"429 立刻快速失败"这种理想情况）——PollinationsImage 曾在 429 重试后，
+# 图片其实已经生成并写入 get_media_dir()，却因为 outer 只比 advisory 宽 10s 而被
+# future.result() 提前判超时丢弃。两次尝试各自最坏都要吃满 advisory，所以 outer 必须
+# 覆盖 2 倍 advisory，而不是 1 倍 advisory 加一点缓冲。这是重试机制本身的通用时序问题
+# （对任何会 429 重试的 Provider 都成立），因此在公式层面修正，不是给 PollinationsImage
+# 单独加一条 override。
 IMAGE_GENERATION_ADVISORY_TIMEOUT = 40
-IMAGE_GENERATION_OUTER_TIMEOUT = 50
+IMAGE_GENERATION_RETRY_SCHEDULING_BUFFER = 5
 
-# 单个 Provider 的超时覆盖表：多数图片 Provider 用上面的默认值即可，但 AnyProvider
-# 是 g4f 的"聚合再路由"型 Provider——内部会依次尝试多个真实图片后端直到成功或全部
-# 耗尽，耗时明显更长、方差也更大（实测偶发超过默认 outer timeout 才真正返回，但那时
-# 图片其实已经生成并下载到本地 get_media_dir()，只是因为 future.result() 提前超时、
-# 结果被丢弃，前端展示为 Failed）。给它单独更宽松的预算；其余 Provider 不受影响，
-# 因为 outer timeout 是每个 future 独立计算的，不会拖慢同批次里其他 Provider 的等待时间。
+
+def _compute_outer_timeout(advisory_timeout):
+    return advisory_timeout * 2 + IMAGE_GENERATION_RETRY_SCHEDULING_BUFFER
+
+
+IMAGE_GENERATION_OUTER_TIMEOUT = _compute_outer_timeout(IMAGE_GENERATION_ADVISORY_TIMEOUT)
+
+# 单个 Provider 的 advisory 超时覆盖表：多数图片 Provider 用上面的默认值即可，但
+# AnyProvider 是 g4f 的"聚合再路由"型 Provider——内部会依次尝试多个真实图片后端直到
+# 成功或全部耗尽，耗时明显更长、方差也更大，因此单独给它更宽松的 advisory 预算。
+# outer 不在这里单独配置——统一由 _compute_outer_timeout() 从 advisory 推导，
+# 确保"两次尝试都跑满 advisory"的重试缓冲对所有 Provider（含被覆盖 advisory 的
+# AnyProvider）一致生效。outer timeout 是每个 future 独立计算的，不会拖慢同批次里
+# 其他 Provider 的等待时间。
 IMAGE_PROVIDER_TIMEOUT_OVERRIDES = {
-    'AnyProvider': {'advisory': 70, 'outer': 80},
+    'AnyProvider': {'advisory': 70},
 }
 
 
 def get_image_timeouts(provider_name):
     override = IMAGE_PROVIDER_TIMEOUT_OVERRIDES.get(provider_name)
-    if override:
-        return override['advisory'], override['outer']
-    return IMAGE_GENERATION_ADVISORY_TIMEOUT, IMAGE_GENERATION_OUTER_TIMEOUT
+    advisory = override['advisory'] if override else IMAGE_GENERATION_ADVISORY_TIMEOUT
+    return advisory, _compute_outer_timeout(advisory)
+
+
+# generated_media/ 里的文件没有用户/会话命名空间——同一台机器上所有用户、所有游客的
+# 生成结果都堆进同一个目录（见 CLAUDE.md 第 9 节风险）。这里选择"懒惰的按年龄清理"而
+# 不是"每次生成前清空整个目录"：后者会把其他并发请求（另一个标签页、另一个用户，
+# 只要恰好落在同一台 GAE 实例上）当前正在展示、还没来得及下载的图片文件一并删掉——
+# 图片结果不落库，浏览器里 <img>/下载按钮引用的本地文件是唯一副本，一旦被提前删除
+# 就无法恢复。按年龄清理只删"足够旧、不太可能还有人在看"的文件，不影响近期生成的批次。
+GENERATED_MEDIA_MAX_AGE_SECONDS = 3600
+
+
+# ==================================================
+# 辅助函数：清理 get_media_dir() 下过期的历史生成文件
+# 惰性触发（在 generate_images() 请求开始时调用一次），不依赖额外的 cron/定时任务。
+# 任何清理失败（目录不存在、单个文件删除权限错误等）都只记录日志，不向上抛出——
+# 清理失败不应该阻塞本次图片生成请求。
+# ==================================================
+def cleanup_old_generated_media(max_age_seconds=GENERATED_MEDIA_MAX_AGE_SECONDS):
+    media_dir = get_media_dir()
+    try:
+        entries = os.listdir(media_dir)
+    except OSError:
+        return
+
+    cutoff = time.time() - max_age_seconds
+    for name in entries:
+        path = os.path.join(media_dir, name)
+        try:
+            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                os.remove(path)
+        except OSError as e:
+            logger.warning(f"Failed to clean up stale media file {path}: {e}")
 
 
 # ==================================================
@@ -597,6 +650,33 @@ def view_history(history_id):
         history_id=history_id,
         history_entry=None,
         is_guest_view=True
+    )
+
+
+# ==================================================
+# 只读文生图历史详情页：展示某条图片生成记录的原始 prompt + 完整结果快照
+# GET /image-history/<history_id>
+#
+# 与 view_history() 的关键区别：图片版 Recents 侧边栏专门限定只对已登录用户开放
+# （见 CLAUDE.md 第 6 节"文生图 Recents 访问限制"），游客与匿名一律重定向回 index()，
+# 不像聊天历史那样为游客渲染一个由 sessionStorage 客户端自行填充的空壳——图片生成
+# 结果对游客从来不落库，也不提供任何客户端临时记录，所以游客访问这个 URL 没有任何
+# 东西可展示，直接重定向比渲染一个注定空的壳更清楚。
+# ==================================================
+@app.route('/image-history/<history_id>')
+def view_image_history(history_id):
+    if not session.get('user_id'):
+        return redirect(url_for('index'))
+
+    entry = get_image_history_by_id(session['user_id'], history_id)
+    if not entry:
+        flash('Image history entry not found', 'error')
+        return redirect(url_for('index'))
+
+    return render_template(
+        'image_history.html',
+        history_id=history_id,
+        history_entry=entry
     )
 
 
@@ -887,9 +967,12 @@ def test_single_provider():
 #
 # 与 compare_providers() 是同一种"并发调度 + 逐个兜底"骨架，但只有一个阶段
 # （没有互评），且调用的是 test_g4f_image_provider()（images.generate()）而非
-# test_g4f_provider()（ChatCompletion.create()）。图片结果不写入对话历史—— history
-# 集合的 Firestore 文档结构（results 字段）是围绕文本 8-key result DTO 设计的，
-# 混入图片 DTO 需要单独的 schema 演进，本次不在范围内。
+# test_g4f_provider()（ChatCompletion.create()）。已登录用户的图片结果持久化到独立的
+# 'image_history' Firestore 集合（save_image_history()，2026-07-04 新增）——不复用
+# 'history' 集合，因为其文档结构是围绕文本 7-key result DTO（+ peer_reviews）设计的，
+# 混入 8-key 图片 DTO 需要引入判别字段；游客与匿名用户的图片生成结果依然不落库，
+# 且刻意不提供 sessionStorage 级别的临时记录（与文本对话历史对游客的处理不同）——
+# 图片版 Recents 侧边栏专门限定只对已登录用户开放。
 # ==================================================
 @app.route('/api/generate-images', methods=['POST'])
 def generate_images():
@@ -905,6 +988,10 @@ def generate_images():
             return jsonify({
                 'error': 'g4f is not available'
             }), 503
+
+        # 惰性清理：每次生成前顺手扫一遍 get_media_dir()，删掉过期的历史文件，
+        # 防止本地磁盘随请求量无限增长（见 GENERATED_MEDIA_MAX_AGE_SECONDS 注释）。
+        cleanup_old_generated_media()
 
         prompt = data['prompt']
 
@@ -991,11 +1078,26 @@ def generate_images():
 
         successful_count = sum(1 for r in results if r['success'])
 
+        # 已登录用户持久化图片生成历史（独立的 'image_history' 集合，见 auth/db.py
+        # 顶部注释）；游客与匿名不落库——图片版 Recents 侧边栏专门限定只有已登录用户
+        # 才能使用，游客侧连"仅浏览器内存/sessionStorage"级别的临时记录都不提供
+        # （与文本对话历史对游客的处理方式刻意不同，见 CLAUDE.md 第 6 节）。
+        # 持久化失败不影响本次生成结果返回，独立 try/except。
+        history_id = None
+        if session.get('user_id'):
+            try:
+                saved = save_image_history(session['user_id'], prompt, results)
+                if saved:
+                    history_id = saved['id']
+            except Exception as e:
+                logger.error(f"Failed to save image history: {e}", exc_info=True)
+
         return jsonify({
             'prompt': prompt,
             'total_providers': len(results),
             'successful_providers': successful_count,
-            'results': results
+            'results': results,
+            'history_id': history_id
         })
 
     except Exception as e:
@@ -1127,6 +1229,117 @@ def toggle_history_pin(history_id):
 
     except Exception as e:
         logger.error(f"Error in toggle_history_pin: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
+# 文生图历史：分页查询
+# GET /api/image-history?page=1&limit=20
+#
+# 与对话历史的 4 个 /api/history* 路由逐一同构，同样通过 _get_authenticated_user_id()
+# 守卫——游客与匿名一律 401（该守卫本就不区分"聊天"还是"图片"，无需改动即可复用）。
+# ==================================================
+@app.route('/api/image-history', methods=['GET'])
+def get_image_history():
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        page = request.args.get('page', 1, type=int) or 1
+        limit = request.args.get('limit', 20, type=int) or 20
+        page = max(page, 1)
+        limit = max(min(limit, 100), 1)
+        offset = (page - 1) * limit
+
+        history_list = get_image_history_list(user_id, limit=limit, offset=offset)
+        return jsonify({
+            'history': history_list,
+            'page': page,
+            'limit': limit
+        })
+
+    except Exception as e:
+        logger.error(f"Error in get_image_history: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
+# 文生图历史：重命名
+# PATCH /api/image-history/<history_id>/title
+# ==================================================
+@app.route('/api/image-history/<history_id>/title', methods=['PATCH'])
+def update_image_history_title_route(history_id):
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        new_title = data.get('new_title', '').strip()
+        if not new_title:
+            return jsonify({'error': 'new_title is required'}), 400
+
+        success = update_image_history_title(user_id, history_id, new_title)
+        if not success:
+            return jsonify({'error': 'History entry not found'}), 404
+
+        return jsonify({'status': 'ok'})
+
+    except Exception as e:
+        logger.error(f"Error in update_image_history_title_route: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
+# 文生图历史：删除
+# DELETE /api/image-history/<history_id>
+# ==================================================
+@app.route('/api/image-history/<history_id>', methods=['DELETE'])
+def delete_image_history_route(history_id):
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        success = delete_image_history(user_id, history_id)
+        if not success:
+            return jsonify({'error': 'History entry not found'}), 404
+
+        return jsonify({'status': 'ok'})
+
+    except Exception as e:
+        logger.error(f"Error in delete_image_history_route: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
+# 文生图历史：切换置顶状态
+# POST /api/image-history/<history_id>/toggle-pin
+# ==================================================
+@app.route('/api/image-history/<history_id>/toggle-pin', methods=['POST'])
+def toggle_image_history_pin_route(history_id):
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        new_pinned = toggle_pin_image_history(user_id, history_id)
+        if new_pinned is None:
+            return jsonify({'error': 'History entry not found'}), 404
+
+        return jsonify({'is_pinned': new_pinned})
+
+    except Exception as e:
+        logger.error(f"Error in toggle_image_history_pin_route: {str(e)}", exc_info=True)
         return jsonify({
             'error': 'Service temporarily unavailable. Please try again later.'
         }), 500

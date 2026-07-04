@@ -1,0 +1,1721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image History - LLM Aggregator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --page-zoom: 0.88;
+        }
+
+        html {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        html::-webkit-scrollbar {
+            display: none;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #fbfbfc;
+            color: #09110e;
+            min-height: calc(100vh / var(--page-zoom));
+            display: flex;
+            flex-direction: column;
+            zoom: var(--page-zoom);
+        }
+
+        /* ---- Navbar ---- */
+        .navbar {
+            background: #ffffff;
+            padding: 1.1rem 0;
+            border-bottom: 1px solid #e8e8e8;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .nav-container {
+            padding: 0 2rem 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .nav-left {
+            width: 260px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .nav-logo {
+            font-size: 1.35rem;
+            font-weight: 800;
+            color: #09110e;
+            text-decoration: none;
+            letter-spacing: -0.04em;
+        }
+
+        .hamburger-btn {
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            gap: 4px;
+            width: 30px;
+            height: 30px;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            padding: 4px;
+            flex-shrink: 0;
+        }
+
+        .hamburger-btn span {
+            display: block;
+            height: 2px;
+            width: 100%;
+            background: #09110e;
+            border-radius: 2px;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 0.4rem;
+            list-style: none;
+            align-items: center;
+        }
+
+        .nav-links a {
+            color: #09110e;
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            transition: all 0.15s ease;
+        }
+
+        .nav-links a:hover {
+            background: rgba(6, 193, 103, 0.06);
+            color: #06c167;
+        }
+
+        .nav-logo .logo-short {
+            display: none;
+        }
+
+        .header-short {
+            display: none;
+        }
+
+        .nav-welcome {
+            color: #545e5a;
+            font-size: 0.9rem;
+            padding: 0.4rem 0.5rem;
+        }
+
+        .guest-badge {
+            background: rgba(6, 193, 103, 0.08);
+            border: 1px solid rgba(6, 193, 103, 0.3);
+            color: #06c167;
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            white-space: nowrap;
+        }
+
+        /* ---- Two-column app layout (Sidebar + Main content) ---- */
+        .app-layout {
+            display: flex;
+            align-items: stretch;
+            flex: 1;
+        }
+
+        .left-sidebar {
+            width: 260px;
+            flex-shrink: 0;
+            background: #171717;
+            color: #ececec;
+            display: flex;
+            flex-direction: column;
+            padding: 16px 12px;
+            box-sizing: border-box;
+            position: sticky;
+            top: var(--sidebar-header-height, 0px);
+            height: calc(100vh / var(--page-zoom) - var(--sidebar-header-height, 0px) + 2px);
+            align-self: flex-start;
+        }
+
+        .main-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .sidebar-top {
+            margin-bottom: 8px;
+        }
+
+        /* This read-only page has no live compare/image-generation form of its own -- both
+           sidebar-top buttons just navigate elsewhere, mirroring templates/index.html's
+           mode-aware sidebar-top pair (2026-07-04 update): "+ New" never forces a mode
+           switch -- since this page only ever represents image mode, it stays in image mode
+           and goes to '/?mode=image' for a fresh generation. The mode-toggle button
+           (#generateImageBtn, id kept for continuity though its icon/label are now fixed to
+           the "switch to chat mode" pair -- "✍️"+"Generate Text") goes to '/' , which loads
+           index.html in its default chat mode. See the click handlers at the bottom of this
+           file and the ?mode=image handling in templates/index.html's inline script. */
+        .new-chat-btn,
+        .generate-image-btn {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #ececec;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: left;
+            transition: background-color 0.15s ease;
+        }
+
+        .generate-image-btn {
+            margin-top: 8px;
+        }
+
+        .new-chat-btn:hover,
+        .generate-image-btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        /* Fixed-width icon column shared by both buttons -- identical to
+           templates/index.html's/history.html's copy of this rule. */
+        .btn-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.3em;
+            flex-shrink: 0;
+        }
+
+        .sidebar-section-label {
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #8e8e8e;
+            padding: 14px 10px 6px;
+        }
+
+        .sidebar-recents {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            scrollbar-width: none;
+        }
+
+        .sidebar-recents::-webkit-scrollbar {
+            display: none;
+        }
+
+        .sidebar-recents-scroll-indicator {
+            position: absolute;
+            right: 3px;
+            width: 6px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.35);
+            cursor: grab;
+            opacity: 0;
+            transition: opacity 0.2s ease, background-color 0.15s ease;
+        }
+
+        .sidebar-recents-scroll-indicator.visible {
+            opacity: 1;
+        }
+
+        .sidebar-recents-scroll-indicator:hover,
+        .sidebar-recents-scroll-indicator.dragging {
+            background: rgba(255, 255, 255, 0.55);
+        }
+
+        .sidebar-recents-scroll-indicator.dragging {
+            cursor: grabbing;
+        }
+
+        .page-scroll-indicator {
+            position: fixed;
+            right: 3px;
+            width: 7px;
+            border-radius: 4px;
+            background: rgba(9, 17, 14, 0.22);
+            cursor: grab;
+            opacity: 0;
+            transition: opacity 0.2s ease, background-color 0.15s ease;
+            z-index: 950;
+        }
+
+        .page-scroll-indicator.visible {
+            opacity: 1;
+        }
+
+        .page-scroll-indicator:hover,
+        .page-scroll-indicator.dragging {
+            background: rgba(9, 17, 14, 0.4);
+        }
+
+        .page-scroll-indicator.dragging {
+            cursor: grabbing;
+        }
+
+        .sidebar-skeleton {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 4px 10px;
+        }
+
+        .skeleton-line {
+            height: 14px;
+            border-radius: 4px;
+            background: linear-gradient(90deg,
+                rgba(255, 255, 255, 0.06) 25%,
+                rgba(255, 255, 255, 0.14) 37%,
+                rgba(255, 255, 255, 0.06) 63%);
+            background-size: 400% 100%;
+            animation: skeleton-loading 1.4s ease infinite;
+        }
+
+        .skeleton-line.short {
+            width: 60%;
+        }
+
+        @keyframes skeleton-loading {
+            0% { background-position: 100% 50%; }
+            100% { background-position: 0 50%; }
+        }
+
+        .history-group-label {
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #8e8e8e;
+            padding: 14px 10px 6px;
+        }
+
+        .history-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background-color 0.15s ease;
+        }
+
+        .history-item:hover,
+        .history-item:focus-within {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .history-item-title {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 0.85rem;
+            color: #ececec;
+        }
+
+        .history-item-right {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex-shrink: 0;
+        }
+
+        .history-item-actions {
+            display: flex;
+            gap: 2px;
+            flex-shrink: 0;
+            opacity: 0;
+            transform: translateX(4px);
+            transition: opacity 0.15s ease, transform 0.15s ease;
+        }
+
+        .history-item:hover .history-item-actions,
+        .history-item:focus-within .history-item-actions {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        .history-action-btn {
+            background: transparent;
+            border: none;
+            color: #b4b4b4;
+            width: 22px;
+            height: 22px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.15s ease, color 0.15s ease;
+        }
+
+        .history-action-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            color: #ffffff;
+        }
+
+        .history-action-btn.pin-btn.is-pinned {
+            color: #06c167;
+        }
+
+        .pin-indicator {
+            opacity: 1;
+        }
+
+        .sidebar-empty-state {
+            color: #8e8e8e;
+            font-size: 0.8rem;
+            padding: 10px;
+            line-height: 1.5;
+        }
+
+        .history-rename-input {
+            flex: 1;
+            min-width: 0;
+            font-size: 0.85rem;
+            font-family: inherit;
+            color: #1a1a1a;
+            background: #ffffff;
+            border: 1px solid #06c167;
+            border-radius: 4px;
+            padding: 2px 6px;
+            outline: none;
+        }
+
+        .history-rename-input:focus {
+            color: #1a1a1a;
+            background: #ffffff;
+            border-color: #06c167;
+            box-shadow: none;
+        }
+
+        .history-error-toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #2a1414;
+            color: #ff9d9d;
+            border: 1px solid rgba(255, 100, 100, 0.4);
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+            z-index: 400;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .history-error-toast.visible {
+            opacity: 1;
+        }
+
+        .confirm-modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.55);
+            z-index: 500;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .confirm-modal-overlay.visible {
+            display: flex;
+        }
+
+        .confirm-modal {
+            background: #171717;
+            color: #ececec;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 24px;
+            width: 90%;
+            max-width: 360px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+
+        .confirm-modal-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        .confirm-modal-body {
+            font-size: 0.9rem;
+            color: #c7c7c7;
+            line-height: 1.5;
+            margin-bottom: 22px;
+            word-break: break-word;
+        }
+
+        .confirm-modal-body strong {
+            color: #ececec;
+            font-weight: 700;
+        }
+
+        .confirm-modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        .confirm-modal-btn {
+            padding: 8px 18px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            cursor: pointer;
+            border: none;
+            transition: background-color 0.15s ease;
+        }
+
+        .confirm-modal-btn-cancel {
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #ececec;
+        }
+
+        .confirm-modal-btn-cancel:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .confirm-modal-btn-delete {
+            background: #d93b3b;
+            color: #ffffff;
+        }
+
+        .confirm-modal-btn-delete:hover {
+            background: #c22f2f;
+        }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.4);
+            z-index: 250;
+        }
+
+        .sidebar-overlay.visible {
+            display: block;
+        }
+
+        /* ---- Main content ---- */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 24px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 36px;
+            color: #09110e;
+        }
+
+        .header h1 {
+            font-size: 2.6rem;
+            font-weight: 800;
+            letter-spacing: -0.04em;
+            margin-bottom: 8px;
+            display: inline-block;
+        }
+
+        .header p {
+            font-size: 1.05rem;
+            color: #545e5a;
+            line-height: 1.5;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .form-container {
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            padding: 36px;
+            box-shadow: 0 4px 24px rgba(9, 17, 14, 0.015);
+            margin-bottom: 36px;
+        }
+
+        .form-group {
+            margin-bottom: 26px;
+        }
+
+        .prompt-readonly-text {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            font-size: 15px;
+            line-height: 1.6;
+            background-color: rgba(6, 193, 103, 0.015);
+            color: #09110e;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        #promptDisplayContainer .form-group {
+            margin-bottom: 0;
+        }
+
+        .history-not-found {
+            background: #fff2f2;
+            color: #ff3b30;
+            padding: 20px;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            margin-bottom: 26px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: 700;
+            color: #09110e;
+            font-size: 0.95rem;
+            letter-spacing: -0.01em;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 12px 26px;
+            border: none;
+            border-radius: 6px;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            display: inline-block;
+            letter-spacing: -0.01em;
+        }
+
+        .btn-primary {
+            background: #06c167;
+            color: #ffffff;
+        }
+
+        .btn-primary:hover {
+            background: #05a859;
+            box-shadow: 0 4px 12px rgba(6, 193, 103, 0.2);
+        }
+
+        .btn-secondary {
+            background: #09110e;
+            color: #ffffff;
+        }
+
+        .btn-secondary:hover {
+            background: #172420;
+        }
+
+        .results {
+            display: none;
+        }
+
+        .results-header {
+            background: #ffffff;
+            padding: 26px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            margin-bottom: 26px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .stat {
+            text-align: center;
+            padding: 14px;
+            background: rgba(6, 193, 103, 0.02);
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+        }
+
+        .stat-value {
+            font-size: 1.9rem;
+            font-weight: 800;
+            color: #09110e;
+            letter-spacing: -0.03em;
+        }
+
+        .stat-label {
+            color: #545e5a;
+            margin-top: 4px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .provider-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 18px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .provider-name {
+            font-size: 1.3rem;
+            font-weight: 800;
+            color: #09110e;
+            letter-spacing: -0.02em;
+        }
+
+        .provider-name small {
+            font-size: 0.8rem;
+            color: #545e5a;
+            font-weight: normal;
+            margin-left: 6px;
+        }
+
+        .provider-status {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.03em;
+        }
+
+        .status-success {
+            background: rgba(6, 193, 103, 0.1);
+            color: #05a859;
+        }
+
+        .status-error {
+            background: #fff2f2;
+            color: #ff3b30;
+        }
+
+        .response-time {
+            color: #545e5a;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .provider-error {
+            background: #fff2f2;
+            color: #ff3b30;
+            padding: 16px;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        .flash-messages {
+            margin-bottom: 22px;
+        }
+
+        .flash {
+            padding: 14px 16px;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            letter-spacing: -0.01em;
+            transition: opacity 0.4s ease;
+        }
+
+        .flash-success { background: rgba(6, 193, 103, 0.1); color: #05a859; }
+        .flash-error   { background: #fff2f2; color: #ff3b30; }
+        .flash-info    { background: #f0f4f8; color: #1d64b4; }
+
+        /* Fixed 2-column grid -- identical to templates/index.html's image generation
+           mode copy of this rule; see its CSS comment for the full "why" (each cell is one
+           Provider+Model combination's generated image; a fixed 2-column grid rather than
+           auto-fit/auto-fill keeps this consistent regardless of viewport width). */
+        .image-results-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+
+        @media (max-width: 700px) {
+            .image-results-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .image-result-card {
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .image-result-body {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .generated-image {
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 6px;
+            border: 1px solid #e8e8e8;
+            background: #f4f4f5;
+        }
+
+        .image-download-btn {
+            align-self: flex-start;
+            padding: 8px 18px;
+            font-size: 0.85rem;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px 16px;
+            }
+
+            .header h1 {
+                font-size: 2.1rem;
+            }
+
+            .form-container {
+                padding: 24px 20px;
+            }
+
+            .button-group {
+                flex-direction: column;
+            }
+
+            .btn {
+                width: 100%;
+                text-align: center;
+            }
+        }
+
+        @media (max-width: 520px) {
+            .nav-container {
+                padding: 0 0.75rem;
+            }
+
+            .nav-left {
+                width: auto;
+                flex-shrink: initial;
+                justify-content: flex-start;
+            }
+
+            .nav-logo {
+                font-size: 1.05rem;
+            }
+
+            .nav-logo .logo-full {
+                display: none;
+            }
+
+            .nav-logo .logo-short {
+                display: inline;
+            }
+
+            .nav-links {
+                gap: 0.15rem;
+            }
+
+            .nav-links a {
+                padding: 0.35rem 0.5rem;
+                font-size: 0.82rem;
+            }
+
+            .guest-badge {
+                padding: 0.2rem 0.45rem;
+                font-size: 0.72rem;
+            }
+
+            .nav-welcome {
+                display: none;
+            }
+
+            .header-full {
+                display: none;
+            }
+
+            .header-short {
+                display: inline;
+            }
+
+            .hamburger-btn {
+                display: flex;
+            }
+
+            .left-sidebar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                height: 100vh;
+                z-index: 300;
+                transform: translateX(-100%);
+                transition: transform 0.25s ease;
+                box-shadow: 4px 0 24px rgba(0, 0, 0, 0.25);
+            }
+
+            .left-sidebar.sidebar-open {
+                transform: translateX(0);
+            }
+        }
+</style>
+</head>
+<body>
+
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-left">
+                <button type="button" class="hamburger-btn" id="hamburgerBtn" aria-label="Toggle sidebar">
+                    <span></span><span></span><span></span>
+                </button>
+                <a href="{{ url_for('index') }}" class="nav-logo">
+                    <span class="logo-full">LLM Aggregator</span><span class="logo-short">LLM Aggregator</span>
+                </a>
+            </div>
+            <ul class="nav-links">
+                <li><span class="nav-welcome">Welcome, {{ session.username }}</span></li>
+                <li><a href="{{ url_for('auth.profile') }}">Profile</a></li>
+                <li><a href="{{ url_for('auth.logout') }}">Logout</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="app-layout">
+        <aside class="left-sidebar" id="leftSidebar">
+            <div class="sidebar-top">
+                <!-- Mode-aware button pair, matching templates/index.html's sidebar-top (see
+                     its HTML comment for the full "why"): "+ New" never forces a mode switch,
+                     it stays in whichever mode is currently on screen -- since this page only
+                     ever represents image mode, it reads "+ New" and starts a fresh image
+                     generation ('/?mode=image') rather than jumping to chat mode. The
+                     mode-toggle button is pinned to the "offer to switch to chat mode" pair
+                     ("✍️"+"Generate Text") rather than flipping at runtime like index.html's
+                     copy does. -->
+                <button type="button" class="new-chat-btn" id="newChatBtn"><span class="btn-icon">+</span><span class="btn-label">New</span></button>
+                <button type="button" class="generate-image-btn" id="generateImageBtn"><span class="btn-icon">✍️</span><span class="btn-label">Generate Text</span></button>
+            </div>
+            <div class="sidebar-section-label">Recents</div>
+            <div class="sidebar-recents" id="sidebarRecents">
+                <div class="sidebar-skeleton" id="sidebarSkeleton">
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line short"></div>
+                </div>
+            </div>
+            <div class="sidebar-recents-scroll-indicator" id="sidebarRecentsScrollThumb"></div>
+        </aside>
+        <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+        <div class="main-content">
+    <div class="container">
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-messages">
+                    {% for category, message in messages %}
+                        <div class="flash flash-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <div class="header">
+            <h1><span class="header-full">Image Generation History</span><span class="header-short">Image History</span></h1>
+            <p>Read-only view of a saved image generation batch.<br>Nothing here can be edited or resubmitted.</p>
+        </div>
+
+        <div class="form-container" id="promptDisplayContainer">
+            <div class="form-group">
+                <label>Original Image Prompt:</label>
+                <div class="prompt-readonly-text" id="promptDisplay"></div>
+            </div>
+        </div>
+
+        <div class="results" id="results">
+            <div class="results-header">
+                <h2>Generated Images</h2>
+                <div class="stats" id="stats"></div>
+            </div>
+            <div class="image-results-grid" id="resultsContainer"></div>
+        </div>
+    </div>
+        </div>
+    </div>
+
+    <div class="page-scroll-indicator" id="pageScrollThumb"></div>
+
+    <script>
+        // Auto-dismiss flash messages after 3 seconds
+        document.querySelectorAll('.flash').forEach(function(el) {
+            setTimeout(function() {
+                el.style.opacity = '0';
+                setTimeout(function() {
+                    var container = el.parentElement;
+                    el.remove();
+                    if (container && container.classList.contains('flash-messages') && container.children.length === 0) {
+                        container.remove();
+                    }
+                }, 400);
+            }, 3000);
+        });
+
+        // This page is only ever reached by a logged-in user -- main.py's
+        // view_image_history() redirects guests/anonymous visitors back to '/' before this
+        // template is even rendered (image generation history is never persisted for them,
+        // see auth/db.py's image_history collection and CLAUDE.md section 6 "文生图 Recents
+        // 访问限制"). There is therefore no guest/sessionStorage branch here at all, unlike
+        // templates/history.html's chat equivalent -- serverHistoryEntry is always populated.
+        const targetHistoryId = {{ history_id | tojson }};
+        const serverHistoryEntry = {{ history_entry | tojson }};
+
+        // ---- Mobile sidebar toggle (hamburger + backdrop) ----
+        const hamburgerBtn = document.getElementById('hamburgerBtn');
+        const leftSidebar = document.getElementById('leftSidebar');
+        const sidebarOverlay = document.getElementById('sidebarOverlay');
+
+        function openSidebar() {
+            leftSidebar.classList.add('sidebar-open');
+            sidebarOverlay.classList.add('visible');
+        }
+
+        function closeSidebar() {
+            leftSidebar.classList.remove('sidebar-open');
+            sidebarOverlay.classList.remove('visible');
+        }
+
+        hamburgerBtn.addEventListener('click', () => {
+            if (leftSidebar.classList.contains('sidebar-open')) {
+                closeSidebar();
+            } else {
+                openSidebar();
+            }
+        });
+
+        sidebarOverlay.addEventListener('click', closeSidebar);
+
+        // ---- Keep .left-sidebar's sticky offset/height in sync -- identical to
+        // templates/index.html's copy of this function; see its comment for the full "why". ----
+        function syncSidebarStickyMetrics() {
+            if (window.innerWidth <= 520) return;
+
+            const zoom = parseFloat(
+                getComputedStyle(document.documentElement).getPropertyValue('--page-zoom')
+            ) || 1;
+
+            const navbarEl = document.querySelector('.navbar');
+            let realHeaderHeight = navbarEl ? navbarEl.getBoundingClientRect().height : 0;
+
+            document.documentElement.style.setProperty(
+                '--sidebar-header-height', (realHeaderHeight / zoom) + 'px'
+            );
+        }
+
+        function updateSidebarScrollIndicator() {
+            const recents = document.getElementById('sidebarRecents');
+            const thumb = document.getElementById('sidebarRecentsScrollThumb');
+            const sidebar = document.getElementById('leftSidebar');
+            if (!recents || !thumb || !sidebar) return;
+            const { scrollTop, scrollHeight, clientHeight } = recents;
+            if (scrollHeight <= clientHeight + 1) {
+                thumb.classList.remove('visible');
+                return;
+            }
+            const zoom = parseFloat(
+                getComputedStyle(document.documentElement).getPropertyValue('--page-zoom')
+            ) || 1;
+            const recentsBox = recents.getBoundingClientRect();
+            const sidebarBox = sidebar.getBoundingClientRect();
+            const trackTop = (recentsBox.top - sidebarBox.top) / zoom;
+            const trackHeight = recentsBox.height / zoom;
+            const thumbHeight = Math.max(24, (clientHeight / scrollHeight) * trackHeight);
+            const maxScrollTop = scrollHeight - clientHeight;
+            const scrollRatio = maxScrollTop > 0 ? scrollTop / maxScrollTop : 0;
+            const thumbTop = trackTop + scrollRatio * (trackHeight - thumbHeight);
+            thumb.style.top = thumbTop + 'px';
+            thumb.style.height = thumbHeight + 'px';
+            thumb.classList.add('visible');
+        }
+
+        function setupThumbDrag(thumbEl, opts) {
+            let dragging = false;
+            let dragStartClientY = 0;
+            let dragStartScrollTop = 0;
+
+            function computeNextScrollTop(currentClientY) {
+                const scrollHeight = opts.getScrollHeight();
+                const clientHeight = opts.getClientHeight();
+                const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
+                if (maxScrollTop <= 0) return null;
+                const thumbHeight = Math.max(24, (clientHeight / scrollHeight) * clientHeight);
+                const travel = Math.max(1, clientHeight - thumbHeight);
+                const deltaY = currentClientY - dragStartClientY;
+                const scrollDelta = (deltaY / travel) * maxScrollTop;
+                return Math.min(maxScrollTop, Math.max(0, dragStartScrollTop + scrollDelta));
+            }
+
+            function startDrag(clientY) {
+                dragging = true;
+                dragStartClientY = clientY;
+                dragStartScrollTop = opts.getScrollTop();
+                thumbEl.classList.add('dragging');
+                document.body.style.userSelect = 'none';
+            }
+
+            function endDrag() {
+                if (!dragging) return;
+                dragging = false;
+                thumbEl.classList.remove('dragging');
+                document.body.style.userSelect = '';
+            }
+
+            thumbEl.addEventListener('mousedown', function(e) {
+                startDrag(e.clientY);
+                e.preventDefault();
+            });
+            document.addEventListener('mousemove', function(e) {
+                if (!dragging) return;
+                const next = computeNextScrollTop(e.clientY);
+                if (next !== null) opts.setScrollTop(next);
+            });
+            document.addEventListener('mouseup', endDrag);
+
+            thumbEl.addEventListener('touchstart', function(e) {
+                startDrag(e.touches[0].clientY);
+            }, { passive: true });
+            document.addEventListener('touchmove', function(e) {
+                if (!dragging) return;
+                const next = computeNextScrollTop(e.touches[0].clientY);
+                if (next !== null) opts.setScrollTop(next);
+            }, { passive: true });
+            document.addEventListener('touchend', endDrag);
+        }
+
+        setupThumbDrag(document.getElementById('sidebarRecentsScrollThumb'), {
+            getScrollTop: () => document.getElementById('sidebarRecents').scrollTop,
+            getScrollHeight: () => document.getElementById('sidebarRecents').scrollHeight,
+            getClientHeight: () => document.getElementById('sidebarRecents').clientHeight,
+            setScrollTop: (v) => { document.getElementById('sidebarRecents').scrollTop = v; }
+        });
+
+        function updatePageScrollIndicator() {
+            const thumb = document.getElementById('pageScrollThumb');
+            if (!thumb) return;
+            const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+            const scrollHeight = document.documentElement.scrollHeight;
+            const clientHeight = window.innerHeight;
+            if (scrollHeight <= clientHeight + 1) {
+                thumb.classList.remove('visible');
+                return;
+            }
+            const zoom = parseFloat(
+                getComputedStyle(document.documentElement).getPropertyValue('--page-zoom')
+            ) || 1;
+            const trackHeight = clientHeight / zoom;
+            const thumbHeight = Math.max(24, (clientHeight / scrollHeight) * trackHeight);
+            const maxScrollTop = scrollHeight - clientHeight;
+            const scrollRatio = maxScrollTop > 0 ? scrollTop / maxScrollTop : 0;
+            const thumbTop = scrollRatio * (trackHeight - thumbHeight);
+            thumb.style.top = thumbTop + 'px';
+            thumb.style.height = thumbHeight + 'px';
+            thumb.classList.add('visible');
+        }
+
+        setupThumbDrag(document.getElementById('pageScrollThumb'), {
+            getScrollTop: () => window.scrollY || document.documentElement.scrollTop || 0,
+            getScrollHeight: () => document.documentElement.scrollHeight,
+            getClientHeight: () => window.innerHeight,
+            setScrollTop: (v) => window.scrollTo(0, v)
+        });
+
+        syncSidebarStickyMetrics();
+        updateSidebarScrollIndicator();
+        updatePageScrollIndicator();
+        window.addEventListener('resize', () => {
+            syncSidebarStickyMetrics();
+            updateSidebarScrollIndicator();
+            updatePageScrollIndicator();
+        });
+        window.addEventListener('scroll', updatePageScrollIndicator, { passive: true });
+        if (typeof ResizeObserver !== 'undefined') {
+            new ResizeObserver(updatePageScrollIndicator).observe(document.body);
+        }
+
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        // ==================================================
+        // Downloads a generated image client-side -- identical to
+        // templates/index.html's downloadImage(); see its comment for the full "why" this is
+        // never proxied through our own backend (SSRF avoidance).
+        // ==================================================
+        async function downloadImage(source, isBase64, filename) {
+            try {
+                let blob;
+                if (isBase64) {
+                    const byteChars = atob(source);
+                    const byteNumbers = new Array(byteChars.length);
+                    for (let i = 0; i < byteChars.length; i++) {
+                        byteNumbers[i] = byteChars.charCodeAt(i);
+                    }
+                    blob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
+                } else {
+                    const resp = await fetch(source);
+                    blob = await resp.blob();
+                }
+                const objectUrl = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = objectUrl;
+                a.download = filename || 'generated-image.png';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(objectUrl);
+            } catch (err) {
+                console.error('Direct download failed (likely CORS-restricted), opening the image in a new tab instead:', err);
+                window.open(source, '_blank');
+            }
+        }
+
+        // Renders one saved image-generation batch's prompt + result snapshot -- the image
+        // counterpart of history.html's renderHistoryEntry()/displayResults(), but rendering
+        // the 8-key image DTO grid (see templates/index.html's displayImageResults()) instead
+        // of Markdown text responses.
+        function renderHistoryEntry(entry) {
+            document.getElementById('promptDisplay').textContent = entry.prompt || '';
+
+            const results = Array.isArray(entry.results) ? entry.results : [];
+            const stats = document.getElementById('stats');
+            const container = document.getElementById('resultsContainer');
+            const resultsEl = document.getElementById('results');
+
+            if (results.length === 0) {
+                resultsEl.style.display = 'none';
+                container.innerHTML = '';
+                stats.innerHTML = '';
+                return;
+            }
+
+            const totalProviders = results.length;
+            const successfulProviders = results.filter(r => r.success).length;
+            const successRate = totalProviders > 0
+                ? ((successfulProviders / totalProviders) * 100).toFixed(1) + '%'
+                : '0%';
+
+            stats.innerHTML = `
+                <div class="stat">
+                    <div class="stat-value">${totalProviders}</div>
+                    <div class="stat-label">Total Providers</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">${successfulProviders}</div>
+                    <div class="stat-label">Successful</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">${successRate}</div>
+                    <div class="stat-label">Success Rate</div>
+                </div>
+            `;
+
+            window.__lastImageResults = results;
+
+            container.innerHTML = results.map((result, idx) => {
+                const imgSrc = result.success
+                    ? (result.url ? result.url : `data:image/png;base64,${result.b64_json}`)
+                    : '';
+                return `
+                    <div class="image-result-card">
+                        <div class="provider-header">
+                            <div class="provider-name">
+                                ${escapeHtml(result.provider)}
+                                <small>${escapeHtml(result.model)}</small>
+                            </div>
+                            <div class="provider-status">
+                                <span class="status-badge ${result.success ? 'status-success' : 'status-error'}">
+                                    ${result.success ? 'Success' : 'Failed'}
+                                </span>
+                                <span class="response-time">${result.response_time}s</span>
+                            </div>
+                        </div>
+                        ${result.success
+                            ? `<div class="image-result-body">
+                                <img src="${escapeHtml(imgSrc)}" alt="Image generated by ${escapeHtml(result.provider)}" class="generated-image">
+                                <button type="button" class="btn btn-secondary image-download-btn" data-idx="${idx}">Download Image</button>
+                               </div>`
+                            : `<div class="provider-error">❌ ${escapeHtml(result.error)}</div>`
+                        }
+                    </div>
+                `;
+            }).join('');
+
+            container.querySelectorAll('.image-download-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const idx = parseInt(btn.getAttribute('data-idx'), 10);
+                    const result = window.__lastImageResults[idx];
+                    let ext = 'png';
+                    if (result.url) {
+                        const extMatch = result.url.split('?')[0].match(/\.([a-z0-9]+)$/i);
+                        if (extMatch) ext = extMatch[1];
+                    }
+                    const filename = `${result.provider}-${result.model}.${ext}`.replace(/[^a-z0-9.\-]/gi, '_');
+                    if (result.url) {
+                        downloadImage(result.url, false, filename);
+                    } else {
+                        downloadImage(result.b64_json, true, filename);
+                    }
+                });
+            });
+
+            resultsEl.style.display = 'block';
+            resultsEl.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // ==================================================
+        // Sidebar: Image Recents (Today / Yesterday / Previous 7 Days / Older) -- reuses the
+        // exact same grouping/sorting/rendering logic as the chat sidebar in
+        // templates/index.html and templates/history.html, but backed by /api/image-history
+        // instead of /api/history, and navigating to /image-history/<id> on click. There is
+        // no guest branch anywhere in this file (see the comment on serverHistoryEntry above).
+        // ==================================================
+        function formatGroupLabel(createdAt) {
+            const date = new Date(createdAt);
+            if (isNaN(date.getTime())) return 'Older';
+
+            const now = new Date();
+            const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const startOfYesterday = new Date(startOfToday);
+            startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+            const sevenDaysAgo = new Date(startOfToday);
+            sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+            if (date >= startOfToday) return 'Today';
+            if (date >= startOfYesterday) return 'Yesterday';
+            if (date >= sevenDaysAgo) return 'Previous 7 Days';
+            return 'Older';
+        }
+
+        function groupHistoryByDate(items) {
+            const order = ['Today', 'Yesterday', 'Previous 7 Days', 'Older'];
+            const buckets = {};
+            items.forEach(item => {
+                const label = formatGroupLabel(item.created_at);
+                if (!buckets[label]) buckets[label] = [];
+                buckets[label].push(item);
+            });
+            return order
+                .filter(label => buckets[label] && buckets[label].length > 0)
+                .map(label => ({ label, items: buckets[label] }));
+        }
+
+        function renderHistoryItem(item) {
+            const isPinned = !!item.is_pinned;
+            const safeId = escapeHtml(item.id);
+            const safeTitle = escapeHtml(item.title || '');
+            const pinButton = isPinned
+                ? ''
+                : `<button type="button" class="history-action-btn pin-btn" title="Pin" data-action="pin">📌</button>`;
+            const pinIndicator = isPinned
+                ? `<button type="button" class="history-action-btn pin-btn pin-indicator is-pinned" title="Unpin" data-action="pin">📌</button>`
+                : '';
+            return `
+                <div class="history-item" data-id="${safeId}">
+                    <span class="history-item-title" title="${safeTitle}">${safeTitle}</span>
+                    <div class="history-item-right">
+                        <div class="history-item-actions">
+                            ${pinButton}
+                            <button type="button" class="history-action-btn edit-btn" title="Rename" data-action="rename">✏️</button>
+                            <button type="button" class="history-action-btn delete-btn" title="Delete" data-action="delete">🗑️</button>
+                        </div>
+                        ${pinIndicator}
+                    </div>
+                </div>`;
+        }
+
+        function renderHistoryGroups(groups) {
+            if (groups.length === 0) {
+                return '<div class="sidebar-empty-state">No images generated yet.</div>';
+            }
+            return groups.map(g => `
+                <div class="history-group">
+                    <div class="history-group-label">${escapeHtml(g.label)}</div>
+                    ${g.items.map(renderHistoryItem).join('')}
+                </div>
+            `).join('');
+        }
+
+        let currentHistoryItems = [];
+
+        function sortHistoryItems(items) {
+            return [...items].sort((a, b) => {
+                const aPinned = !!a.is_pinned;
+                const bPinned = !!b.is_pinned;
+                if (aPinned !== bPinned) return aPinned ? -1 : 1;
+                if (aPinned) {
+                    return new Date(a.pinned_at || 0) - new Date(b.pinned_at || 0);
+                }
+                return new Date(b.created_at) - new Date(a.created_at);
+            });
+        }
+
+        function renderCurrentHistory() {
+            const recents = document.getElementById('sidebarRecents');
+            const groups = groupHistoryByDate(sortHistoryItems(currentHistoryItems));
+            recents.innerHTML = renderHistoryGroups(groups);
+            updateSidebarScrollIndicator();
+        }
+
+        function showHistoryErrorToast(message) {
+            let toast = document.getElementById('historyErrorToast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'historyErrorToast';
+                toast.className = 'history-error-toast';
+                document.body.appendChild(toast);
+            }
+            toast.textContent = message;
+            clearTimeout(toast._hideTimer);
+            toast.classList.add('visible');
+            toast._hideTimer = setTimeout(() => {
+                toast.classList.remove('visible');
+            }, 3000);
+        }
+
+        const HISTORY_PAGE_SIZE = 20;
+        let currentHistoryPage = 1;
+        let hasMoreHistory = true;
+        let isLoadingMoreHistory = false;
+
+        async function loadSidebarImageHistory() {
+            const recents = document.getElementById('sidebarRecents');
+            currentHistoryPage = 1;
+            hasMoreHistory = true;
+            try {
+                const response = await fetch(`/api/image-history?page=1&limit=${HISTORY_PAGE_SIZE}`);
+                if (!response.ok) {
+                    recents.innerHTML = '<div class="sidebar-empty-state">Could not load image history.</div>';
+                    return;
+                }
+                const data = await response.json();
+                currentHistoryItems = data.history || [];
+                hasMoreHistory = currentHistoryItems.length >= HISTORY_PAGE_SIZE;
+                renderCurrentHistory();
+            } catch (error) {
+                console.error('Error loading image history:', error);
+                recents.innerHTML = '<div class="sidebar-empty-state">Could not load image history.</div>';
+            }
+        }
+
+        async function loadMoreSidebarHistory() {
+            if (!hasMoreHistory || isLoadingMoreHistory) return;
+            isLoadingMoreHistory = true;
+            const recents = document.getElementById('sidebarRecents');
+            const previousScrollTop = recents.scrollTop;
+            const nextPage = currentHistoryPage + 1;
+            try {
+                const response = await fetch(`/api/image-history?page=${nextPage}&limit=${HISTORY_PAGE_SIZE}`);
+                if (!response.ok) return;
+                const data = await response.json();
+                const newItems = data.history || [];
+                currentHistoryPage = nextPage;
+                hasMoreHistory = newItems.length >= HISTORY_PAGE_SIZE;
+                if (newItems.length > 0) {
+                    currentHistoryItems = currentHistoryItems.concat(newItems);
+                    renderCurrentHistory();
+                    recents.scrollTop = previousScrollTop;
+                }
+            } catch (error) {
+                console.error('Error loading more image history:', error);
+            } finally {
+                isLoadingMoreHistory = false;
+            }
+        }
+
+        document.getElementById('sidebarRecents').addEventListener('scroll', function() {
+            updateSidebarScrollIndicator();
+            if (this.scrollTop + this.clientHeight >= this.scrollHeight - 48) {
+                loadMoreSidebarHistory();
+            }
+        });
+
+        function toggleHistoryPin(id) {
+            const item = currentHistoryItems.find(h => h.id === id);
+            if (!item) return;
+            const previousPinned = !!item.is_pinned;
+            const previousPinnedAt = item.pinned_at;
+            item.is_pinned = !previousPinned;
+            item.pinned_at = item.is_pinned ? new Date().toISOString() : null;
+            renderCurrentHistory();
+
+            fetch(`/api/image-history/${encodeURIComponent(id)}/toggle-pin`, { method: 'POST' })
+                .then(response => {
+                    if (!response.ok) throw new Error('toggle-pin failed: ' + response.status);
+                    return response.json();
+                })
+                .then(data => {
+                    if (typeof data.is_pinned === 'boolean' && data.is_pinned !== item.is_pinned) {
+                        item.is_pinned = data.is_pinned;
+                        renderCurrentHistory();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error toggling pin:', error);
+                    item.is_pinned = previousPinned;
+                    item.pinned_at = previousPinnedAt;
+                    renderCurrentHistory();
+                    showHistoryErrorToast('Could not update pin. Please try again.');
+                });
+        }
+
+        function showDeleteConfirmModal(entryTitle) {
+            return new Promise((resolve) => {
+                let overlay = document.getElementById('confirmModalOverlay');
+                if (!overlay) {
+                    overlay = document.createElement('div');
+                    overlay.id = 'confirmModalOverlay';
+                    overlay.className = 'confirm-modal-overlay';
+                    overlay.innerHTML = `
+                        <div class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
+                            <div class="confirm-modal-title" id="confirmModalTitle">Delete this image batch?</div>
+                            <div class="confirm-modal-body">This will delete <strong id="confirmModalEntryName"></strong></div>
+                            <div class="confirm-modal-actions">
+                                <button type="button" class="confirm-modal-btn confirm-modal-btn-cancel" id="confirmModalCancelBtn">Cancel</button>
+                                <button type="button" class="confirm-modal-btn confirm-modal-btn-delete" id="confirmModalDeleteBtn">Delete</button>
+                            </div>
+                        </div>
+                    `;
+                    document.body.appendChild(overlay);
+                }
+
+                overlay.querySelector('#confirmModalEntryName').textContent = entryTitle || 'this image batch';
+                overlay.classList.add('visible');
+
+                const cancelBtn = overlay.querySelector('#confirmModalCancelBtn');
+                const deleteBtn = overlay.querySelector('#confirmModalDeleteBtn');
+
+                const cleanup = (result) => {
+                    overlay.classList.remove('visible');
+                    cancelBtn.removeEventListener('click', onCancel);
+                    deleteBtn.removeEventListener('click', onDelete);
+                    overlay.removeEventListener('click', onOverlayClick);
+                    document.removeEventListener('keydown', onKeydown);
+                    resolve(result);
+                };
+                const onCancel = () => cleanup(false);
+                const onDelete = () => cleanup(true);
+                const onOverlayClick = (e) => { if (e.target === overlay) cleanup(false); };
+                const onKeydown = (e) => { if (e.key === 'Escape') cleanup(false); };
+
+                cancelBtn.addEventListener('click', onCancel);
+                deleteBtn.addEventListener('click', onDelete);
+                overlay.addEventListener('click', onOverlayClick);
+                document.addEventListener('keydown', onKeydown);
+                deleteBtn.focus();
+            });
+        }
+
+        async function deleteHistoryItem(id) {
+            const targetItem = currentHistoryItems.find(h => h.id === id);
+            if (!targetItem) return;
+            const confirmed = await showDeleteConfirmModal(targetItem.title);
+            if (!confirmed) return;
+
+            // If the entry being deleted is the one currently shown in the main panel,
+            // there's nothing left to display -- leave for the app instead of showing a
+            // "ghost" of an image batch that no longer exists.
+            if (id === targetHistoryId) {
+                window.location.href = '/';
+                return;
+            }
+
+            const index = currentHistoryItems.findIndex(h => h.id === id);
+            if (index === -1) return;
+            const [removedItem] = currentHistoryItems.splice(index, 1);
+            renderCurrentHistory();
+
+            fetch(`/api/image-history/${encodeURIComponent(id)}`, { method: 'DELETE' })
+                .then(response => {
+                    if (!response.ok) throw new Error('delete failed: ' + response.status);
+                })
+                .catch(error => {
+                    console.error('Error deleting image history:', error);
+                    currentHistoryItems.splice(index, 0, removedItem);
+                    renderCurrentHistory();
+                    showHistoryErrorToast('Could not delete image batch. Please try again.');
+                });
+        }
+
+        function commitRename(id, newTitle) {
+            const item = currentHistoryItems.find(h => h.id === id);
+            if (!item) return;
+            const previousTitle = item.title;
+            item.title = newTitle;
+            renderCurrentHistory();
+
+            fetch(`/api/image-history/${encodeURIComponent(id)}/title`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_title: newTitle })
+            })
+                .then(response => {
+                    if (!response.ok) throw new Error('rename failed: ' + response.status);
+                })
+                .catch(error => {
+                    console.error('Error renaming image history:', error);
+                    item.title = previousTitle;
+                    renderCurrentHistory();
+                    showHistoryErrorToast('Could not rename image batch. Please try again.');
+                });
+        }
+
+        function startInlineRename(itemEl, id) {
+            if (itemEl.querySelector('.history-rename-input')) return;
+            const titleEl = itemEl.querySelector('.history-item-title');
+            const item = currentHistoryItems.find(h => h.id === id);
+            const originalTitle = item ? (item.title || '') : (titleEl ? titleEl.textContent : '');
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'history-rename-input';
+            input.value = originalTitle;
+            titleEl.replaceWith(input);
+            input.focus();
+            input.select();
+
+            let settled = false;
+            const commit = () => {
+                if (settled) return;
+                settled = true;
+                const newTitle = input.value.trim();
+                if (!newTitle || newTitle === originalTitle) {
+                    renderCurrentHistory();
+                    return;
+                }
+                commitRename(id, newTitle);
+            };
+            const cancel = () => {
+                if (settled) return;
+                settled = true;
+                renderCurrentHistory();
+            };
+
+            input.addEventListener('blur', commit);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    input.blur();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancel();
+                }
+            });
+        }
+
+        function openHistoryEntry(id) {
+            window.location.href = '/image-history/' + encodeURIComponent(id);
+        }
+
+        const sidebarRecentsEl = document.getElementById('sidebarRecents');
+
+        sidebarRecentsEl.addEventListener('click', (e) => {
+            const actionBtn = e.target.closest('[data-action]');
+            if (actionBtn) {
+                const itemEl = actionBtn.closest('.history-item');
+                if (!itemEl) return;
+                const id = itemEl.dataset.id;
+                const action = actionBtn.dataset.action;
+                if (action === 'pin') toggleHistoryPin(id);
+                else if (action === 'rename') startInlineRename(itemEl, id);
+                else if (action === 'delete') deleteHistoryItem(id);
+                return;
+            }
+
+            if (e.target.closest('.history-rename-input')) return;
+            const itemEl = e.target.closest('.history-item');
+            if (!itemEl) return;
+            openHistoryEntry(itemEl.dataset.id);
+        });
+
+        sidebarRecentsEl.addEventListener('dblclick', (e) => {
+            const titleEl = e.target.closest('.history-item-title');
+            if (!titleEl) return;
+            const itemEl = titleEl.closest('.history-item');
+            if (!itemEl) return;
+            startInlineRename(itemEl, itemEl.dataset.id);
+        });
+
+        // "+ New" stays in image mode (this page's only context) and starts a fresh
+        // generation, rather than forcing a switch to chat mode -- mirrors
+        // templates/index.html's #newChatBtn no longer force-switching modes.
+        document.getElementById('newChatBtn').addEventListener('click', () => {
+            window.location.href = '/?mode=image';
+        });
+
+        // Mode-toggle button: this read-only page only ever shows image history, so it
+        // always offers to switch to chat mode -- mirrors templates/history.html's
+        // equivalent button navigating the other direction (see its comment).
+        document.getElementById('generateImageBtn').addEventListener('click', () => {
+            window.location.href = '/';
+        });
+
+        loadSidebarImageHistory();
+        renderHistoryEntry(serverHistoryEntry);
+    </script>
+</body>
+</html>

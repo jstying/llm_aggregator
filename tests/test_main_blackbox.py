@@ -2,6 +2,8 @@ import json
 import sys
 import os
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -757,10 +759,13 @@ class TestGenerateImagesEndpoint(unittest.TestCase):
         for key in ('prompt', 'total_providers', 'successful_providers', 'results'):
             self.assertIn(key, data)
 
+    @patch('main.save_image_history')
     @patch('main.G4FImageClient')
-    def test_no_history_id_field_leaked_into_image_response(self, mock_client_cls):
-        """Image results are intentionally not persisted to chat history (see CLAUDE.md) --
-        the response body must not carry a stray history_id key copied from /api/compare."""
+    def test_history_id_is_null_for_anonymous_request(self, mock_client_cls, mock_save):
+        """Image generation history is persisted only for logged-in users (2026-07-04,
+        see auth/db.py's image_history collection) -- anonymous/guest requests must still
+        get a null history_id and must never trigger a save, mirroring /api/compare's
+        contract for chat history (see TestCompareHistoryPersistence)."""
         mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
             [_fake_image(url='https://example.com/a.png')]
         )
@@ -771,7 +776,8 @@ class TestGenerateImagesEndpoint(unittest.TestCase):
             content_type='application/json'
         )
         data = json.loads(response.data)
-        self.assertNotIn('history_id', data)
+        self.assertIsNone(data['history_id'])
+        mock_save.assert_not_called()
 
     @patch('main.G4FImageClient')
     def test_each_result_has_required_keys(self, mock_client_cls):
@@ -916,6 +922,55 @@ class TestGenerateImagesEndpoint(unittest.TestCase):
         self.assertFalse(data['results'][0]['success'])
         self.assertIn('backend exploded', data['results'][0]['error'])
 
+    @patch('main.time.sleep', return_value=None)
+    @patch('main.random.uniform', return_value=0)
+    @patch('main.G4FImageClient')
+    def test_slow_retry_success_not_discarded_by_outer_timeout(
+        self, mock_client_cls, mock_rand, mock_sleep
+    ):
+        """Regression for the 2026-07-04 PollinationsImage incident: it hit a 429,
+        retried, and the retried attempt itself took a while to actually
+        succeed -- the image was generated and saved to get_media_dir(), but the
+        old outer budget (advisory + a flat 10s buffer) was too tight to cover a
+        retry attempt that runs close to the full advisory timeout, so
+        future.result() abandoned it and the frontend showed "system is busy"
+        for an image that had, in fact, been generated. The outer timeout is
+        now 2*advisory + buffer specifically to cover this. Uses tiny patched
+        advisory/buffer constants so the test can exercise real elapsed-time
+        behavior without sleeping for the production-sized 40s/85s budgets:
+        with advisory=0.1/buffer=0.05, new-formula outer is 0.25s (old-formula
+        outer, advisory+buffer, would only have been 0.15s) -- a retried attempt
+        that takes 0.2s must still be reported as success, not timed out; this
+        would fail if the outer formula ever regressed back to advisory+buffer.
+        The simulated slow attempt uses threading.Event().wait() rather than
+        time.sleep() -- main.time and this test's `time` import are the same
+        module object, so patching main.time.sleep (to skip the real 429
+        backoff wait) would also silently no-op a time.sleep() called here."""
+        call_count = {'n': 0}
+
+        def side_effect(**kwargs):
+            call_count['n'] += 1
+            if call_count['n'] == 1:
+                raise Exception('Error 429: Queue full')
+            threading.Event().wait(0.2)
+            return _fake_image_response([_fake_image(url='https://example.com/a.png')])
+
+        mock_client_cls.return_value.images.generate.side_effect = side_effect
+
+        with patch('main.IMAGE_GENERATION_ADVISORY_TIMEOUT', 0.1), \
+             patch('main.IMAGE_GENERATION_RETRY_SCHEDULING_BUFFER', 0.05):
+            payload = {'prompt': 'generate a dtw airport image', 'providers': ['PollinationsImage']}
+            response = self.client.post(
+                '/api/generate-images',
+                data=json.dumps(payload),
+                content_type='application/json'
+            )
+
+        data = json.loads(response.data)
+        self.assertEqual(call_count['n'], 2)
+        self.assertTrue(data['results'][0]['success'], msg=f"Got: {data['results'][0]}")
+        self.assertEqual(data['results'][0]['url'], 'https://example.com/a.png')
+
     @patch('main.G4FImageClient')
     def test_gpu_quota_error_surfaced_as_friendly_message(self, mock_client_cls):
         """StabilityAI_SD35Large / BlackForestLabs_Flux1Dev run on HuggingFace ZeroGPU
@@ -951,6 +1006,71 @@ class TestGenerateImagesEndpoint(unittest.TestCase):
             content_type='application/json'
         )
         self.assertEqual(response.status_code, 400)
+
+
+class TestGenerateImagesTriggersMediaCleanup(unittest.TestCase):
+    """POST /api/generate-images must opportunistically purge stale files from
+    get_media_dir() before generating (main.cleanup_old_generated_media), so the shared,
+    unnamespaced local media folder does not grow unbounded across requests/users (see
+    GENERATED_MEDIA_MAX_AGE_SECONDS). This must NOT wipe the whole directory -- only files
+    older than the age threshold -- since recently generated files may still be displayed/
+    downloaded from another concurrent request."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.client = main.app.test_client()
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.get_media_dir_patcher = patch('main.get_media_dir', return_value=self.tmpdir.name)
+        self.get_media_dir_patcher.start()
+        self.addCleanup(self.get_media_dir_patcher.stop)
+
+    def _write_file(self, name, age_seconds=0):
+        path = os.path.join(self.tmpdir.name, name)
+        with open(path, 'wb') as f:
+            f.write(b'stale-bytes')
+        mtime = time.time() - age_seconds
+        os.utime(path, (mtime, mtime))
+        return path
+
+    @patch('main.G4FImageClient')
+    def test_stale_file_removed_by_generate_request(self, mock_client_cls):
+        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
+            [_fake_image(url='https://example.com/a.png')]
+        )
+        stale_path = self._write_file('old.jpg', age_seconds=main.GENERATED_MEDIA_MAX_AGE_SECONDS + 60)
+        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage']}
+        self.client.post('/api/generate-images', data=json.dumps(payload), content_type='application/json')
+        self.assertFalse(os.path.exists(stale_path))
+
+    @patch('main.G4FImageClient')
+    def test_recent_file_survives_generate_request(self, mock_client_cls):
+        """A file younger than the age threshold must not be deleted just because a new
+        generation request came in -- it may still be referenced by another in-flight
+        browser tab/user."""
+        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
+            [_fake_image(url='https://example.com/a.png')]
+        )
+        recent_path = self._write_file('recent.jpg', age_seconds=5)
+        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage']}
+        self.client.post('/api/generate-images', data=json.dumps(payload), content_type='application/json')
+        self.assertTrue(os.path.exists(recent_path))
+
+    @patch('main.G4FImageClient')
+    def test_missing_media_dir_does_not_break_generation_response(self, mock_client_cls):
+        """get_media_dir() may not exist yet (e.g. first-ever generation on a fresh
+        instance) -- cleanup must swallow the resulting OSError internally rather than
+        letting it propagate up into the route's top-level try/except as a 500."""
+        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
+            [_fake_image(url='https://example.com/a.png')]
+        )
+        missing_dir = os.path.join(self.tmpdir.name, 'does-not-exist')
+        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage']}
+        with patch('main.get_media_dir', return_value=missing_dir):
+            response = self.client.post(
+                '/api/generate-images', data=json.dumps(payload), content_type='application/json'
+            )
+        self.assertEqual(response.status_code, 200)
 
 
 class TestServeGeneratedMediaEndpoint(unittest.TestCase):

@@ -195,3 +195,127 @@ def toggle_pin_chat_history(user_id, history_id):
     doc_ref.update(update_data)
     logger.info(f"Toggled pin for chat history {history_id} to {new_pinned}")
     return new_pinned
+
+
+# ==================================================
+# 文生图历史 CRUD：与上面 6 个对话历史函数逐一同构，但写入独立的 'image_history'
+# 集合，而不是复用 'history'。这与文本/图片两条 g4f 调用链路（ChatCompletion vs
+# images.generate()）、两套 Provider 映射表（PROVIDER_MODELS_MAP vs
+# IMAGE_PROVIDER_MODELS_MAP）严格隔离的既有原则一致——8-key 图片 DTO 与 7-key 文本
+# DTO（+ 互评 peer_reviews）字段结构不同，混进同一个集合会让每条文档的 schema
+# 依赖 "这条到底是聊天还是图片" 这一隐性判别，且历史上聊天记录已经积累在 'history'
+# 集合里，不应该被图片文档污染。
+# ==================================================
+def save_image_history(user_id, prompt, results):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("save_image_history called but Firebase unavailable")
+        return None
+
+    history_data = {
+        'user_id': user_id,
+        'title': prompt[:15] + ('...' if len(prompt) > 15 else ''),
+        'prompt': prompt,
+        'results': results,
+        'created_at': firestore.SERVER_TIMESTAMP,
+        'is_pinned': False,
+    }
+    _, doc_ref = db.collection('image_history').add(history_data)
+    history_data['id'] = doc_ref.id
+    logger.info(f"Saved image history {doc_ref.id} for user {user_id}")
+    return history_data
+
+
+def get_image_history_list(user_id, limit=20, offset=0):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("get_image_history_list called but Firebase unavailable")
+        return []
+
+    # 与 get_chat_history_list 同理：只做单字段等值查询，排序/分页留在 Python 层，
+    # 避免依赖需要在 Firebase 控制台手动创建的复合索引。
+    query = db.collection('image_history').where('user_id', '==', user_id)
+    history_list = []
+    for doc in query.stream():
+        item = doc.to_dict()
+        item['id'] = doc.id
+        history_list.append(item)
+
+    def sort_key(item):
+        if item.get('is_pinned', False):
+            pinned_at = item.get('pinned_at')
+            timestamp = pinned_at.timestamp() if pinned_at else 0
+            return (0, timestamp)
+        created_at = item.get('created_at')
+        timestamp = created_at.timestamp() if created_at else 0
+        return (1, -timestamp)
+
+    history_list.sort(key=sort_key)
+    return history_list[offset:offset + limit]
+
+
+def get_image_history_by_id(user_id, history_id):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("get_image_history_by_id called but Firebase unavailable")
+        return None
+
+    doc_ref = db.collection('image_history').document(history_id)
+    doc = doc_ref.get()
+    if not doc.exists or doc.to_dict().get('user_id') != user_id:
+        logger.warning(f"get_image_history_by_id denied: {history_id} not owned by {user_id}")
+        return None
+
+    item = doc.to_dict()
+    item['id'] = doc.id
+    return item
+
+
+def delete_image_history(user_id, history_id):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("delete_image_history called but Firebase unavailable")
+        return False
+
+    doc_ref = db.collection('image_history').document(history_id)
+    doc = doc_ref.get()
+    if not doc.exists or doc.to_dict().get('user_id') != user_id:
+        logger.warning(f"delete_image_history denied: {history_id} not owned by {user_id}")
+        return False
+
+    doc_ref.delete()
+    logger.info(f"Deleted image history {history_id} for user {user_id}")
+    return True
+
+
+def update_image_history_title(user_id, history_id, new_title):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("update_image_history_title called but Firebase unavailable")
+        return False
+
+    doc_ref = db.collection('image_history').document(history_id)
+    doc = doc_ref.get()
+    if not doc.exists or doc.to_dict().get('user_id') != user_id:
+        logger.warning(f"update_image_history_title denied: {history_id} not owned by {user_id}")
+        return False
+
+    doc_ref.update({'title': new_title})
+    logger.info(f"Updated title for image history {history_id}")
+    return True
+
+
+def toggle_pin_image_history(user_id, history_id):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("toggle_pin_image_history called but Firebase unavailable")
+        return None
+
+    doc_ref = db.collection('image_history').document(history_id)
+    doc = doc_ref.get()
+    if not doc.exists or doc.to_dict().get('user_id') != user_id:
+        logger.warning(f"toggle_pin_image_history denied: {history_id} not owned by {user_id}")
+        return None
+
+    new_pinned = not doc.to_dict().get('is_pinned', False)
+    update_data = {
+        'is_pinned': new_pinned,
+        'pinned_at': firestore.SERVER_TIMESTAMP if new_pinned else firestore.DELETE_FIELD,
+    }
+    doc_ref.update(update_data)
+    logger.info(f"Toggled pin for image history {history_id} to {new_pinned}")
+    return new_pinned

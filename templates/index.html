@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>G4F LLM Aggregator</title>
+    <title>LLM Aggregator</title>
     <style>
         * {
             margin: 0;
@@ -271,6 +271,9 @@
 
         .new-chat-btn {
             width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 8px;
             background: transparent;
             border: 1px solid rgba(255, 255, 255, 0.15);
             color: #ececec;
@@ -285,6 +288,17 @@
 
         .new-chat-btn:hover {
             background: rgba(255, 255, 255, 0.08);
+        }
+
+        /* Fixed-width icon column shared by .new-chat-btn/.generate-image-btn so the label
+           text ("New" / "Generate Image" / "Generate Text") lines up at the same x position
+           no matter how wide the leading glyph ("+" vs an emoji) actually renders. */
+        .btn-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.3em;
+            flex-shrink: 0;
         }
 
         .sidebar-section-label {
@@ -996,6 +1010,9 @@
         /* ---- Image generation mode: sidebar entry point + results grid ---- */
         .generate-image-btn {
             width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 8px;
             background: transparent;
             border: 1px solid rgba(255, 255, 255, 0.15);
             color: #ececec;
@@ -1516,7 +1533,7 @@
                     <span></span><span></span><span></span>
                 </button>
                 <a href="{{ url_for('index') }}" class="nav-logo">
-                    <span class="logo-full">LLM Aggregator</span><span class="logo-short">G4F</span>
+                    <span class="logo-full">LLM Aggregator</span><span class="logo-short">LLM Aggregator</span>
                 </a>
             </div>
             <ul class="nav-links">
@@ -1544,8 +1561,17 @@
     <div class="app-layout">
         <aside class="left-sidebar" id="leftSidebar">
             <div class="sidebar-top">
-                <button type="button" class="new-chat-btn" id="newChatBtn">+ New Chat</button>
-                <button type="button" class="generate-image-btn" id="generateImageBtn">🎨 Generate Image</button>
+                <!-- Both buttons below are mode-aware, not fixed labels: #newChatBtn always
+                     reads "+ New" and clears whichever mode's results are currently on screen
+                     (chat or image) rather than force-switching to chat mode the way the old
+                     "+ New Chat" button did; #generateImageBtn's icon+label flip between the
+                     "enter image mode" and "enter chat mode" pair depending on sidebarMode --
+                     see switchToImageMode()/switchToCompareMode() below, which own updating
+                     this button's text. Both use a shared .btn-icon fixed-width column so the
+                     "New"/"Generate Image"/"Generate Text" words start at the same x position
+                     regardless of the icon glyph's own width. -->
+                <button type="button" class="new-chat-btn" id="newChatBtn"><span class="btn-icon">+</span><span class="btn-label">New</span></button>
+                <button type="button" class="generate-image-btn" id="generateImageBtn"><span class="btn-icon" id="modeToggleBtnIcon">🎨</span><span class="btn-label" id="modeToggleBtnLabel">Generate Image</span></button>
             </div>
             <div class="sidebar-section-label">Recents</div>
             <div class="sidebar-recents" id="sidebarRecents">
@@ -1586,7 +1612,7 @@
 
         <div id="compareModeContainer">
         <div class="header">
-            <h1><span class="header-full">G4F LLM Aggregator</span><span class="header-short">LLM Aggregator</span></h1>
+            <h1><span class="header-full">Text Generator</span><span class="header-short">LLM Aggregator</span></h1>
             {% if session.user_id %}
                 <p>Welcome back, {{ session.username }}. Compare AI provider responses below.</p>
             {% else %}
@@ -1668,8 +1694,8 @@
              fully independent -- submitting one never touches the other's state. -->
         <div id="imageModeContainer" style="display: none;">
         <div class="header">
-            <h1><span class="header-full">G4F Image Generator</span><span class="header-short">Image Gen</span></h1>
-            <p>Generate images with free, no-key g4f providers and compare them side by side.</p>
+            <h1><span class="header-full">Image Generator</span><span class="header-short">LLM Aggregator</span></h1>
+            <p>Generate images with providers and compare them side by side.</p>
         </div>
 
         <div class="form-container">
@@ -1838,18 +1864,47 @@
         const compareModeContainer = document.getElementById('compareModeContainer');
         const imageModeContainer = document.getElementById('imageModeContainer');
 
+        // Which "kind" of Recents list #sidebarRecents currently shows -- 'chat' (backed by
+        // currentHistoryItems / /api/history) or 'image' (backed by currentImageHistoryItems /
+        // /api/image-history, defined further down alongside the rest of the image-history
+        // sidebar logic). The two modes share one physical sidebar list and one click/dblclick/
+        // scroll listener on #sidebarRecents (see those listeners below), which dispatch to the
+        // right set of functions/state based on this flag -- there's no separate DOM per mode.
+        let sidebarMode = 'chat';
+
+        // #generateImageBtn's icon/label flip between these two pairs depending on which
+        // mode is about to become active, since the button now always means "switch to the
+        // *other* mode" rather than always meaning "enter image mode" -- see the click
+        // listener below, which picks a direction based on the current sidebarMode.
+        const modeToggleBtnIcon = document.getElementById('modeToggleBtnIcon');
+        const modeToggleBtnLabel = document.getElementById('modeToggleBtnLabel');
+
         function switchToImageMode() {
             compareModeContainer.style.display = 'none';
             imageModeContainer.style.display = 'block';
             closeSidebar();
+            sidebarMode = 'image';
+            modeToggleBtnIcon.textContent = '✍️';
+            modeToggleBtnLabel.textContent = 'Generate Text';
+            loadSidebarImageHistoryList();
         }
 
         function switchToCompareMode() {
             imageModeContainer.style.display = 'none';
             compareModeContainer.style.display = 'block';
+            sidebarMode = 'chat';
+            modeToggleBtnIcon.textContent = '🎨';
+            modeToggleBtnLabel.textContent = 'Generate Image';
+            loadSidebarHistory();
         }
 
-        document.getElementById('generateImageBtn').addEventListener('click', switchToImageMode);
+        document.getElementById('generateImageBtn').addEventListener('click', () => {
+            if (sidebarMode === 'image') {
+                switchToCompareMode();
+            } else {
+                switchToImageMode();
+            }
+        });
 
         // ---- Keep .left-sidebar's sticky offset/height in sync with the real,
         // currently-rendered height of whatever sits above it (.navbar + the optional
@@ -2536,6 +2591,14 @@
                 }
 
                 displayImageResults(data);
+
+                // Only logged-in users get a history_id back (see generate_images() in
+                // main.py) -- image generation history is persisted exclusively for them,
+                // with no sessionStorage-based guest fallback (unlike the chat Recents list),
+                // since guests are not allowed to use the image Recents sidebar at all.
+                if (data.history_id) {
+                    loadSidebarImageHistoryList();
+                }
             } catch (error) {
                 console.error('Error generating images:', error);
                 alert('Error generating images. Please try again.');
@@ -2895,10 +2958,228 @@
             }
         }
 
+        // ==================================================
+        // Sidebar: Image Recents -- the image-generation counterpart of the chat Recents
+        // block above. Reuses the same generic grouping/sorting/rendering helpers
+        // (groupHistoryByDate/sortHistoryItems/renderHistoryGroups/renderHistoryItem) since
+        // both kinds of history entries share the same {id, title, is_pinned, pinned_at,
+        // created_at} shape, but is backed by its own state (currentImageHistoryItems) and
+        // hits /api/image-history instead of /api/history.
+        //
+        // Deliberately has NO guest fallback: unlike chat history (window.guestHistory,
+        // mirrored into sessionStorage so guests get an ephemeral Recents list), image
+        // generation history is restricted to logged-in users end to end -- guests never get
+        // a history_id back from /api/generate-images (see main.py), and this sidebar simply
+        // shows a locked message instead of ever calling /api/image-history for them. That
+        // also means the pin/rename/delete functions below never need an "if (!isLoggedIn)"
+        // branch: with no items ever rendered for a guest, their data-action handlers can
+        // never fire in image mode to begin with.
+        // ==================================================
+        let currentImageHistoryItems = [];
+
+        function renderCurrentImageHistoryList() {
+            const recents = document.getElementById('sidebarRecents');
+            if (!isLoggedIn) {
+                recents.innerHTML = '<div class="sidebar-empty-state">Log in to save and view your image generation history.</div>';
+                updateSidebarScrollIndicator();
+                return;
+            }
+            const groups = groupHistoryByDate(sortHistoryItems(currentImageHistoryItems));
+            recents.innerHTML = renderHistoryGroups(groups);
+            updateSidebarScrollIndicator();
+        }
+
+        const IMAGE_HISTORY_PAGE_SIZE = 20;
+        let currentImageHistoryPage = 1;
+        let hasMoreImageHistory = true;
+        let isLoadingMoreImageHistory = false;
+
+        async function loadSidebarImageHistoryList() {
+            const recents = document.getElementById('sidebarRecents');
+            currentImageHistoryPage = 1;
+            hasMoreImageHistory = true;
+            if (!isLoggedIn) {
+                // Guests (and the sessions that never even reach index.html, anonymous
+                // visitors) never have anything to fetch -- image history is never persisted
+                // for them at all, not even client-side. Render the locked state directly.
+                currentImageHistoryItems = [];
+                hasMoreImageHistory = false;
+                renderCurrentImageHistoryList();
+                return;
+            }
+            try {
+                const response = await fetch(`/api/image-history?page=1&limit=${IMAGE_HISTORY_PAGE_SIZE}`);
+                if (!response.ok) {
+                    recents.innerHTML = '<div class="sidebar-empty-state">Could not load image history.</div>';
+                    return;
+                }
+                const data = await response.json();
+                currentImageHistoryItems = data.history || [];
+                hasMoreImageHistory = currentImageHistoryItems.length >= IMAGE_HISTORY_PAGE_SIZE;
+                renderCurrentImageHistoryList();
+            } catch (error) {
+                console.error('Error loading image history:', error);
+                recents.innerHTML = '<div class="sidebar-empty-state">Could not load image history.</div>';
+            }
+        }
+
+        async function loadMoreSidebarImageHistory() {
+            if (!isLoggedIn || !hasMoreImageHistory || isLoadingMoreImageHistory) return;
+            isLoadingMoreImageHistory = true;
+            const recents = document.getElementById('sidebarRecents');
+            const previousScrollTop = recents.scrollTop;
+            const nextPage = currentImageHistoryPage + 1;
+            try {
+                const response = await fetch(`/api/image-history?page=${nextPage}&limit=${IMAGE_HISTORY_PAGE_SIZE}`);
+                if (!response.ok) return;
+                const data = await response.json();
+                const newItems = data.history || [];
+                currentImageHistoryPage = nextPage;
+                hasMoreImageHistory = newItems.length >= IMAGE_HISTORY_PAGE_SIZE;
+                if (newItems.length > 0) {
+                    currentImageHistoryItems = currentImageHistoryItems.concat(newItems);
+                    renderCurrentImageHistoryList();
+                    recents.scrollTop = previousScrollTop;
+                }
+            } catch (error) {
+                console.error('Error loading more image history:', error);
+            } finally {
+                isLoadingMoreImageHistory = false;
+            }
+        }
+
+        function toggleImageHistoryPin(id) {
+            const item = currentImageHistoryItems.find(h => h.id === id);
+            if (!item) return;
+            const previousPinned = !!item.is_pinned;
+            const previousPinnedAt = item.pinned_at;
+            item.is_pinned = !previousPinned;
+            item.pinned_at = item.is_pinned ? new Date().toISOString() : null;
+            renderCurrentImageHistoryList();
+
+            fetch(`/api/image-history/${encodeURIComponent(id)}/toggle-pin`, { method: 'POST' })
+                .then(response => {
+                    if (!response.ok) throw new Error('toggle-pin failed: ' + response.status);
+                    return response.json();
+                })
+                .then(data => {
+                    if (typeof data.is_pinned === 'boolean' && data.is_pinned !== item.is_pinned) {
+                        item.is_pinned = data.is_pinned;
+                        renderCurrentImageHistoryList();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error toggling pin:', error);
+                    item.is_pinned = previousPinned;
+                    item.pinned_at = previousPinnedAt;
+                    renderCurrentImageHistoryList();
+                    showHistoryErrorToast('Could not update pin. Please try again.');
+                });
+        }
+
+        async function deleteImageHistoryItem(id) {
+            const targetItem = currentImageHistoryItems.find(h => h.id === id);
+            if (!targetItem) return;
+            const confirmed = await showDeleteConfirmModal(targetItem.title);
+            if (!confirmed) return;
+
+            document.getElementById('clearImagesBtn').click();
+
+            const index = currentImageHistoryItems.findIndex(h => h.id === id);
+            if (index === -1) return;
+            const [removedItem] = currentImageHistoryItems.splice(index, 1);
+            renderCurrentImageHistoryList();
+
+            fetch(`/api/image-history/${encodeURIComponent(id)}`, { method: 'DELETE' })
+                .then(response => {
+                    if (!response.ok) throw new Error('delete failed: ' + response.status);
+                })
+                .catch(error => {
+                    console.error('Error deleting image history:', error);
+                    currentImageHistoryItems.splice(index, 0, removedItem);
+                    renderCurrentImageHistoryList();
+                    showHistoryErrorToast('Could not delete image batch. Please try again.');
+                });
+        }
+
+        function commitImageRename(id, newTitle) {
+            const item = currentImageHistoryItems.find(h => h.id === id);
+            if (!item) return;
+            const previousTitle = item.title;
+            item.title = newTitle;
+            renderCurrentImageHistoryList();
+
+            fetch(`/api/image-history/${encodeURIComponent(id)}/title`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_title: newTitle })
+            })
+                .then(response => {
+                    if (!response.ok) throw new Error('rename failed: ' + response.status);
+                })
+                .catch(error => {
+                    console.error('Error renaming image history:', error);
+                    item.title = previousTitle;
+                    renderCurrentImageHistoryList();
+                    showHistoryErrorToast('Could not rename image batch. Please try again.');
+                });
+        }
+
+        function startInlineImageRename(itemEl, id) {
+            if (itemEl.querySelector('.history-rename-input')) return;
+            const titleEl = itemEl.querySelector('.history-item-title');
+            const item = currentImageHistoryItems.find(h => h.id === id);
+            const originalTitle = item ? (item.title || '') : (titleEl ? titleEl.textContent : '');
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'history-rename-input';
+            input.value = originalTitle;
+            titleEl.replaceWith(input);
+            input.focus();
+            input.select();
+
+            let settled = false;
+            const commit = () => {
+                if (settled) return;
+                settled = true;
+                const newTitle = input.value.trim();
+                if (!newTitle || newTitle === originalTitle) {
+                    renderCurrentImageHistoryList();
+                    return;
+                }
+                commitImageRename(id, newTitle);
+            };
+            const cancel = () => {
+                if (settled) return;
+                settled = true;
+                renderCurrentImageHistoryList();
+            };
+
+            input.addEventListener('blur', commit);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    input.blur();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancel();
+                }
+            });
+        }
+
+        function openImageHistoryEntry(id) {
+            window.location.href = '/image-history/' + encodeURIComponent(id);
+        }
+
         document.getElementById('sidebarRecents').addEventListener('scroll', function() {
             updateSidebarScrollIndicator();
             if (this.scrollTop + this.clientHeight >= this.scrollHeight - 48) {
-                loadMoreSidebarHistory();
+                if (sidebarMode === 'image') {
+                    loadMoreSidebarImageHistory();
+                } else {
+                    loadMoreSidebarHistory();
+                }
             }
         });
 
@@ -3139,6 +3420,9 @@
         // every render, so listeners are attached once here rather than per-item.
         const sidebarRecentsEl = document.getElementById('sidebarRecents');
 
+        // Both Recents "modes" share this one delegated listener set on the single physical
+        // #sidebarRecents container -- sidebarMode picks which function set/state (chat vs.
+        // image) a click dispatches to (see the sidebarMode comment near switchToImageMode()).
         sidebarRecentsEl.addEventListener('click', (e) => {
             const actionBtn = e.target.closest('[data-action]');
             if (actionBtn) {
@@ -3146,18 +3430,25 @@
                 if (!itemEl) return;
                 const id = itemEl.dataset.id;
                 const action = actionBtn.dataset.action;
-                if (action === 'pin') toggleHistoryPin(id);
-                else if (action === 'rename') startInlineRename(itemEl, id);
-                else if (action === 'delete') deleteHistoryItem(id);
+                if (sidebarMode === 'image') {
+                    if (action === 'pin') toggleImageHistoryPin(id);
+                    else if (action === 'rename') startInlineImageRename(itemEl, id);
+                    else if (action === 'delete') deleteImageHistoryItem(id);
+                } else {
+                    if (action === 'pin') toggleHistoryPin(id);
+                    else if (action === 'rename') startInlineRename(itemEl, id);
+                    else if (action === 'delete') deleteHistoryItem(id);
+                }
                 return;
             }
 
             // Clicking the row itself (not an action icon, and not the rename <input> while
-            // mid-edit) navigates to that conversation's read-only history page.
+            // mid-edit) navigates to that entry's read-only detail page.
             if (e.target.closest('.history-rename-input')) return;
             const itemEl = e.target.closest('.history-item');
             if (!itemEl) return;
-            openHistoryEntry(itemEl.dataset.id);
+            if (sidebarMode === 'image') openImageHistoryEntry(itemEl.dataset.id);
+            else openHistoryEntry(itemEl.dataset.id);
         });
 
         sidebarRecentsEl.addEventListener('dblclick', (e) => {
@@ -3165,16 +3456,34 @@
             if (!titleEl) return;
             const itemEl = titleEl.closest('.history-item');
             if (!itemEl) return;
-            startInlineRename(itemEl, itemEl.dataset.id);
+            if (sidebarMode === 'image') startInlineImageRename(itemEl, itemEl.dataset.id);
+            else startInlineRename(itemEl, itemEl.dataset.id);
         });
 
+        // "+ New" no longer force-switches to chat mode -- it clears whichever mode's
+        // results/form are currently on screen (chat vs image), staying in that mode. This
+        // replaced the old "+ New Chat" behavior, which always jumped back to chat mode even
+        // if you were mid-way through image generation.
         document.getElementById('newChatBtn').addEventListener('click', () => {
-            switchToCompareMode();
-            document.getElementById('clearBtn').click();
+            if (sidebarMode === 'image') {
+                document.getElementById('clearImagesBtn').click();
+            } else {
+                document.getElementById('clearBtn').click();
+            }
             closeSidebar();
         });
 
-        loadSidebarHistory();
+        // Deep-linking into image mode: templates/image_history.html's "Generate Image"
+        // sidebar button navigates here via '/?mode=image' rather than just '/', since a
+        // bare '/' would land back in chat mode with the chat Recents list loaded -- this
+        // reads that query param once at load time to put both the main content and the
+        // sidebar into image mode immediately, matching what a user clicking the in-page
+        // "Generate Image" button gets.
+        if (new URLSearchParams(window.location.search).get('mode') === 'image') {
+            switchToImageMode();
+        } else {
+            loadSidebarHistory();
+        }
 
         function togglePeerReview(uid) {
             const list = document.getElementById('pr-list-' + uid);

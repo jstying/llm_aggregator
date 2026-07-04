@@ -631,6 +631,55 @@ class TestSaveHistoryRobustness(unittest.TestCase):
         self.assertIsNone(data['history_id'])
 
 
+class TestSaveImageHistoryRobustness(unittest.TestCase):
+    """Image-generation counterpart of TestSaveHistoryRobustness above (2026-07-04) --
+    save_image_history() failures must never break /api/generate-images' own response."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def _post_generate_images_as_user(self, user_id='uid1'):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = user_id
+            payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage']}
+            return client.post(
+                '/api/generate-images', data=json.dumps(payload), content_type='application/json'
+            )
+
+    @patch('main.save_image_history', side_effect=RuntimeError('firestore down'))
+    @patch('main.G4FImageClient')
+    def test_save_failure_does_not_break_generate_images_response(self, mock_client_cls, mock_save):
+        mock_client_cls.return_value.images.generate.return_value = MagicMock(
+            data=[MagicMock(url='https://example.com/a.png', b64_json=None)]
+        )
+        response = self._post_generate_images_as_user()
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertIn('results', data)
+        self.assertGreater(len(data['results']), 0)
+
+    @patch('main.save_image_history', side_effect=RuntimeError('firestore down'))
+    @patch('main.G4FImageClient')
+    def test_save_failure_leaves_history_id_null(self, mock_client_cls, mock_save):
+        mock_client_cls.return_value.images.generate.return_value = MagicMock(
+            data=[MagicMock(url='https://example.com/a.png', b64_json=None)]
+        )
+        response = self._post_generate_images_as_user()
+        data = json.loads(response.data)
+        self.assertIsNone(data['history_id'])
+
+    @patch('main.save_image_history', return_value=None)
+    @patch('main.G4FImageClient')
+    def test_save_returning_none_leaves_history_id_null(self, mock_client_cls, mock_save):
+        mock_client_cls.return_value.images.generate.return_value = MagicMock(
+            data=[MagicMock(url='https://example.com/a.png', b64_json=None)]
+        )
+        response = self._post_generate_images_as_user()
+        data = json.loads(response.data)
+        self.assertIsNone(data['history_id'])
+
+
 # ============================================================
 # 8. 互评阶段超时时长回归测试（2026-07-03）
 # 修复 Yqcloud 等较慢 Provider 在互评阶段被误判超时的问题：
@@ -948,9 +997,11 @@ class TestImageGlobalDegradationState(unittest.TestCase):
 # ============================================================
 # 11. 文生图硬超时数值回归测试
 # 与互评阶段的 32s outer timeout 同理：future.result() 必须以
-# IMAGE_GENERATION_OUTER_TIMEOUT（当前 50，2026-07-04 从 45 调宽，为
-# test_g4f_image_provider 内新增的 429/queue 重试腾出缓冲）等待，锁定该数值不被
-# 后续改动悄悄改小/改大而不同步更新 advisory timeout 与文档。
+# IMAGE_GENERATION_OUTER_TIMEOUT（当前 85 = 2 * advisory(40) + 5s 重试调度缓冲，
+# 2026-07-04 从"advisory + 固定 10s"公式改为"2 * advisory + 固定 5s"公式，因为
+# test_g4f_image_provider 的 429/queue 重试可能让两次尝试各自都跑到接近满
+# advisory_timeout 才结束，固定 10s 缓冲不足以覆盖第二次尝试本身的耗时）等待，
+# 锁定该数值不被后续改动悄悄改小/改大而不同步更新 advisory timeout 与文档。
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestImageOuterTimeoutValue(unittest.TestCase):
@@ -959,7 +1010,7 @@ class TestImageOuterTimeoutValue(unittest.TestCase):
         main.app.config['TESTING'] = True
         self.client = main.app.test_client()
 
-    def test_future_result_waits_up_to_50_seconds(self):
+    def test_future_result_waits_up_to_85_seconds(self):
         original_result = concurrent.futures.Future.result
         captured_timeouts = []
 
@@ -982,7 +1033,18 @@ class TestImageOuterTimeoutValue(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(main.IMAGE_GENERATION_OUTER_TIMEOUT, captured_timeouts)
-        self.assertEqual(main.IMAGE_GENERATION_OUTER_TIMEOUT, 50)
+        self.assertEqual(main.IMAGE_GENERATION_OUTER_TIMEOUT, 85)
+
+    def test_outer_timeout_covers_two_full_advisory_attempts_plus_buffer(self):
+        """The 429/queue retry means a provider can legitimately need up to two
+        full advisory_timeout-budgeted attempts (first attempt slow-fails near
+        the advisory limit, retry then also runs close to the advisory limit
+        before succeeding). outer must not be tighter than that, or a
+        successfully-generated image gets discarded as if it failed."""
+        self.assertEqual(
+            main.IMAGE_GENERATION_OUTER_TIMEOUT,
+            2 * main.IMAGE_GENERATION_ADVISORY_TIMEOUT + main.IMAGE_GENERATION_RETRY_SCHEDULING_BUFFER
+        )
 
     def test_advisory_timeout_passed_to_generate_matches_constant(self):
         mock_client_instance = MagicMock()
@@ -1013,6 +1075,10 @@ class TestImageOuterTimeoutValue(unittest.TestCase):
         # outer must retain a buffer over advisory for scheduling overhead, same
         # invariant as the default pair.
         self.assertGreater(outer, advisory)
+        # AnyProvider only overrides advisory — outer must still be derived from
+        # the same 2*advisory+buffer formula as every other provider, not a
+        # separately hand-picked number that could drift out of sync.
+        self.assertEqual(outer, 2 * advisory + main.IMAGE_GENERATION_RETRY_SCHEDULING_BUFFER)
 
     def test_unlisted_provider_falls_back_to_default_timeouts(self):
         advisory, outer = main.get_image_timeouts('PollinationsImage')
