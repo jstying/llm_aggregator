@@ -299,6 +299,11 @@ class TestUpdateImageHistoryTitleEndpoint(unittest.TestCase):
 
 
 class TestDeleteImageHistoryEndpoint(unittest.TestCase):
+    """2026-07-05: deleting an image history entry also cleans up the local
+    get_media_dir() files its g4f results referenced -- since the Firestore record is
+    gone, nothing can 404 by removing them, and it stops generated_media from growing
+    forever for entries the user has explicitly deleted (see CLAUDE.md's known-limitation
+    note on unbounded local disk growth)."""
 
     def setUp(self):
         main.app.config['TESTING'] = True
@@ -307,26 +312,87 @@ class TestDeleteImageHistoryEndpoint(unittest.TestCase):
         with client.session_transaction() as sess:
             sess['user_id'] = user_id
 
+    def _fake_entry(self, **overrides):
+        entry = {
+            'id': 'imghist1',
+            'user_id': 'uid1',
+            'prompt': 'a red apple on a table',
+            'title': 'a red apple on ...',
+            'results': [
+                {
+                    'provider': 'PollinationsImage', 'success': True,
+                    'url': '/media/abc123.jpg?url=https://example.com/a.png',
+                    'b64_json': None, 'error': '', 'response_time': 1.1,
+                    'model': 'auto', 'type': 'g4f_image',
+                }
+            ],
+            'is_pinned': False,
+        }
+        entry.update(overrides)
+        return entry
+
+    @patch('main.get_image_history_by_id', return_value=None)
     @patch('main.delete_image_history', return_value=True)
-    def test_success_returns_200(self, mock_delete):
+    def test_success_returns_200(self, mock_delete, mock_get):
         with main.app.test_client() as client:
             self._login(client)
             response = client.delete('/api/image-history/imghist1')
         self.assertEqual(response.status_code, 200)
 
+    @patch('main.get_image_history_by_id', return_value=None)
     @patch('main.delete_image_history', return_value=True)
-    def test_calls_delete_with_session_user_id(self, mock_delete):
+    def test_calls_delete_with_session_user_id(self, mock_delete, mock_get):
         with main.app.test_client() as client:
             self._login(client, user_id='uid1')
             client.delete('/api/image-history/imghist1')
         mock_delete.assert_called_once_with('uid1', 'imghist1')
 
+    @patch('main.get_image_history_by_id', return_value=None)
     @patch('main.delete_image_history', return_value=False)
-    def test_not_owned_or_missing_returns_404(self, mock_delete):
+    def test_not_owned_or_missing_returns_404(self, mock_delete, mock_get):
         with main.app.test_client() as client:
             self._login(client)
             response = client.delete('/api/image-history/ghost')
         self.assertEqual(response.status_code, 404)
+
+    @patch('main._delete_local_media_files_for_image_results')
+    @patch('main.get_image_history_by_id')
+    @patch('main.delete_image_history', return_value=True)
+    def test_success_triggers_local_media_cleanup_with_entrys_results(
+        self, mock_delete, mock_get, mock_cleanup
+    ):
+        entry = self._fake_entry()
+        mock_get.return_value = entry
+        with main.app.test_client() as client:
+            self._login(client)
+            response = client.delete('/api/image-history/imghist1')
+        self.assertEqual(response.status_code, 200)
+        mock_cleanup.assert_called_once_with(entry['results'])
+
+    @patch('main._delete_local_media_files_for_image_results')
+    @patch('main.get_image_history_by_id')
+    @patch('main.delete_image_history', return_value=True)
+    def test_snapshot_is_taken_before_the_firestore_delete(
+        self, mock_delete, mock_get, mock_cleanup
+    ):
+        # get_image_history_by_id() must run first -- once delete_image_history() has
+        # removed the doc, there is nothing left to read the results/filenames back from.
+        call_order = []
+        mock_get.side_effect = lambda *a, **kw: call_order.append('get') or self._fake_entry()
+        mock_delete.side_effect = lambda *a, **kw: call_order.append('delete') or True
+        with main.app.test_client() as client:
+            self._login(client)
+            client.delete('/api/image-history/imghist1')
+        self.assertEqual(call_order, ['get', 'delete'])
+
+    @patch('main._delete_local_media_files_for_image_results')
+    @patch('main.get_image_history_by_id', return_value=None)
+    @patch('main.delete_image_history', return_value=False)
+    def test_404_does_not_trigger_cleanup(self, mock_delete, mock_get, mock_cleanup):
+        with main.app.test_client() as client:
+            self._login(client)
+            client.delete('/api/image-history/ghost')
+        mock_cleanup.assert_not_called()
 
 
 class TestToggleImageHistoryPinEndpoint(unittest.TestCase):

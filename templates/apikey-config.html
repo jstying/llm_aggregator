@@ -59,15 +59,15 @@
 
 <form id="apikeyConfigForm">
     <div class="form-group">
-        <label for="chatgptKeyInput">ChatGPT API Key <small style="font-weight:400;color:#a0a0a0;">(Not supported yet, coming soon)</small></label>
+        <label for="chatgptKeyInput">ChatGPT API Key <small style="font-weight:400;color:#a0a0a0;">(for text and image generation)</small></label>
         <div class="key-input-row">
-            <input type="password" id="chatgptKeyInput" placeholder="sk-..." autocomplete="off" disabled>
-            <button type="button" class="btn-clear-key" id="clearChatgptKeyBtn" disabled>Clear</button>
+            <input type="password" id="chatgptKeyInput" placeholder="sk-..." autocomplete="off">
+            <button type="button" class="btn-clear-key" id="clearChatgptKeyBtn">Clear</button>
         </div>
     </div>
 
     <div class="form-group">
-        <label for="geminiKeyInput">Gemini API Key <small style="font-weight:400;color:#a0a0a0;">(for image generation)</small></label>
+        <label for="geminiKeyInput">Gemini API Key <small style="font-weight:400;color:#a0a0a0;">(for text and image generation)</small></label>
         <div class="key-input-row">
             <input type="password" id="geminiKeyInput" placeholder="AIza..." autocomplete="off">
             <button type="button" class="btn-clear-key" id="clearGeminiKeyBtn">Clear</button>
@@ -91,11 +91,12 @@
 </div>
 
 <script>
-    // Claude 与 Gemini 两个字段与业务逻辑真正绑定：分别与 localStorage.getItem('user_claude_key')/
-    // localStorage.getItem('user_gemini_key') 双向同步（各自独立的 key，互不共享）。
-    // ChatGPT 目前仍是纯占位符（第 3 节明确要求），故意不接入任何存储——它的输入框和
-    // "Clear"按钮渲染为 disabled，未来要接入时应新增独立的 localStorage key，不应该
-    // 复用 'user_claude_key'/'user_gemini_key'。
+    // Claude/Gemini/ChatGPT 三个字段与业务逻辑真正绑定：分别与 localStorage.getItem('user_claude_key')/
+    // localStorage.getItem('user_gemini_key')/localStorage.getItem('user_chatgpt_key') 双向
+    // 同步（各自独立的 key，互不共享）。Gemini 的 Key 同时被 /api/gemini-image 和
+    // /api/gemini-chat 使用（X-User-Gemini-Key），ChatGPT 的 Key 同时被 /api/chatgpt-chat
+    // 和 /api/chatgpt-image 使用（X-User-ChatGPT-Key）——同一个官方 Key 本来就能覆盖该
+    // 供应商的文本和图片场景，不需要为每个场景单独存一份。
     const claudeKeyInput = document.getElementById('claudeKeyInput');
     const storedClaudeKey = localStorage.getItem('user_claude_key');
     if (storedClaudeKey) {
@@ -106,6 +107,12 @@
     const storedGeminiKey = localStorage.getItem('user_gemini_key');
     if (storedGeminiKey) {
         geminiKeyInput.value = storedGeminiKey;
+    }
+
+    const chatgptKeyInput = document.getElementById('chatgptKeyInput');
+    const storedChatgptKey = localStorage.getItem('user_chatgpt_key');
+    if (storedChatgptKey) {
+        chatgptKeyInput.value = storedChatgptKey;
     }
 
     function showSaveStatus(message) {
@@ -132,6 +139,13 @@
             localStorage.removeItem('user_gemini_key');
         }
 
+        const chatgptKey = chatgptKeyInput.value.trim();
+        if (chatgptKey) {
+            localStorage.setItem('user_chatgpt_key', chatgptKey);
+        } else {
+            localStorage.removeItem('user_chatgpt_key');
+        }
+
         showSaveStatus('Saved');
     });
 
@@ -148,6 +162,12 @@
     document.getElementById('clearGeminiKeyBtn').addEventListener('click', function() {
         geminiKeyInput.value = '';
         localStorage.removeItem('user_gemini_key');
+        showSaveStatus('Cleared. Future requests will no longer include this key.');
+    });
+
+    document.getElementById('clearChatgptKeyBtn').addEventListener('click', function() {
+        chatgptKeyInput.value = '';
+        localStorage.removeItem('user_chatgpt_key');
         showSaveStatus('Cleared. Future requests will no longer include this key.');
     });
 </script>

@@ -1322,6 +1322,11 @@ class TestServeGeneratedMediaEndpoint(unittest.TestCase):
 
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestPeerReview(unittest.TestCase):
+    """2026-07-07: /api/compare no longer runs peer review itself -- it now only
+    initializes the empty `peer_reviews` field on every result (8-field DTO contract
+    preserved) so historical/structural assertions about the field's existence still
+    hold. The actual cross g4f/frontier review logic moved to POST /api/peer-review,
+    covered by TestPeerReviewEndpoint in tests/test_peer_review_cross_frontier.py."""
 
     def setUp(self):
         main.app.config['TESTING'] = True
@@ -1353,127 +1358,32 @@ class TestPeerReview(unittest.TestCase):
             self.assertIn('peer_reviews', result)
 
     @patch('main.g4f.ChatCompletion.create')
-    def test_peer_reviews_empty_with_single_provider(self, mock_create):
+    def test_peer_reviews_always_empty_with_single_provider(self, mock_create):
         mock_create.return_value = 'response'
         response = self._post_compare(providers=['Yqcloud'])
         data = json.loads(response.data)
         for result in data['results']:
             self.assertEqual(result['peer_reviews'], [])
 
+    @patch('main.run_cross_peer_review')
     @patch('main.g4f.ChatCompletion.create')
-    def test_peer_reviews_triggered_when_two_succeed(self, mock_create):
+    def test_compare_never_triggers_cross_peer_review_even_with_two_successes(self, mock_create, mock_run_review):
+        """Even when two g4f providers both succeed, /api/compare must not call
+        run_cross_peer_review() itself -- that phase is now exclusively triggered by the
+        frontend calling POST /api/peer-review after all results (free + frontier) are
+        known."""
         providers = self._make_two_providers()
         mock_create.return_value = 'test response'
         with patch('main.G4F_PROVIDERS', providers), \
              patch('main.PROVIDER_MODELS_MAP', {'ProviderA': ['gpt-3.5-turbo'], 'ProviderB': ['aria']}), \
-             patch('main.ROUTE_PROMPTS_MAP', {}), \
-             patch('main.PEER_REVIEW_PROMPTS_MAP', {'gpt-3.5-turbo': 'Review:', 'aria': 'Review:'}):
+             patch('main.ROUTE_PROMPTS_MAP', {}):
             response = self._post_compare(providers=['ProviderA', 'ProviderB'])
         data = json.loads(response.data)
         successful = [r for r in data['results'] if r['success']]
         self.assertGreaterEqual(len(successful), 2)
-        for result in successful:
-            self.assertGreater(len(result['peer_reviews']), 0)
-
-    @patch('main.g4f.ChatCompletion.create')
-    def test_peer_reviews_empty_when_only_one_succeeds(self, mock_create):
-        providers = self._make_two_providers()
-
-        def side_effect(*args, **kwargs):
-            if kwargs.get('provider').__name__ == 'ProviderA':
-                return 'success'
-            raise Exception('simulated failure')
-
-        mock_create.side_effect = side_effect
-        with patch('main.G4F_PROVIDERS', providers), \
-             patch('main.PROVIDER_MODELS_MAP', {'ProviderA': ['gpt-3.5-turbo'], 'ProviderB': ['aria']}), \
-             patch('main.ROUTE_PROMPTS_MAP', {}), \
-             patch('main.PEER_REVIEW_PROMPTS_MAP', {'gpt-3.5-turbo': 'Review:', 'aria': 'Review:'}):
-            response = self._post_compare(providers=['ProviderA', 'ProviderB'])
-        data = json.loads(response.data)
         for result in data['results']:
             self.assertEqual(result['peer_reviews'], [])
-
-    @patch('main.g4f.ChatCompletion.create')
-    def test_peer_review_item_has_required_fields(self, mock_create):
-        providers = self._make_two_providers()
-        mock_create.return_value = '{"score": 80, "comment": "ok"}'
-        with patch('main.G4F_PROVIDERS', providers), \
-             patch('main.PROVIDER_MODELS_MAP', {'ProviderA': ['gpt-3.5-turbo'], 'ProviderB': ['aria']}), \
-             patch('main.ROUTE_PROMPTS_MAP', {}), \
-             patch('main.PEER_REVIEW_PROMPTS_MAP', {'gpt-3.5-turbo': 'Review:', 'aria': 'Review:'}):
-            response = self._post_compare(providers=['ProviderA', 'ProviderB'])
-        data = json.loads(response.data)
-        successful = [r for r in data['results'] if r['success']]
-        required = {'reviewer_provider', 'reviewer_model', 'score', 'comment'}
-        for result in successful:
-            for item in result['peer_reviews']:
-                self.assertTrue(required.issubset(set(item.keys())))
-
-    @patch('main.g4f.ChatCompletion.create')
-    def test_peer_review_score_is_integer(self, mock_create):
-        providers = self._make_two_providers()
-        mock_create.return_value = '{"score": 75, "comment": "decent"}'
-        with patch('main.G4F_PROVIDERS', providers), \
-             patch('main.PROVIDER_MODELS_MAP', {'ProviderA': ['gpt-3.5-turbo'], 'ProviderB': ['aria']}), \
-             patch('main.ROUTE_PROMPTS_MAP', {}), \
-             patch('main.PEER_REVIEW_PROMPTS_MAP', {'gpt-3.5-turbo': 'Review:', 'aria': 'Review:'}):
-            response = self._post_compare(providers=['ProviderA', 'ProviderB'])
-        data = json.loads(response.data)
-        successful = [r for r in data['results'] if r['success']]
-        for result in successful:
-            for item in result['peer_reviews']:
-                self.assertIsInstance(item['score'], int)
-
-    @patch('main.g4f.ChatCompletion.create')
-    def test_provider_does_not_review_itself(self, mock_create):
-        providers = self._make_two_providers()
-        mock_create.return_value = 'test response'
-        with patch('main.G4F_PROVIDERS', providers), \
-             patch('main.PROVIDER_MODELS_MAP', {'ProviderA': ['gpt-3.5-turbo'], 'ProviderB': ['aria']}), \
-             patch('main.ROUTE_PROMPTS_MAP', {}), \
-             patch('main.PEER_REVIEW_PROMPTS_MAP', {'gpt-3.5-turbo': 'Review:', 'aria': 'Review:'}):
-            response = self._post_compare(providers=['ProviderA', 'ProviderB'])
-        data = json.loads(response.data)
-        for result in data['results']:
-            for item in result['peer_reviews']:
-                self.assertNotEqual(item['reviewer_provider'], result['provider'])
-
-    @patch('main.g4f.ChatCompletion.create')
-    def test_default_judge_prefix_used_when_model_not_in_peer_review_map(self, mock_create):
-        """When a reviewer model has no PEER_REVIEW_PROMPTS_MAP entry, the English
-        default judge prefix must be prepended to the review prompt sent to g4f."""
-        providers = self._make_two_providers()
-        mock_create.return_value = '{"score": 80, "comment": "ok"}'
-        with patch('main.G4F_PROVIDERS', providers), \
-             patch('main.PROVIDER_MODELS_MAP', {'ProviderA': ['gpt-3.5-turbo'], 'ProviderB': ['aria']}), \
-             patch('main.ROUTE_PROMPTS_MAP', {}), \
-             patch('main.PEER_REVIEW_PROMPTS_MAP', {}):
-            response = self._post_compare(providers=['ProviderA', 'ProviderB'])
-        self.assertEqual(response.status_code, 200)
-        sent_contents = [
-            call.kwargs['messages'][0]['content'] for call in mock_create.call_args_list
-        ]
-        default_prefix_calls = [
-            c for c in sent_contents
-            if c.startswith('Please evaluate the quality of the following answer')
-        ]
-        self.assertEqual(len(default_prefix_calls), 2)
-
-    @patch('main.g4f.ChatCompletion.create')
-    def test_two_successful_providers_each_reviewed_once(self, mock_create):
-        providers = self._make_two_providers()
-        mock_create.return_value = 'test response'
-        with patch('main.G4F_PROVIDERS', providers), \
-             patch('main.PROVIDER_MODELS_MAP', {'ProviderA': ['gpt-3.5-turbo'], 'ProviderB': ['aria']}), \
-             patch('main.ROUTE_PROMPTS_MAP', {}), \
-             patch('main.PEER_REVIEW_PROMPTS_MAP', {'gpt-3.5-turbo': 'Review:', 'aria': 'Review:'}):
-            response = self._post_compare(providers=['ProviderA', 'ProviderB'])
-        data = json.loads(response.data)
-        successful = [r for r in data['results'] if r['success']]
-        if len(successful) == 2:
-            for result in successful:
-                self.assertEqual(len(result['peer_reviews']), 1)
+        mock_run_review.assert_not_called()
 
 
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')

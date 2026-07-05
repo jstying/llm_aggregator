@@ -65,10 +65,20 @@
         }
 
         /* ---- Navbar ---- */
+        /* .navbar and the optional .guest-banner right below it are wrapped in
+           .page-header-sticky (see body markup) which owns the position:sticky/top/
+           z-index -- previously only .navbar itself was sticky, so scrolling the page
+           made the guest banner scroll out of view while .left-sidebar's sticky `top`
+           offset (--sidebar-header-height, computed from navbar+banner height in
+           syncSidebarStickyMetrics()) still reserved space for it, leaving a blank gap
+           where the banner used to be. Pinning both as one unit fixes both. */
         .navbar {
             background: #ffffff;
             padding: 1.1rem 0;
             border-bottom: 1px solid #e8e8e8;
+        }
+
+        .page-header-sticky {
             position: sticky;
             top: 0;
             z-index: 100;
@@ -153,6 +163,17 @@
             display: flex;
             align-items: center;
             margin-left: 1.25rem;
+        }
+
+        /* Each mode now has 2-3 frontier providers (Claude/ChatGPT/Gemini for chat,
+           Gemini/ChatGPT for image, 2026-07-06 新增) instead of one, so #textQuotaBadge/
+           #imageQuotaBadge are now groups of pills rather than a single pill -- still
+           mutually exclusive per mode, same toggle logic as before, just display:flex
+           instead of inline. */
+        .trial-quota-badge-group {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
         }
 
         .trial-quota-badge {
@@ -648,7 +669,9 @@
             border-radius: 12px;
             padding: 24px;
             width: 90%;
-            max-width: 360px;
+            /* Widened from 360px -- the quota-exhausted upsell copy (the longest text
+               shown in this shared modal) wrapped into a cramped 4-5 line block at 360px. */
+            max-width: 440px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
         }
 
@@ -1236,6 +1259,102 @@
             cursor: not-allowed;
         }
 
+        /* ChatGPT (chat) / Gemini-text (chat) / ChatGPT-image (image form) frontier
+           provider cards, 2026-07-06 新增: visually identical to .claude-provider-checkbox/
+           .gemini-provider-checkbox (same rule set, grouped selectors -- pure CSS reuse),
+           but each keeps its own class name so the JS isolation rule from that comment still
+           holds: none of these may ever be queried alongside .provider-trigger/
+           .image-provider-trigger. */
+        .chatgpt-provider-checkbox,
+        .gemini-text-provider-checkbox,
+        .chatgpt-image-provider-checkbox {
+            display: flex;
+            align-items: center;
+            padding: 14px;
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            cursor: pointer;
+            height: 66px;
+            box-sizing: border-box;
+            overflow: hidden;
+            transition: background-color 0.1s ease, border-color 0.1s ease;
+        }
+
+        .chatgpt-provider-checkbox:hover,
+        .gemini-text-provider-checkbox:hover,
+        .chatgpt-image-provider-checkbox:hover {
+            background: rgba(6, 193, 103, 0.03);
+            border-color: #06c167;
+        }
+
+        .chatgpt-provider-checkbox.is-checked,
+        .gemini-text-provider-checkbox.is-checked,
+        .chatgpt-image-provider-checkbox.is-checked {
+            border-color: #06c167;
+        }
+
+        .chatgpt-provider-checkbox input,
+        .gemini-text-provider-checkbox input,
+        .chatgpt-image-provider-checkbox input {
+            position: absolute;
+            width: 0;
+            height: 0;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .chatgpt-provider-trigger:checked + .checkbox-box,
+        .gemini-text-provider-trigger:checked + .checkbox-box,
+        .chatgpt-image-provider-trigger:checked + .checkbox-box {
+            background: #06c167;
+            border-color: #06c167;
+        }
+
+        .chatgpt-provider-trigger:checked + .checkbox-box::after,
+        .gemini-text-provider-trigger:checked + .checkbox-box::after,
+        .chatgpt-image-provider-trigger:checked + .checkbox-box::after {
+            opacity: 1;
+        }
+
+        .chatgpt-provider-checkbox.is-locked,
+        .gemini-text-provider-checkbox.is-locked,
+        .chatgpt-image-provider-checkbox.is-locked {
+            cursor: not-allowed;
+            opacity: 0.5;
+            background: #f5f5f5;
+        }
+
+        .chatgpt-provider-checkbox.is-locked:hover,
+        .gemini-text-provider-checkbox.is-locked:hover,
+        .chatgpt-image-provider-checkbox.is-locked:hover {
+            background: #f5f5f5;
+            border-color: #e8e8e8;
+        }
+
+        .chatgpt-model-select-group select,
+        .gemini-text-model-select-group select,
+        .chatgpt-image-model-select-group select {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            background: #ffffff;
+            color: #09110e;
+        }
+
+        .chatgpt-model-select-group select:disabled,
+        .gemini-text-model-select-group select:disabled,
+        .chatgpt-image-model-select-group select:disabled {
+            background: #f5f5f5;
+            color: #a0a0a0;
+            cursor: not-allowed;
+        }
+
         /* ---- Image generation mode: sidebar entry point + results grid ---- */
         .generate-image-btn {
             width: 100%;
@@ -1340,6 +1459,19 @@
 
         .btn-secondary:hover {
             background: #172420;
+        }
+
+        /* Stop Generating buttons: kept out of the black/white .btn-secondary scheme
+           (used by Clear Results) with a distinct amber "in-progress interrupt" color --
+           not the same red as .confirm-modal-btn-delete, since Stop isn't a destructive
+           delete action. */
+        .btn-stop {
+            background: #d97706;
+            color: #ffffff;
+        }
+
+        .btn-stop:hover {
+            background: #b45309;
         }
 
         .btn:disabled {
@@ -1761,6 +1893,7 @@
 </head>
 <body>
 
+    <div class="page-header-sticky">
     <nav class="navbar">
         <div class="nav-container">
             <div class="nav-left">
@@ -1772,19 +1905,26 @@
                 </a>
             </div>
             {% if session.user_id and claude_quota and gemini_quota %}
-            <!-- Trial Quota badge (2026-07-05 新增): only rendered for logged-in users --
-                 Claude/Gemini are completely locked for guests/anonymous (see
-                 _get_frontier_quota_context() in main.py), so there is no quota to show
-                 them. #textQuotaBadge/#imageQuotaBadge are mutually exclusive, toggled by
-                 switchToImageMode()/switchToCompareMode() alongside .header-full/
-                 .header-short. Initial numbers come from the server-rendered value here;
-                 refreshTrialQuotaBadge() (inline script below) re-fetches
-                 GET /api/quota-status after every Claude/Gemini call to stay accurate
-                 without the frontend having to guess whether that call consumed a use
-                 (own-key calls and failed calls don't). -->
+            <!-- Trial Quota badge (2026-07-05 新增，2026-07-06 扩展为每个 provider 一颗
+                 pill): only rendered for logged-in users -- all frontier providers are
+                 completely locked for guests/anonymous (see _get_frontier_quota_context()
+                 in main.py). #textQuotaBadge/#imageQuotaBadge are mutually exclusive
+                 groups, toggled by switchToImageMode()/switchToCompareMode() alongside
+                 .header-full/.header-short. Initial numbers come from the server-rendered
+                 value here; refreshTrialQuotaBadge() (inline script below) re-fetches
+                 GET /api/quota-status after every frontier call to stay accurate without
+                 the frontend having to guess whether that call consumed a use (own-key
+                 calls and failed calls don't). -->
             <div class="trial-quota-badges" id="trialQuotaBadges">
-                <span class="trial-quota-badge" id="textQuotaBadge">Trial Quota: <span id="textQuotaValue">{{ claude_quota.limit - claude_quota.used }}</span>/<span id="textQuotaLimit">{{ claude_quota.limit }}</span></span>
-                <span class="trial-quota-badge" id="imageQuotaBadge" style="display: none;">Trial Quota: <span id="imageQuotaValue">{{ gemini_quota.limit - gemini_quota.used }}</span>/<span id="imageQuotaLimit">{{ gemini_quota.limit }}</span></span>
+                <span class="trial-quota-badge-group" id="textQuotaBadge">
+                    <span class="trial-quota-badge">Claude: <span id="claudeQuotaValue">{{ claude_quota.limit - claude_quota.used }}</span>/<span id="claudeQuotaLimit">{{ claude_quota.limit }}</span></span>
+                    <span class="trial-quota-badge">ChatGPT: <span id="chatgptQuotaValue">{{ chatgpt_quota.limit - chatgpt_quota.used }}</span>/<span id="chatgptQuotaLimit">{{ chatgpt_quota.limit }}</span></span>
+                    <span class="trial-quota-badge">Gemini: <span id="geminiTextQuotaValue">{{ gemini_text_quota.limit - gemini_text_quota.used }}</span>/<span id="geminiTextQuotaLimit">{{ gemini_text_quota.limit }}</span></span>
+                </span>
+                <span class="trial-quota-badge-group" id="imageQuotaBadge" style="display: none;">
+                    <span class="trial-quota-badge">Gemini: <span id="imageQuotaValue">{{ gemini_quota.limit - gemini_quota.used }}</span>/<span id="imageQuotaLimit">{{ gemini_quota.limit }}</span></span>
+                    <span class="trial-quota-badge">ChatGPT: <span id="chatgptImageQuotaValue">{{ chatgpt_image_quota.limit - chatgpt_image_quota.used }}</span>/<span id="chatgptImageQuotaLimit">{{ chatgpt_image_quota.limit }}</span></span>
+                </span>
             </div>
             {% endif %}
             <ul class="nav-links">
@@ -1809,6 +1949,7 @@
         <a href="{{ url_for('auth.register') }}">sign up</a> to save your history.
     </div>
     {% endif %}
+    </div>
 
     <div class="app-layout">
         <aside class="left-sidebar" id="leftSidebar">
@@ -1880,12 +2021,10 @@
                 </div>
 
                 <div class="form-group">
-                    <!-- Frontier providers (2026-07-04 新增): paid/official-API providers,
-                         kept in their own row and their own container -- deliberately
-                         separate from the free g4f providers below (#providerSelection).
-                         Claude is the only one wired up today; this container is where
-                         future ChatGPT/Gemini frontier provider cards should be appended
-                         once those integrations exist, not into #providerSelection. -->
+                    <!-- Frontier providers (2026-07-04 新增，2026-07-06 加入 ChatGPT/Gemini
+                         文本): paid/official-API providers, kept in their own row and their
+                         own container -- deliberately separate from the free g4f providers
+                         below (#providerSelection). -->
                     <label>Select frontier providers:</label>
                     <div class="provider-selection" id="frontierProviderSelection">
                         <!-- Claude（Anthropic 官方 API，2026-07-04 新增）：不使用 g4f
@@ -1903,7 +2042,33 @@
                                 <small>{{ 'Anthropic official API' if session.user_id else 'Log in to unlock frontier models' }}</small>
                             </div>
                         </label>
-                        <!-- Reserved for future ChatGPT/Gemini frontier provider cards. -->
+                        <!-- ChatGPT（官方 OpenAI API，2026-07-06 新增）：独立 class，见
+                             CSS 注释里的隔离原则。走独立的 /api/chatgpt-chat 路由。 -->
+                        <label class="chatgpt-provider-checkbox{{ ' is-locked' if not session.user_id else '' }}"
+                               id="chatgptProviderCard"
+                               title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
+                            <input type="checkbox" id="chatgptProviderTrigger" class="chatgpt-provider-trigger"
+                                   {{ 'disabled' if not session.user_id else '' }}>
+                            <span class="checkbox-box"></span>
+                            <div class="provider-meta">
+                                <span>ChatGPT ✨</span>
+                                <small>{{ 'OpenAI official API' if session.user_id else 'Log in to unlock frontier models' }}</small>
+                            </div>
+                        </label>
+                        <!-- Gemini 文本（官方 google-genai API，2026-07-06 新增）：Gemini
+                             这次出现在对话表单，与图片表单里的 Gemini 卡片是两个并列的
+                             独立 Provider（各自额度、各自路由），因此独立 class。 -->
+                        <label class="gemini-text-provider-checkbox{{ ' is-locked' if not session.user_id else '' }}"
+                               id="geminiTextProviderCard"
+                               title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
+                            <input type="checkbox" id="geminiTextProviderTrigger" class="gemini-text-provider-trigger"
+                                   {{ 'disabled' if not session.user_id else '' }}>
+                            <span class="checkbox-box"></span>
+                            <div class="provider-meta">
+                                <span>Gemini ✨</span>
+                                <small>{{ 'Google official API' if session.user_id else 'Log in to unlock frontier models' }}</small>
+                            </div>
+                        </label>
                     </div>
                 </div>
 
@@ -1912,6 +2077,22 @@
                     <select id="claudeModelSelect" disabled>
                         <option value="claude-sonnet-5">Claude Sonnet 5</option>
                         <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
+                    </select>
+                </div>
+
+                <div class="form-group chatgpt-model-select-group">
+                    <label for="chatgptModelSelect">ChatGPT Model:</label>
+                    <select id="chatgptModelSelect" disabled>
+                        <option value="gpt-5.5">GPT-5.5</option>
+                        <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
+                    </select>
+                </div>
+
+                <div class="form-group gemini-text-model-select-group">
+                    <label for="geminiTextModelSelect">Gemini Model:</label>
+                    <select id="geminiTextModelSelect" disabled>
+                        <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                        <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
                     </select>
                 </div>
 
@@ -1954,7 +2135,7 @@
                     <button type="button" class="btn btn-secondary" id="clearBtn">
                         Clear Results
                     </button>
-                    <button type="button" class="btn btn-secondary" id="stopBtn" style="display: none;">
+                    <button type="button" class="btn btn-stop" id="stopBtn" style="display: none;">
                         Stop Generating
                     </button>
                 </div>
@@ -1963,8 +2144,8 @@
 
         <div class="loading" id="loading">
             <div class="spinner"></div>
-            <h3>Testing providers...</h3>
-            <p>This may take a few moments</p>
+            <h3>Testing Providers...</h3>
+            <p>This may take a few moments.</p>
         </div>
 
         <div class="results" id="results">
@@ -1997,13 +2178,10 @@
                 </div>
 
                 <div class="form-group">
-                    <!-- Frontier image providers (2026-07-04 新增): paid/official-API image
-                         providers, mirroring #frontierProviderSelection in the compare form
-                         above but scoped to the image-generation form. Gemini (all three Nano
-                         Banana tiers -- Pro/2/Lite, 2026-07-05) is the only frontier provider
-                         wired up today; this container is where future ChatGPT/other frontier
-                         image provider cards should be appended once those integrations exist,
-                         not into #imageProviderSelection. -->
+                    <!-- Frontier image providers (2026-07-04 新增，2026-07-06 加入 ChatGPT
+                         图片): paid/official-API image providers, mirroring
+                         #frontierProviderSelection in the compare form above but scoped to
+                         the image-generation form. -->
                     <label>Select frontier image providers:</label>
                     <div class="provider-selection" id="frontierImageProviderSelection">
                         <!-- Gemini（Google 官方 google-genai API，2026-07-04 新增）：不使用
@@ -2021,7 +2199,19 @@
                                 <small>{{ 'Google official API' if session.user_id else 'Log in to unlock frontier models' }}</small>
                             </div>
                         </label>
-                        <!-- Reserved for future frontier image provider cards. -->
+                        <!-- ChatGPT 图片（官方 OpenAI API，GPT Image 系列，2026-07-06 新增）：
+                             独立 class，走独立的 /api/chatgpt-image 路由。 -->
+                        <label class="chatgpt-image-provider-checkbox{{ ' is-locked' if not session.user_id else '' }}"
+                               id="chatgptImageProviderCard"
+                               title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
+                            <input type="checkbox" id="chatgptImageProviderTrigger" class="chatgpt-image-provider-trigger"
+                                   {{ 'disabled' if not session.user_id else '' }}>
+                            <span class="checkbox-box"></span>
+                            <div class="provider-meta">
+                                <span>ChatGPT ✨</span>
+                                <small>{{ 'OpenAI official API' if session.user_id else 'Log in to unlock frontier models' }}</small>
+                            </div>
+                        </label>
                     </div>
                 </div>
 
@@ -2031,6 +2221,14 @@
                         <option value="nano-banana-pro">Nano Banana Pro</option>
                         <option value="nano-banana-2">Nano Banana 2</option>
                         <option value="nano-banana-lite">Nano Banana Lite</option>
+                    </select>
+                </div>
+
+                <div class="form-group chatgpt-image-model-select-group">
+                    <label for="chatgptImageModelSelect">ChatGPT Model:</label>
+                    <select id="chatgptImageModelSelect" disabled>
+                        <option value="gpt-image-2">GPT Image 2</option>
+                        <option value="gpt-image-1.5">GPT Image 1.5</option>
                     </select>
                 </div>
 
@@ -2073,7 +2271,7 @@
                     <button type="button" class="btn btn-secondary" id="clearImagesBtn">
                         Clear Results
                     </button>
-                    <button type="button" class="btn btn-secondary" id="stopImageBtn" style="display: none;">
+                    <button type="button" class="btn btn-stop" id="stopImageBtn" style="display: none;">
                         Stop Generating
                     </button>
                 </div>
@@ -2082,8 +2280,8 @@
 
         <div class="loading" id="imageLoading">
             <div class="spinner"></div>
-            <h3>Generating images...</h3>
-            <p>This may take up to a minute per provider -- some backends need to cold-start</p>
+            <h3>Generating Images...</h3>
+            <p>This may take up to a minute per provider -- some backends need to cold-start.</p>
         </div>
 
         <div class="results" id="imageResults">
@@ -2139,33 +2337,42 @@
         // constant instead of a number hardcoded twice in this file.
         let claudeQuota = {{ claude_quota | tojson }};
         let geminiQuota = {{ gemini_quota | tojson }};
+        let chatgptQuota = {{ chatgpt_quota | tojson }};
+        let geminiTextQuota = {{ gemini_text_quota | tojson }};
+        let chatgptImageQuota = {{ chatgpt_image_quota | tojson }};
         const CLAUDE_FREE_TIER_LIMIT = {{ claude_free_tier_limit | tojson }};
         const GEMINI_FREE_TIER_LIMIT = {{ gemini_free_tier_limit | tojson }};
+        const CHATGPT_FREE_TIER_LIMIT = {{ chatgpt_free_tier_limit | tojson }};
+        const GEMINI_TEXT_FREE_TIER_LIMIT = {{ gemini_text_free_tier_limit | tojson }};
+        const CHATGPT_IMAGE_FREE_TIER_LIMIT = {{ chatgpt_image_free_tier_limit | tojson }};
 
         function pluralUses(n) {
             return n === 1 ? 'use' : 'uses';
         }
 
+        // Updates one badge pill's two number spans from a {used, limit} quota object.
+        // Shared by all five pills (2026-07-06) instead of five near-identical blocks.
+        function updateOneQuotaBadge(quota, valueElId, limitElId) {
+            if (!quota) return;
+            const valueEl = document.getElementById(valueElId);
+            const limitEl = document.getElementById(limitElId);
+            if (valueEl) valueEl.textContent = Math.max(0, quota.limit - quota.used);
+            if (limitEl) limitEl.textContent = quota.limit;
+        }
+
         function updateTrialQuotaBadgeDisplay() {
             if (!isLoggedIn) return;
-            if (claudeQuota) {
-                const textQuotaValue = document.getElementById('textQuotaValue');
-                const textQuotaLimit = document.getElementById('textQuotaLimit');
-                if (textQuotaValue) textQuotaValue.textContent = Math.max(0, claudeQuota.limit - claudeQuota.used);
-                if (textQuotaLimit) textQuotaLimit.textContent = claudeQuota.limit;
-            }
-            if (geminiQuota) {
-                const imageQuotaValue = document.getElementById('imageQuotaValue');
-                const imageQuotaLimit = document.getElementById('imageQuotaLimit');
-                if (imageQuotaValue) imageQuotaValue.textContent = Math.max(0, geminiQuota.limit - geminiQuota.used);
-                if (imageQuotaLimit) imageQuotaLimit.textContent = geminiQuota.limit;
-            }
+            updateOneQuotaBadge(claudeQuota, 'claudeQuotaValue', 'claudeQuotaLimit');
+            updateOneQuotaBadge(chatgptQuota, 'chatgptQuotaValue', 'chatgptQuotaLimit');
+            updateOneQuotaBadge(geminiTextQuota, 'geminiTextQuotaValue', 'geminiTextQuotaLimit');
+            updateOneQuotaBadge(geminiQuota, 'imageQuotaValue', 'imageQuotaLimit');
+            updateOneQuotaBadge(chatgptImageQuota, 'chatgptImageQuotaValue', 'chatgptImageQuotaLimit');
         }
 
         // Re-fetches the authoritative used/limit counts from the backend and re-renders
-        // the badge. Called after every Claude/Gemini frontier call (success, failure, or
-        // own-key) rather than trying to locally increment/decrement -- the backend is the
-        // only place that actually knows whether a given call consumed a free-tier use.
+        // the badge. Called after every frontier call (success, failure, or own-key) rather
+        // than trying to locally increment/decrement -- the backend is the only place that
+        // actually knows whether a given call consumed a free-tier use.
         async function refreshTrialQuotaBadge() {
             if (!isLoggedIn) return;
             try {
@@ -2174,6 +2381,9 @@
                 const data = await response.json();
                 claudeQuota = data.claude;
                 geminiQuota = data.gemini;
+                chatgptQuota = data.chatgpt;
+                geminiTextQuota = data.gemini_text;
+                chatgptImageQuota = data.chatgpt_image;
                 updateTrialQuotaBadgeDisplay();
             } catch (error) {
                 // Non-fatal -- the badge just won't refresh this time; the next successful
@@ -2277,7 +2487,7 @@
             const textQuotaBadge = document.getElementById('textQuotaBadge');
             const imageQuotaBadge = document.getElementById('imageQuotaBadge');
             if (textQuotaBadge) textQuotaBadge.style.display = 'none';
-            if (imageQuotaBadge) imageQuotaBadge.style.display = 'inline';
+            if (imageQuotaBadge) imageQuotaBadge.style.display = 'flex';
         }
 
         function switchToCompareMode() {
@@ -2289,7 +2499,7 @@
             loadSidebarHistory();
             const textQuotaBadge = document.getElementById('textQuotaBadge');
             const imageQuotaBadge = document.getElementById('imageQuotaBadge');
-            if (textQuotaBadge) textQuotaBadge.style.display = 'inline';
+            if (textQuotaBadge) textQuotaBadge.style.display = 'flex';
             if (imageQuotaBadge) imageQuotaBadge.style.display = 'none';
         }
 
@@ -2840,11 +3050,150 @@
             }
         }
 
+        // ==================================================
+        // Generic controller factory for a frontier provider card (2026-07-06 新增，仅用于
+        // ChatGPT 文本/Gemini 文本/ChatGPT 图片这三个新 Provider -- Claude/Gemini 图片是
+        // 早于这个工厂函数的既有代码，为避免动到已经上线的付费集成逻辑，本次不重构它们)。
+        // 每个前沿 Provider 都需要同样的五件事：checkbox 与模型 <select> 的启用态联动、
+        // FREE_TIER_EXHAUSTED 弹窗、POST 到自己的 /api/... 端点、Stop 后通过
+        // /api/.../refund 核销额度、Clear 时复位——在这里收敛成一份，而不是把上面
+        // fetchClaudeResult()/showClaudeUpgradeModal()/refundClaudeIfNeeded() 那一整套
+        // （约 90 行）再复制三份。
+        // ==================================================
+        function createFrontierProviderController(opts) {
+            const card = document.getElementById(opts.cardId);
+            const trigger = document.getElementById(opts.triggerId);
+            const modelSelect = document.getElementById(opts.modelSelectId);
+
+            function syncModelSelectEnabled() {
+                modelSelect.disabled = !(trigger && trigger.checked && !trigger.disabled);
+            }
+            if (trigger) {
+                trigger.addEventListener('change', () => {
+                    card.classList.toggle('is-checked', trigger.checked);
+                    syncModelSelectEnabled();
+                });
+            }
+            syncModelSelectEnabled();
+
+            function showUpgradeModal() {
+                let overlay = document.getElementById(opts.modalId);
+                if (!overlay) {
+                    overlay = document.createElement('div');
+                    overlay.id = opts.modalId;
+                    overlay.className = 'confirm-modal-overlay';
+                    overlay.innerHTML = `
+                        <div class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="${opts.modalId}Title">
+                            <div class="confirm-modal-title" id="${opts.modalId}Title">Frontier Model Trial Quota Used Up</div>
+                            <div class="confirm-modal-body">Your free frontier model trial quota (${opts.freeTierLimit} ${pluralUses(opts.freeTierLimit)}) has been used up. Please configure your personal API key to keep using premium models.</div>
+                            <div class="confirm-modal-actions">
+                                <button type="button" class="confirm-modal-btn confirm-modal-btn-cancel" id="${opts.modalId}CancelBtn">Maybe Later</button>
+                                <button type="button" class="confirm-modal-btn confirm-modal-btn-delete" id="${opts.modalId}GoBtn">Configure API Key</button>
+                            </div>
+                        </div>
+                    `;
+                    document.body.appendChild(overlay);
+                    overlay.querySelector(`#${opts.modalId}CancelBtn`).addEventListener('click', () => overlay.classList.remove('visible'));
+                    overlay.querySelector(`#${opts.modalId}GoBtn`).addEventListener('click', () => { window.location.href = '/apikey-config'; });
+                    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.classList.remove('visible'); });
+                }
+                overlay.classList.add('visible');
+            }
+
+            // Mirrors fetchClaudeResult()/fetchGeminiImageResult() above -- see their
+            // comments for the full rationale behind historyId/requestId/signal.
+            async function fetchResult(prompt, model, historyId, requestId, signal) {
+                try {
+                    const headers = { 'Content-Type': 'application/json' };
+                    const userKey = localStorage.getItem(opts.userKeyStorageKey);
+                    if (userKey) headers[opts.userKeyHeader] = userKey;
+
+                    const response = await fetch(opts.endpoint, {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify({ prompt, model, history_id: historyId, request_id: requestId }),
+                        signal
+                    });
+
+                    let payload = null;
+                    try { payload = await response.json(); } catch (_) {}
+
+                    if (!response.ok) {
+                        if (payload && payload.error === 'FREE_TIER_EXHAUSTED') {
+                            showUpgradeModal();
+                            return null;
+                        }
+                        const message = (payload && (payload.message || payload.error)) || `Server error: ${response.status}`;
+                        return opts.buildFailureResult(message, model);
+                    }
+
+                    return opts.decorateSuccess ? opts.decorateSuccess(payload) : payload;
+                } catch (error) {
+                    if (error.name === 'AbortError') throw error;
+                    console.error(`Error calling ${opts.providerLabel}:`, error);
+                    return opts.buildFailureResult(`Network error contacting ${opts.providerLabel}.`, model);
+                }
+            }
+
+            async function refundIfNeeded(requestId) {
+                if (!requestId) return;
+                try {
+                    await fetch(opts.refundEndpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ request_id: requestId })
+                    });
+                } catch (_) {
+                    // Non-fatal -- worst case the badge is off by one until the next real call.
+                } finally {
+                    refreshTrialQuotaBadge();
+                }
+            }
+
+            function clear() {
+                if (trigger) {
+                    trigger.checked = false;
+                    card.classList.remove('is-checked');
+                    syncModelSelectEnabled();
+                }
+            }
+
+            return { trigger, modelSelect, fetchResult, refundIfNeeded, clear };
+        }
+
+        const chatgptController = createFrontierProviderController({
+            cardId: 'chatgptProviderCard', triggerId: 'chatgptProviderTrigger', modelSelectId: 'chatgptModelSelect',
+            modalId: 'chatgptUpgradeModalOverlay', freeTierLimit: CHATGPT_FREE_TIER_LIMIT,
+            endpoint: '/api/chatgpt-chat', refundEndpoint: '/api/chatgpt-chat/refund',
+            userKeyHeader: 'X-User-ChatGPT-Key', userKeyStorageKey: 'user_chatgpt_key', providerLabel: 'ChatGPT',
+            buildFailureResult: (error, model) => ({
+                provider: 'ChatGPT', success: false, response: '', error, response_time: 0, model, type: 'openai', peer_reviews: []
+            }),
+            decorateSuccess: (payload) => Object.assign({ peer_reviews: [] }, payload)
+        });
+
+        const geminiTextController = createFrontierProviderController({
+            cardId: 'geminiTextProviderCard', triggerId: 'geminiTextProviderTrigger', modelSelectId: 'geminiTextModelSelect',
+            modalId: 'geminiTextUpgradeModalOverlay', freeTierLimit: GEMINI_TEXT_FREE_TIER_LIMIT,
+            endpoint: '/api/gemini-chat', refundEndpoint: '/api/gemini-chat/refund',
+            userKeyHeader: 'X-User-Gemini-Key', userKeyStorageKey: 'user_gemini_key', providerLabel: 'Gemini',
+            buildFailureResult: (error, model) => ({
+                provider: 'Gemini', success: false, response: '', error, response_time: 0, model, type: 'google_genai_text', peer_reviews: []
+            }),
+            decorateSuccess: (payload) => Object.assign({ peer_reviews: [] }, payload)
+        });
+
         // AbortController for whichever /api/compare + /api/claude-chat request pair is
         // currently in flight -- module-scoped (rather than local to the handler below) so
         // that the "Stop Generating" button's click listener, which lives outside this
         // handler, can reach in and abort it.
         let compareAbortController = null;
+        // The current /api/compare call's own request_id -- module-scoped (like
+        // compareAbortController) so stopBtn's click listener can send it to
+        // /api/compare/cancel. Distinct from claudeRequestId below: this one covers the
+        // g4f phase, which can still be running server-side (and about to call
+        // save_chat_history()) at the moment Stop is clicked, before Claude even starts.
+        let currentCompareRequestId = null;
 
         document.getElementById('compareForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -2863,10 +3212,15 @@
 
             compareAbortController = new AbortController();
             const { signal } = compareAbortController;
-            // Set only once the Claude call actually starts -- lets the catch block below
-            // tell "stopped before Claude ever started" (nothing to refund) apart from
-            // "stopped mid-Claude-call" (may need to reconcile the free-tier counter).
+            currentCompareRequestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            // Set only once each provider's call actually starts -- lets the catch block
+            // below tell "stopped before this call ever started" (nothing to refund) apart
+            // from "stopped mid-call" (may need to reconcile that provider's free-tier
+            // counter). Three independent frontier text providers (2026-07-06), each with
+            // its own request_id/refund ledger entry.
             let claudeRequestId = null;
+            let chatgptRequestId = null;
+            let geminiTextRequestId = null;
 
             showLoading();
 
@@ -2874,7 +3228,8 @@
                 const requestBody = {
                     prompt,
                     providers: selectedProviders,
-                    max_workers: 5
+                    max_workers: 5,
+                    request_id: currentCompareRequestId
                 };
 
                 if (targetModel) {
@@ -2924,6 +3279,78 @@
                     refreshTrialQuotaBadge();
                 }
 
+                if (chatgptController.trigger && chatgptController.trigger.checked && !chatgptController.trigger.disabled) {
+                    chatgptRequestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                    const chatgptResult = await chatgptController.fetchResult(prompt, chatgptController.modelSelect.value, data.history_id, chatgptRequestId, signal);
+                    if (chatgptResult) {
+                        data.results.push(chatgptResult);
+                        data.total_providers += 1;
+                        if (chatgptResult.success) data.successful_providers += 1;
+                        data.results.sort((a, b) => {
+                            if (a.success !== b.success) return a.success ? -1 : 1;
+                            return a.response_time - b.response_time;
+                        });
+                    }
+                    refreshTrialQuotaBadge();
+                }
+
+                if (geminiTextController.trigger && geminiTextController.trigger.checked && !geminiTextController.trigger.disabled) {
+                    geminiTextRequestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                    const geminiTextResult = await geminiTextController.fetchResult(prompt, geminiTextController.modelSelect.value, data.history_id, geminiTextRequestId, signal);
+                    if (geminiTextResult) {
+                        data.results.push(geminiTextResult);
+                        data.total_providers += 1;
+                        if (geminiTextResult.success) data.successful_providers += 1;
+                        data.results.sort((a, b) => {
+                            if (a.success !== b.success) return a.success ? -1 : 1;
+                            return a.response_time - b.response_time;
+                        });
+                    }
+                    refreshTrialQuotaBadge();
+                }
+
+                // Unified cross peer review (2026-07-07 新增): now that every free g4f AND
+                // frontier (Claude/ChatGPT/Gemini) result for this submit is known, ask the
+                // backend to run one round of bidirectional peer review across all of them
+                // (see main.py's run_cross_peer_review()/POST /api/peer-review) -- this
+                // replaces the old server-side phase that only let g4f providers review each
+                // other inside /api/compare. Best-effort: any failure here (network error,
+                // 5xx, etc.) must not block rendering the answers themselves, so only
+                // AbortError (user hit Stop Generating) is re-thrown to the outer catch below;
+                // everything else is logged and swallowed, leaving each result's peer_reviews
+                // as whatever it already was (empty array).
+                try {
+                    if (data.results.length >= 2) {
+                        const peerReviewHeaders = { 'Content-Type': 'application/json' };
+                        const claudeKeyForReview = localStorage.getItem('user_claude_key');
+                        if (claudeKeyForReview) peerReviewHeaders['X-User-Claude-Key'] = claudeKeyForReview;
+                        const chatgptKeyForReview = localStorage.getItem('user_chatgpt_key');
+                        if (chatgptKeyForReview) peerReviewHeaders['X-User-ChatGPT-Key'] = chatgptKeyForReview;
+                        const geminiKeyForReview = localStorage.getItem('user_gemini_key');
+                        if (geminiKeyForReview) peerReviewHeaders['X-User-Gemini-Key'] = geminiKeyForReview;
+
+                        const peerReviewResponse = await fetch('/api/peer-review', {
+                            method: 'POST',
+                            headers: peerReviewHeaders,
+                            body: JSON.stringify({ results: data.results, history_id: data.history_id }),
+                            signal
+                        });
+
+                        if (peerReviewResponse.ok) {
+                            const peerReviewData = await peerReviewResponse.json();
+                            const peerReviewsByProvider = peerReviewData.peer_reviews || {};
+                            data.results.forEach(r => {
+                                r.peer_reviews = peerReviewsByProvider[r.provider] || r.peer_reviews || [];
+                            });
+                        } else {
+                            console.error('Cross peer review request failed:', peerReviewResponse.status);
+                        }
+                    }
+                } catch (peerReviewError) {
+                    if (peerReviewError.name === 'AbortError') throw peerReviewError;
+                    console.error('Error running cross peer review:', peerReviewError);
+                }
+
                 displayResults(data);
 
                 if (data.history_id) {
@@ -2955,6 +3382,12 @@
                     if (claudeRequestId) {
                         await refundClaudeIfNeeded(claudeRequestId);
                     }
+                    if (chatgptRequestId) {
+                        await chatgptController.refundIfNeeded(chatgptRequestId);
+                    }
+                    if (geminiTextRequestId) {
+                        await geminiTextController.refundIfNeeded(geminiTextRequestId);
+                    }
                 } else {
                     console.error('Error comparing providers:', error);
                     alert('Error comparing providers. Please try again.');
@@ -2962,11 +3395,22 @@
             } finally {
                 hideLoading();
                 compareAbortController = null;
+                currentCompareRequestId = null;
             }
         });
 
         document.getElementById('stopBtn').addEventListener('click', () => {
             if (compareAbortController) compareAbortController.abort();
+            // Tell the server to skip save_chat_history() if /api/compare hasn't reached
+            // it yet (see main.py's _is_request_cancelled()) -- fire-and-forget, the
+            // response doesn't matter here since the main request is already aborted.
+            if (currentCompareRequestId) {
+                fetch('/api/compare/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: currentCompareRequestId })
+                }).catch(() => {});
+            }
         });
 
         document.getElementById('clearBtn').addEventListener('click', () => {
@@ -2981,6 +3425,8 @@
                 claudeProviderCard.classList.remove('is-checked');
                 syncClaudeModelSelectEnabled();
             }
+            chatgptController.clear();
+            geminiTextController.clear();
         });
 
         function showLoading() {
@@ -3263,9 +3709,26 @@
             }
         }
 
+        // ChatGPT 图片（GPT Image 系列，2026-07-06 新增）：用 createFrontierProviderController()
+        // 工厂（见对话表单区域的定义与注释）而不是再手写一份 fetchGeminiImageResult() 那样
+        // 的独立函数——图片 8-key 契约里没有 peer_reviews，故不传 decorateSuccess。
+        const chatgptImageController = createFrontierProviderController({
+            cardId: 'chatgptImageProviderCard', triggerId: 'chatgptImageProviderTrigger', modelSelectId: 'chatgptImageModelSelect',
+            modalId: 'chatgptImageUpgradeModalOverlay', freeTierLimit: CHATGPT_IMAGE_FREE_TIER_LIMIT,
+            endpoint: '/api/chatgpt-image', refundEndpoint: '/api/chatgpt-image/refund',
+            userKeyHeader: 'X-User-ChatGPT-Key', userKeyStorageKey: 'user_chatgpt_key', providerLabel: 'ChatGPT',
+            buildFailureResult: (error, model) => ({
+                provider: 'ChatGPT', success: false, url: null, b64_json: null, error, response_time: 0, model, type: 'openai_image'
+            })
+        });
+
         // Mirrors compareAbortController above -- module-scoped so stopImageBtn's click
         // listener (outside this handler) can reach in and abort it.
         let imageAbortController = null;
+        // Mirrors currentCompareRequestId above -- covers the g4f image phase, which can
+        // still be running server-side (and about to call save_image_history()) at the
+        // moment Stop is clicked, before Gemini even starts.
+        let currentImageRequestId = null;
 
         document.getElementById('imageForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -3284,7 +3747,9 @@
 
             imageAbortController = new AbortController();
             const { signal } = imageAbortController;
+            currentImageRequestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
             let geminiRequestId = null;
+            let chatgptImageRequestId = null;
 
             showImageLoading();
 
@@ -3292,7 +3757,8 @@
                 const requestBody = {
                     prompt,
                     providers: selectedProviders,
-                    max_workers: 5
+                    max_workers: 5,
+                    request_id: currentImageRequestId
                 };
 
                 if (targetModel) {
@@ -3342,6 +3808,21 @@
                     refreshTrialQuotaBadge();
                 }
 
+                if (chatgptImageController.trigger && chatgptImageController.trigger.checked && !chatgptImageController.trigger.disabled) {
+                    chatgptImageRequestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                    const chatgptImageResult = await chatgptImageController.fetchResult(prompt, chatgptImageController.modelSelect.value, data.history_id, chatgptImageRequestId, signal);
+                    if (chatgptImageResult) {
+                        data.results.push(chatgptImageResult);
+                        data.total_providers += 1;
+                        if (chatgptImageResult.success) data.successful_providers += 1;
+                        data.results.sort((a, b) => {
+                            if (a.success !== b.success) return a.success ? -1 : 1;
+                            return a.response_time - b.response_time;
+                        });
+                    }
+                    refreshTrialQuotaBadge();
+                }
+
                 displayImageResults(data);
 
                 // Only logged-in users get a history_id back (see generate_images() in
@@ -3366,6 +3847,9 @@
                     if (geminiRequestId) {
                         await refundGeminiIfNeeded(geminiRequestId);
                     }
+                    if (chatgptImageRequestId) {
+                        await chatgptImageController.refundIfNeeded(chatgptImageRequestId);
+                    }
                 } else {
                     console.error('Error generating images:', error);
                     alert('Error generating images. Please try again.');
@@ -3373,11 +3857,21 @@
             } finally {
                 hideImageLoading();
                 imageAbortController = null;
+                currentImageRequestId = null;
             }
         });
 
         document.getElementById('stopImageBtn').addEventListener('click', () => {
             if (imageAbortController) imageAbortController.abort();
+            // Tell the server to skip save_image_history() if /api/generate-images hasn't
+            // reached it yet (see main.py's _is_request_cancelled()) -- fire-and-forget.
+            if (currentImageRequestId) {
+                fetch('/api/generate-images/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: currentImageRequestId })
+                }).catch(() => {});
+            }
         });
 
         document.getElementById('clearImagesBtn').addEventListener('click', () => {
@@ -3392,6 +3886,7 @@
                 geminiProviderCard.classList.remove('is-checked');
                 syncGeminiModelSelectEnabled();
             }
+            chatgptImageController.clear();
         });
 
         function showImageLoading() {
@@ -3495,7 +3990,7 @@
                         ${result.success
                             ? `<div class="image-result-body">
                                 <img src="${escapeHtml(imgSrc)}" alt="Image generated by ${escapeHtml(result.provider)}" class="generated-image">
-                                <button type="button" class="btn btn-secondary image-download-btn" data-idx="${idx}">Download PNG</button>
+                                <button type="button" class="btn btn-secondary image-download-btn" data-idx="${idx}">Download Image</button>
                                </div>`
                             : `<div class="provider-error">❌ ${escapeHtml(result.error)}</div>`
                         }

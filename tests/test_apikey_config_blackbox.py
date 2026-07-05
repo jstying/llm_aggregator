@@ -8,11 +8,12 @@ Black-box HTTP tests for the API Key config page:
 2. Per-field "clear" buttons on apikey-config.html so a user can immediately wipe a
    previously-saved key (privacy / "stop being charged on my key" flow) without having
    to blank the input and re-submit the form. (2026-07-04, Claude only at the time)
-3. Gemini (Nano Banana Pro image generation) joined Claude as a real, wired-up field --
-   its input and clear button are both enabled and bound to localStorage's
-   'user_gemini_key', mirroring Claude's 'user_claude_key' wiring exactly. ChatGPT
-   remains the only inert placeholder (see CLAUDE.md danger zone), so only its input/
-   clear button still render disabled.
+3. Gemini and ChatGPT (2026-07-06: text + image frontier integrations) joined Claude
+   as real, wired-up fields -- all three inputs/clear buttons are enabled and bound to
+   their own localStorage keys ('user_gemini_key'/'user_chatgpt_key'), mirroring
+   Claude's 'user_claude_key' wiring exactly. Gemini's key covers both its image and
+   text scenarios; ChatGPT's key covers both its text and image scenarios (see
+   CLAUDE.md) -- there is no longer an inert placeholder field on this page.
 """
 import sys
 import os
@@ -139,9 +140,9 @@ class TestNavApikeyLinkAbsentForOthers(unittest.TestCase):
 
 
 class TestApikeyConfigClearButtons(unittest.TestCase):
-    """The per-field clear buttons: Claude's and Gemini's are both live (wired to
-    localStorage.removeItem for immediate effect, independent of the Save button),
-    ChatGPT's stays a disabled placeholder mirroring its already-disabled input."""
+    """The per-field clear buttons: Claude's, Gemini's, and (2026-07-06) ChatGPT's are
+    all live -- wired to localStorage.removeItem for immediate effect, independent of
+    the Save button."""
 
     def setUp(self):
         main.app.config['TESTING'] = True
@@ -157,18 +158,10 @@ class TestApikeyConfigClearButtons(unittest.TestCase):
         self.assertIn('id="clearGeminiKeyBtn"', html)
         self.assertIn('id="clearClaudeKeyBtn"', html)
 
-    def test_chatgpt_clear_button_is_disabled(self):
-        html = self._get_html()
-        # crude but sufficient: assert "disabled" appears on the same line/tag as the id
-        import re
-        match = re.search(r'<button[^>]*id="clearChatgptKeyBtn"[^>]*>', html)
-        self.assertIsNotNone(match, 'clearChatgptKeyBtn button not found')
-        self.assertIn('disabled', match.group(0))
-
-    def test_claude_and_gemini_clear_buttons_are_not_disabled(self):
+    def test_all_three_clear_buttons_are_not_disabled(self):
         import re
         html = self._get_html()
-        for btn_id in ('clearClaudeKeyBtn', 'clearGeminiKeyBtn'):
+        for btn_id in ('clearClaudeKeyBtn', 'clearGeminiKeyBtn', 'clearChatgptKeyBtn'):
             match = re.search(r'<button[^>]*id="%s"[^>]*>' % btn_id, html)
             self.assertIsNotNone(match, f'{btn_id} button not found')
             self.assertNotIn('disabled', match.group(0))
@@ -183,34 +176,25 @@ class TestApikeyConfigClearButtons(unittest.TestCase):
         self.assertIn("getElementById('clearGeminiKeyBtn')", html)
         self.assertIn("localStorage.removeItem('user_gemini_key')", html)
 
-    def test_page_does_not_wire_chatgpt_key_to_any_storage(self):
-        """Danger-zone regression guard (CLAUDE.md section 10): adding clear buttons/
-        wiring up Gemini must not become an excuse to sneak in real persistence for
-        ChatGPT, the one provider that's still explicitly unsupported."""
+    def test_chatgpt_clear_button_wired_to_remove_stored_key(self):
         html = self._get_html()
-        self.assertNotIn('user_chatgpt_key', html)
-        # chatgptKeyInput/clearChatgptKeyBtn remain disabled placeholders (see above);
-        # this only guards against a stray reference to a storage key for them.
+        self.assertIn("getElementById('clearChatgptKeyBtn')", html)
+        self.assertIn("localStorage.removeItem('user_chatgpt_key')", html)
 
-    def test_gemini_input_is_not_disabled(self):
+    def test_all_three_inputs_are_not_disabled(self):
         import re
         html = self._get_html()
-        match = re.search(r'<input[^>]*id="geminiKeyInput"[^>]*>', html)
-        self.assertIsNotNone(match)
-        self.assertNotIn('disabled', match.group(0))
-
-    def test_chatgpt_input_is_still_disabled(self):
-        import re
-        html = self._get_html()
-        match = re.search(r'<input[^>]*id="chatgptKeyInput"[^>]*>', html)
-        self.assertIsNotNone(match)
-        self.assertIn('disabled', match.group(0))
+        for input_id in ('claudeKeyInput', 'geminiKeyInput', 'chatgptKeyInput'):
+            match = re.search(r'<input[^>]*id="%s"[^>]*>' % input_id, html)
+            self.assertIsNotNone(match)
+            self.assertNotIn('disabled', match.group(0))
 
     def test_save_flow_still_works_alongside_new_clear_buttons(self):
         html = self._get_html()
         self.assertIn('apikeyConfigForm', html)
         self.assertIn("localStorage.setItem('user_claude_key'", html)
         self.assertIn("localStorage.setItem('user_gemini_key'", html)
+        self.assertIn("localStorage.setItem('user_chatgpt_key'", html)
 
 
 if __name__ == '__main__':

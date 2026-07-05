@@ -53,10 +53,18 @@
         }
 
         /* ---- Navbar ---- */
+        /* .navbar and the optional .guest-banner right below it are wrapped in
+           .page-header-sticky (see body markup), which owns position:sticky/top/z-index --
+           kept in sync with the identical fix in index.html (see its CSS comment for why:
+           without this the guest banner scrolled out of view while .left-sidebar's sticky
+           offset still reserved space for it, leaving a blank gap). */
         .navbar {
             background: #ffffff;
             padding: 1.1rem 0;
             border-bottom: 1px solid #e8e8e8;
+        }
+
+        .page-header-sticky {
             position: sticky;
             top: 0;
             z-index: 100;
@@ -70,7 +78,6 @@
         .nav-container {
             padding: 0 2rem 0 0;
             display: flex;
-            justify-content: space-between;
             align-items: center;
         }
 
@@ -123,6 +130,7 @@
             gap: 0.4rem;
             list-style: none;
             align-items: center;
+            margin-left: auto;
         }
 
         .nav-links a {
@@ -1401,6 +1409,7 @@
 </head>
 <body>
 
+    <div class="page-header-sticky">
     <nav class="navbar">
         <div class="nav-container">
             <div class="nav-left">
@@ -1433,6 +1442,7 @@
         <a href="{{ url_for('auth.register') }}">sign up</a> to save your history.
     </div>
     {% endif %}
+    </div>
 
     <div class="app-layout">
         <aside class="left-sidebar" id="leftSidebar">
@@ -2104,32 +2114,53 @@
             });
         }
 
-        // ---- Optimistic delete: remove from the local array + re-render immediately,
-        // restore at the original index if the backend request fails.
+        // ---- Delete: for the currently-viewed entry, the backend/sessionStorage removal
+        // must finish *before* navigating away -- window.location.href can cancel an
+        // in-flight fetch, which used to leave the entry undeleted while still bouncing the
+        // user back to '/' (2026-07-05 user-reported bug, intermittent because it raced
+        // navigation vs. fetch completion). For any other entry, still optimistic: remove
+        // from the local array + re-render immediately, restore at the original index if the
+        // backend request fails.
         async function deleteHistoryItem(id) {
             const targetItem = currentHistoryItems.find(h => h.id === id);
             if (!targetItem) return;
             const confirmed = await showDeleteConfirmModal(targetItem.title);
             if (!confirmed) return;
 
-            // This read-only page has no compare form to reset (contrast index.html's
-            // clearBtn.click() here). If the entry being deleted is the one currently shown
-            // in the main panel, there's nothing left to display, so leave for the app rather
-            // than showing a "ghost" of a conversation that no longer exists.
-            if (id === targetHistoryId) {
+            const index = currentHistoryItems.findIndex(h => h.id === id);
+            if (index === -1) return;
+            const isCurrentEntry = id === targetHistoryId;
+
+            if (!isLoggedIn) {
+                currentHistoryItems.splice(index, 1);
+                persistGuestHistory();
+                // This read-only page has no compare form to reset (contrast index.html's
+                // clearBtn.click() here). If the entry being deleted is the one currently
+                // shown in the main panel, there's nothing left to display, so leave for the
+                // app rather than showing a "ghost" of a conversation that no longer exists.
+                if (isCurrentEntry) {
+                    window.location.href = '/';
+                    return;
+                }
+                renderCurrentHistory();
+                return;
+            }
+
+            if (isCurrentEntry) {
+                try {
+                    const response = await fetch(`/api/history/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                    if (!response.ok) throw new Error('delete failed: ' + response.status);
+                } catch (error) {
+                    console.error('Error deleting history:', error);
+                    showHistoryErrorToast('Could not delete conversation. Please try again.');
+                    return;
+                }
                 window.location.href = '/';
                 return;
             }
 
-            const index = currentHistoryItems.findIndex(h => h.id === id);
-            if (index === -1) return;
             const [removedItem] = currentHistoryItems.splice(index, 1);
             renderCurrentHistory();
-
-            if (!isLoggedIn) {
-                persistGuestHistory();
-                return;
-            }
 
             fetch(`/api/history/${encodeURIComponent(id)}`, { method: 'DELETE' })
                 .then(response => {

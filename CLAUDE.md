@@ -38,7 +38,7 @@
 
 并发调度靠 `ThreadPoolExecutor`，用来同时调用多个 provider，防止一个卡住拖慢全部。文生图路由复用同一套调度骨架，但只有一个阶段，没有互评步骤。
 
-g4f 那边有两条完全独立的调用链路：`g4f.ChatCompletion` 管文本对话，`g4f.client.Client().images.generate()` 管文生图。两条链路的模型匹配逻辑和异常处理完全不共用。图片生成时 g4f 会自动把图片下载到本地的 `get_media_dir()` 目录，返回的 `url` 字段是 `/media/<filename>?url=...` 这种相对路径。这是 g4f 自带 GUI 服务器的路由约定，但本项目没跑那套服务器，所以自己补了一个 `GET /media/<filename>` 静态文件路由（`serve_generated_media`）来提供这些文件。这些本地文件现在不会自动清理，会一直攒着，是刻意接受的代价，换来历史图片能永久看到。
+g4f 那边有两条完全独立的调用链路：`g4f.ChatCompletion` 管文本对话，`g4f.client.Client().images.generate()` 管文生图。两条链路的模型匹配逻辑和异常处理完全不共用。图片生成时 g4f 会自动把图片下载到本地的 `get_media_dir()` 目录，返回的 `url` 字段是 `/media/<filename>?url=...` 这种相对路径。这是 g4f 自带 GUI 服务器的路由约定，但本项目没跑那套服务器，所以自己补了一个 `GET /media/<filename>` 静态文件路由（`serve_generated_media`）来提供这些文件。这些本地文件不做按年龄的自动清理，只在对应的 image_history 记录被用户显式删除时才联动删除（见第 14 节更新记录），删除前的正常使用期间会一直攒着，这部分是刻意接受的代价，换来历史图片能永久看到。
 
 Claude 走一条完全独立的第三条链路：`call_claude_model()` 直接用官方 `anthropic` SDK 的 `client.messages.create()`。它不进 `ThreadPoolExecutor` 并发调度，不参与互评，也不复用任何 g4f 的映射表。前端把它做成一张视觉上并列的 Provider 卡片放在对话表单里，点击 Compare 提交时会额外单独发一次 `POST /api/claude-chat` 请求，渲染层再把结果合并进同一份结果列表。这个请求可以携带 `/api/compare` 已经返回的 `history_id`，让这次 Claude 调用的结果追加进那条对话历史记录。
 
@@ -252,7 +252,7 @@ Gemini 的验证覆盖范围比 Claude 小一些：只用真实但零配额的�
 }
 ```
 
-跟 Image Result 结构相似但是独立的第四种 DTO，`url` 恒为 `None`,因为官方 API 直接返回 base64 编码的图片字节，不落地成本地文件。
+跟 Image Result 结构相似但是独立的第四种 DTO，官方 API 直接返回 base64 编码的图片字节。这个 DTO 的 `url` 在**返回给前端这次请求的响应里**恒为 `None`；但追加进 Firestore 历史记录之前，`b64_json` 会被 `_persist_image_result_local_copy()` 转存成本地文件并换成 `url`（原因见第 14 节更新记录），所以历史记录里读出来的持久化副本 `url` 不为空、`b64_json` 为 `None`。ChatGPT 的 Image Result（`type='openai_image'`）走同一份持久化逻辑，字段形状同构。
 
 ### Firestore 集合结构
 
@@ -306,7 +306,7 @@ g4f 用来无凭证调用免费渠道。Firebase Admin SDK 本地用密钥文件
 
 超时数值必须保持同步：互评阶段的内部超时和外层 `future.result` 超时要一起调，图片生成的 advisory 和 outer 也要通过公式联动，不要手动改其中一个。
 
-`generated_media/` 目录下的文件不区分用户，会一直堆积，不会自动清理。这是为了保证历史图片能永远看到而接受的代价。真正的长期方案是换成 Cloud Storage 之类的共享存储，加上用户配额限制，但现在还没做。
+`generated_media/` 目录下的文件不区分用户，只要对应的 image_history 记录还在就会一直堆积，不做按年龄的自动清理；记录被显式删除时会联动删除对应文件，但这只覆盖"用户主动删除"这一条路径，其余场景下的持续增长仍是为了保证历史图片能永远看到而接受的代价。真正的长期方案是换成 Cloud Storage 之类的共享存储，加上用户配额限制，但现在还没做。
 
 生产环境（GAE 多实例）下本地磁盘是每个实例独立的。如果图片写在实例 A，后续请求分配到实例 B 就会 404。这是本地磁盘存储架构本身的限制，跟清不清理无关，要修复得换共享存储。
 
@@ -318,7 +318,7 @@ Gemini 的错误分类只用一种真实场景（零配额）验证过，配额�
 
 ChatGPT 的 API Key 输入框目前只是占位符,没有接入任何后端逻辑。Claude 和 Gemini 都已经接入了真实的存储和调用链路。
 
-Claude 和 Gemini 现在都只能往已有的历史记录里追加结果，不能自己创建新记录，也没有参与各自领域的互评或者多 provider 并发对比。如果以后要支持这些功能，需要重新设计，不应该直接复用 g4f 专属的调度逻辑。
+前沿文本 provider（Claude/ChatGPT/Gemini）现在都只能往已有的历史记录里追加结果，不能自己创建新记录，也不参与 g4f 的并发调度；但从 2026-07-07 起会通过独立的 POST /api/peer-review 与 g4f 及彼此双向互评（见 run_cross_peer_review()，第 14 节更新记录），不是直接复用 g4f 专属的调度逻辑，而是单独的一套跨名字空间调度。前沿图片 provider（Gemini 图片/ChatGPT 图片）仍然没有互评这个概念。
 
 ## 10. 扩展和修改指南
 
@@ -498,3 +498,17 @@ Gemini 核心链路：跟 Claude 完全对称，只是把聊天场景换成图�
 ## 14. 更新记录
 
 `[Stop Generating] 更新原因：需要在开发者账户余额/配额耗尽但用户试用额度仍有剩余时给出正确文案，并支持中途取消生成。调整内容：1. claude_chat()/gemini_image_chat() 里 SERVER_CREDITS_EXHAUSTED/SERVER_QUOTA_EXHAUSTED 的文案按 using_own_key 分两支：自带 Key 耗尽提示检查自己的账户，开发者 Key 耗尽（试用额度仍有剩余）提示联系 developer。2. 新增前端 Stop Generating 按钮（Compare/Generate Images 各一个），用 AbortController 中断 /api/compare、/api/generate-images、/api/claude-chat、/api/gemini-image 的请求，不清空 prompt 和勾选。3. 新增 request_id 一次性退款账本（main.py 的 _PENDING_FRONTIER_REFUNDS + /api/claude-chat/refund、/api/gemini-image/refund）和 auth/db.py 的 decrement_claude_free_tier_usage()/decrement_gemini_free_tier_usage()，用于中断时把已经递增的免费额度退回，账本只认真实发生过的递增,不能被反复调用刷额度。`
+
+`[Stop Generating 历史落库] 更新原因：中途点击 Stop 之后，服务器仍会跑完并把这次生成写进对话/图片历史，用户回头在 Recents 里看到一条本以为已经取消的记录。调整内容：1. 新增 request_id 取消登记表 main._CANCELLED_HISTORY_REQUESTS（_mark_request_cancelled()/_is_request_cancelled()），与额度退款账本同精神的内存态、TTL 淘汰。2. compare_providers()/generate_images() 现在接收 request_id，落库前查一遍登记表，命中就跳过 save_chat_history()/save_image_history()；新增 POST /api/compare/cancel、POST /api/generate-images/cancel 两个免登录接口供前端点 Stop 时标记。3. claude_chat()/gemini_image_chat() 追加历史前也查登记表；/api/claude-chat/refund、/api/gemini-image/refund 现在无条件（不管有没有真退成额度）标记同一个 request_id 取消。4. 前端 compareForm/imageForm 各自的 request_id 在发起请求前生成，stopBtn/stopImageBtn 点击时除了 abort() 还会 fire-and-forget 发一次对应的 cancel 接口。`
+
+`[history.html/image_history.html 删除当前条目] 更新原因：在详情页删除正在展示的那条 entry 时，deleteHistoryItem() 先 window.location.href 跳转再发 DELETE fetch，导航会取消掉进行中的 fetch，导致条目没删掉却被跳回首页（文本详情页跳回默认文字生成视图）。调整内容：两个页面的 deleteHistoryItem() 现在对"当前正在查看的条目"分支 await 完 DELETE 成功后才导航，失败就留在原页面弹 toast；history.html 里游客分支也移到导航之前先 splice + persistGuestHistory()。非当前条目仍走原来的乐观删除。回归测试见 tests/test_history_delete_current_entry_blackbox.py。`
+
+`[图片 history 删除跳转 + 本地文件清理] 更新原因：上一条修复后图片 history 删除当前条目仍会跳回文字生成视图（跳的是裸 '/'，不是图片模式），且图片删除后本地 generated_media 文件从不释放。调整内容：1. image_history.html 的 deleteHistoryItem() 删除当前条目成功后跳转目标改成 '/?mode=image'（跟这个页面自己的 "+ New" 按钮一致），不再跳回默认文字模式。2. main.py 新增 _delete_local_media_files_for_image_results()，只处理 type=='g4f_image' 的结果（Gemini 结果 url 恒为 None,没有本地文件),从 url 字段（形如 /media/<filename>?url=...）解析文件名后用 os.path.basename 限制在 get_media_dir() 内删除。3. DELETE /api/image-history/<id> 路由删除 Firestore 记录前先用 get_image_history_by_id() 取一份 results 快照,Firestore 删除成功后再据此清理对应本地文件——这是绑定在用户显式删除动作上的定点清理,不是按年龄的自动清理,不违反第 9/10 节"不引入自动清理机制"的约束。测试见 tests/test_image_history_media_cleanup_whitebox.py 和 tests/test_image_history_blackbox.py 的 TestDeleteImageHistoryEndpoint 新增用例。`
+
+`[新增 ChatGPT/Gemini 前沿 provider] 更新原因：仿照 Claude/Gemini 图片的既有架构，把 ChatGPT 和 Gemini 接入成对话场景的前沿 provider，并把 ChatGPT 接入图片生成场景，三者与已有的 Claude/Gemini 图片并列、完全独立。调整内容：1. 新增 openai 官方 SDK 依赖；call_chatgpt_model()（对话，模型 gpt-5.5/gpt-5.4-mini）、call_gemini_text_model()（对话，模型 gemini-3.5-flash/gemini-3.1-flash-lite，type='google_genai_text'）、call_chatgpt_image_model()（图片，模型 gpt-image-2/gpt-image-1.5）三个独立调用函数；新增 POST /api/chatgpt-chat、/api/gemini-chat、/api/chatgpt-image 三条路由 + 各自的 /refund 端点，权限/额度/Key 路由/退款/取消登记规则与 Claude/Gemini 图片逐一同构。2. 新增三个独立的免费额度字段（chatgpt_free_tier_usage/gemini_text_free_tier_usage/chatgpt_image_free_tier_usage，各自限额 10，互不共享），auth/db.py 新增通用化的 get_free_tier_usage()/increment_free_tier_usage()/decrement_free_tier_usage(field_name) 供三者共用（Claude/Gemini 图片的专属计数器函数保留不动）。_classify_openai_error()/_classify_google_genai_error() 两个错误分类 helper 分别供各自 SDK 的文本/图片调用共用。3. 前端 index.html 新增三张独立 class 的 provider 卡片（chatgpt-provider-checkbox/gemini-text-provider-checkbox/chatgpt-image-provider-checkbox）+ 各自模型下拉框；createFrontierProviderController() 工厂函数收敛"勾选联动模型下拉框启用态、FREE_TIER_EXHAUSTED 弹窗、请求、Stop 退款、Clear 复位"这套仅这三个新 provider 共用的逻辑（Claude/Gemini 图片沿用各自原有的独立实现，不做改动）；Trial Quota 徽章从"每个模式一个数字"改成"每个模式一组 pill（每个 provider 一个）"。apikey-config.html 的 ChatGPT Key 输入框正式接入 localStorage（user_chatgpt_key），不再是占位符；Gemini Key 同时覆盖文本和图片两个场景。/api/quota-status 与 _get_frontier_quota_context() 一并返回全部五个 provider 的额度。测试见 tests/test_new_frontier_providers.py。`
+
+`[ChatGPT 文本/图片两个 bug 修复] 更新原因：gpt-5.5/gpt-5.4-mini 两个模型拒绝旧参数名 max_tokens（要求 max_completion_tokens），文本对话 100% 报 400；ChatGPT 图片生成成功但追加进 image_history 时 Firestore 报 400 Property array contains an invalid nested entity。已用真实项目验证：b64_json 直接内嵌进 results 数组（array of maps）时，一旦这个字符串长度越过约 1MB，Firestore 就会用这条报错拒绝整次写入，而 gpt-image 系列的默认输出几乎总会超过这个阈值（Gemini 图片同一条链路，理论上出大图时会遇到一样的问题，只是体积通常更小还没实际触发）。调整内容：1. call_chatgpt_model() 的 max_tokens 改成 max_completion_tokens。2. 新增 main._persist_image_result_local_copy()：追加进 image_history 之前，把 result 的 b64_json 解码落盘到 get_media_dir()（与 g4f 图片同一套目录/路由），换成 url，b64_json 置空；本次请求返回给前端渲染的 result 对象不受影响，仍然带着完整 b64_json。_append_gemini_result_to_image_history()/_append_frontier_image_result() 追加前都会过一遍这个函数。3. _delete_local_media_files_for_image_results() 的 type 过滤从只认 g4f_image 扩到同时认 openai_image/google_genai，否则这两种 provider 持久化产生的本地文件在用户删除历史记录时会永久泄漏。测试见 tests/test_new_frontier_providers.py（max_completion_tokens 回归）和 tests/test_image_history_media_cleanup_whitebox.py（_persist_image_result_local_copy() 与清理函数扩围）。`
+
+`[前沿模型人设 + 跨 g4f/前沿互评] 更新原因：三个前沿文本 provider（Claude/ChatGPT/Gemini）此前既没有隐形人设，也完全不参与互评（互评只覆盖 g4f 名字空间）；现在要求接入真实公司理念的人设，并让前沿模型与免费 g4f provider 双向互评。调整内容：1. 新增 FRONTIER_STYLE_PROMPTS_MAP（6 个前沿 model_key，答题人设，立足 Anthropic/OpenAI/Google 各自真实理念）和 FRONTIER_JUDGE_PROMPTS_MAP（对应裁判人设，.update() 合并进 PEER_REVIEW_PROMPTS_MAP，与 g4f 是否可用无关）；call_claude_model()/call_chatgpt_model()/call_gemini_text_model() 新增 apply_persona 参数（默认 True 套用人设，答题用；互评时传 False，跟 g4f 的 run_peer_review() 从不套用 ROUTE_PROMPTS_MAP 同理）。同时微调 4 个免费人设措辞，与新增的前沿人设放在一起读起来仍各自分明。2. compare_providers() 不再自己跑互评，只保留 peer_reviews:[] 字段初始化；新增 run_frontier_peer_review()/run_cross_peer_review() 和 POST /api/peer-review（新增 auth/db.py 的 update_chat_history_peer_reviews()，用于把最终互评结果回写进已有历史记录，只更新不创建）——前端在 g4f + 三个前沿 provider 的结果都拿到之后统一调这个新接口，触发所有成功结果之间的双向互评。3. /api/peer-review 有安全上限：最多接受 MAX_PEER_REVIEW_ENTRIES(10) 条结果，且逐条校验 provider/model/type 组合与对应 *_AVAILABLE 标志，无效条目静默丢弃；只要有效结果里出现前沿 reviewer 就必须登录，纯 g4f 列表保持游客可用；审校复用答题时的同一把 Key（X-User-*-Key 请求头），不检查也不消耗额外免费额度。测试见 tests/test_peer_review_cross_frontier.py，tests/test_main_blackbox.py 与 tests/test_main_graybox.py 的既有互评用例已同步改为断言新架构。`
+
+`[UI 一致性/文案打磨] 更新原因：/profile、/apikey-config 等 auth 页跳转时导航栏明显跳动，guest 黑色横幅滚动时消失，几处文案/配色不统一。调整内容：1. auth/base.html 补上与 index.html 同源的 --page-zoom:0.88 缩放 + 隐藏原生滚动条 + 边到边 nav-container/.nav-left(260px) 布局，消除跳转跳动。2. index.html/history.html 把 .navbar 与 .guest-banner 一起包进新增的 .page-header-sticky（position:sticky;top:0）容器，横幅不再随滚动消失；history.html/image_history.html 的 .nav-container 移除过时的 justify-content:space-between，改为 .nav-links{margin-left:auto} 与 index.html 对齐。3. .confirm-modal max-width 360px→440px（配额用尽弹窗等共享此类）；新增 .btn-stop（琥珀色）替换 Stop Generating 按钮原来的黑白配色；index.html "Download PNG"→"Download Image"，与 image_history.html 统一；"Continue as guest"→"Continue as Guest"，"Testing providers.../Generating images..."→ Title Case。4. auth/routes.py、main.py 的 flash() 文案补齐结尾句号（含 "You have been logged out."）。测试见 tests/test_ui_consistency_polish_blackbox.py。`

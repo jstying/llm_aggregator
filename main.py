@@ -17,6 +17,8 @@ import secrets
 import re
 import json
 import random
+import base64
+from urllib.parse import urlparse
 
 # 用于并发执行多个Provider请求
 from concurrent.futures import ThreadPoolExecutor
@@ -40,6 +42,7 @@ from auth.db import (  # noqa: E402
     update_chat_history_title,
     toggle_pin_chat_history,
     append_chat_history_result,
+    update_chat_history_peer_reviews,
     save_image_history,
     get_image_history_list,
     get_image_history_by_id,
@@ -53,6 +56,9 @@ from auth.db import (  # noqa: E402
     get_gemini_free_tier_usage,
     increment_gemini_free_tier_usage,
     decrement_gemini_free_tier_usage,
+    get_free_tier_usage,
+    increment_free_tier_usage,
+    decrement_free_tier_usage,
 )
 
 
@@ -105,19 +111,27 @@ try:
     }
 
     # 隐形 Prompt 路由表：(provider_name, model) → 追加到用户 prompt 尾部的 Style Prompt
-    # 设计原则：首句必须有"立刻"urgency指令（防超时）；其次凸显各模型的真实个性角色
-    # gpt-4        → 严谨分析师：结论-依据-反思三层结构，300字
-    # gpt-3.5      → 高效助手：TLDR一句话结论优先，口语化，150字
-    # aria         → 实战顾问：跳过铺垫、直接给1-2个可操作动作，200字
-    # openai-fast  → 极速速答者：一句结论+一句理由，英文输出，100字内
+    # 设计原则：首句必须有"立刻"urgency指令（防超时）；其次凸显各模型的真实个性角色。
+    # 2026-07-07 随前沿模型人设一起微调措辞，确保这 4 个免费人设跟新增的 6 个前沿人设
+    # （见下方 FRONTIER_STYLE_PROMPTS_MAP）放在一起读起来依然各自分明，字数上限/结构要求
+    # 本身不变（改动会被 test_main_whitebox.py 等用 patch() 注入的测试内容覆盖，不依赖
+    # 这里的具体字符串）：
+    # gpt-4        → 从不脱离证据链的严谨分析师：结论-依据-反思三层结构，300字
+    # gpt-3.5      → 从不啰嗦的效率派：TLDR一句话结论优先，口语化，150字
+    # aria         → 信动作胜过信分析的实战顾问：跳过铺垫、直接给1-2个可操作动作，200字
+    # openai-fast  → 惜字如金的极速答题者：一句结论+一句理由，英文输出，100字内
     ROUTE_PROMPTS_MAP = {
-        ('Yqcloud', 'gpt-4'): '\n\n[System: Respond immediately. You are a rigorous analyst. Answer quickly using a three-part structure: "Core conclusion -> Key evidence -> Potential risks or reflection." Keep the entire response under 300 words.]',
-        ('Yqcloud', 'gpt-3.5-turbo'): '\n\n[System: Give a TLDR immediately. You are an efficient assistant. State the single most important conclusion in one sentence first, then add up to two key points. Reply in a casual, conversational tone. Keep the entire response under 150 words. No filler.]',
-        ('OperaAria', 'aria'): '\n\n[System: Give actionable advice immediately. You are a hands-on consultant. Skip the background and tell the user directly "here are the 1-2 things you can do right now," tailored to the current situation. Keep the entire response under 200 words.]',
-        ('PollinationsAI', 'openai-fast'): '\n\n[System: Reply immediately. You are a speed-first assistant. Give ONE sentence answer then ONE sentence reason. English only. Max 100 words. No preamble.]',
+        ('Yqcloud', 'gpt-4'): '\n\n[System: Respond immediately. You are a rigorous analyst who never states a conclusion without showing its evidence trail. Answer quickly using a three-part structure: "Core conclusion -> Key evidence -> Potential risks or reflection." Keep the entire response under 300 words.]',
+        ('Yqcloud', 'gpt-3.5-turbo'): '\n\n[System: Give a TLDR immediately. You are a no-nonsense efficiency assistant who leads with the punchline and never over-explains. State the single most important conclusion in one sentence first, then add up to two key points. Reply in a casual, conversational tone. Keep the entire response under 150 words. No filler.]',
+        ('OperaAria', 'aria'): '\n\n[System: Give actionable advice immediately. You are a hands-on consultant who trusts action over analysis. Skip the background and tell the user directly "here are the 1-2 things you can do right now," tailored to the current situation. Keep the entire response under 200 words.]',
+        ('PollinationsAI', 'openai-fast'): '\n\n[System: Reply immediately. You are a speed-first minimalist who never wastes a word. Give ONE sentence answer then ONE sentence reason. English only. Max 100 words. No preamble.]',
     }
 
-    # 互评裁判提示词配置表：model → 裁判专属提示词前缀（要求输出 JSON 格式）
+    # 互评裁判提示词配置表：model → 裁判专属提示词前缀（要求输出 JSON 格式）。前沿模型的
+    # 裁判人设（键为各自 model_key，如 'claude-sonnet-5'）在下方 FRONTIER_STYLE_PROMPTS_MAP
+    # 定义处通过 PEER_REVIEW_PROMPTS_MAP.update() 追加进来，不写在这个 g4f-only 的 try 块里
+    # ——这里的 except 分支会把整个字典重置为 {}，而前沿模型的人设不应该跟着 g4f 是否可用
+    # 一起降级。
     PEER_REVIEW_PROMPTS_MAP = {
         'gpt-4': 'You are now a blind review judge. Rigorously examine the following anonymous answer and point out any logical gaps, factual errors, or insufficiently supported arguments. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sharp sentence critique"}',
         'gpt-3.5-turbo': 'Quickly assess the following anonymous answer for organization and readability. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one efficiency-focused sentence of editing feedback"}',
@@ -232,6 +246,128 @@ GEMINI_IMAGE_MODELS = {
 # geminiModelSelect 选中哪一档模型都只发起一次 /api/gemini-image 请求，因此只消耗 1 次
 # 额度——这条"一次点击=一次额度"的语义不随模型档位数量变化（见 CLAUDE.md 第 6 节）。
 GEMINI_FREE_TIER_LIMIT = 10
+
+# 对话场景的 Gemini 模型映射（2026-07-06 新增）：与 GEMINI_IMAGE_MODELS 同构但字段/额度
+# 完全独立——Gemini 在本项目里现在是两个并列的前沿 Provider："Gemini 图片"（上面这套，
+# type='google_genai'）和"Gemini 文本"（call_gemini_text_model()，type='google_genai_text'），
+# 与 Claude/ChatGPT 一样出现在对话表单，走独立的 /api/gemini-chat 路由和独立的额度计数器
+# gemini_text_free_tier_usage，不与图片额度 gemini_free_tier_usage 共享。
+GEMINI_TEXT_MODELS = {
+    'gemini-3.5-flash': 'gemini-3.5-flash',
+    'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite',
+}
+GEMINI_TEXT_FREE_TIER_LIMIT = 10
+GEMINI_TEXT_FREE_TIER_FIELD = 'gemini_text_free_tier_usage'
+
+
+# 提取自 call_gemini_image_model() 的错误分类逻辑（下方定义），供它与
+# call_gemini_text_model() 共用——两者是同一个 google-genai SDK 的调用，异常形状相同。
+def _classify_google_genai_error(e):
+    status_code = getattr(e, 'status_code', None) or getattr(e, 'code', None)
+    status_str = (getattr(e, 'status', None) or '').upper()
+    message = getattr(e, 'message', None) or str(e)
+
+    if status_code == 429 or status_str == 'RESOURCE_EXHAUSTED':
+        return 'QUOTA_EXHAUSTED', message
+    if status_code == 403:
+        return 'PERMISSION_DENIED', message
+    if status_code is not None:
+        return None, f'Error {status_code}: {message}'
+    return None, message
+
+
+# =========================
+# 初始化官方 OpenAI（ChatGPT）SDK
+# 第五条独立调用链路，同时服务于对话场景（call_chatgpt_model()）和图片生成场景
+# （call_chatgpt_image_model()）——两者共用同一个官方 openai SDK 客户端构造方式和
+# 同一套错误分类（_classify_openai_error()），但模型映射表、额度常量、路由各自独立，
+# 与 Claude/Gemini 的既有"每个前沿 Provider 独立建一套"模式一致。CHATGPT_AVAILABLE
+# 独立于 G4F_AVAILABLE/CLAUDE_AVAILABLE/GEMINI_AVAILABLE，缺失只降级 ChatGPT 自己的
+# 两个路由。
+# =========================
+try:
+    import openai
+
+    CHATGPT_AVAILABLE = True
+    logger.info("openai SDK imported successfully")
+except ImportError as e:
+    CHATGPT_AVAILABLE = False
+    openai = None
+    logger.warning(f"openai SDK not available: {e}")
+
+# 对话场景 ChatGPT 模型映射，与 CLAUDE_MODELS 同构。
+CHATGPT_MODELS = {
+    'gpt-5.5': 'gpt-5.5',
+    'gpt-5.4-mini': 'gpt-5.4-mini',
+}
+CHATGPT_MAX_TOKENS = 2048
+CHATGPT_FREE_TIER_LIMIT = 10
+CHATGPT_FREE_TIER_FIELD = 'chatgpt_free_tier_usage'
+
+# 图片生成场景 ChatGPT 模型映射，与 GEMINI_IMAGE_MODELS 同构，独立额度。
+CHATGPT_IMAGE_MODELS = {
+    'gpt-image-2': 'gpt-image-2',
+    'gpt-image-1.5': 'gpt-image-1.5',
+}
+CHATGPT_IMAGE_FREE_TIER_LIMIT = 10
+CHATGPT_IMAGE_FREE_TIER_FIELD = 'chatgpt_image_free_tier_usage'
+
+
+# 供 call_chatgpt_model()/call_chatgpt_image_model() 共用的错误分类：同一个 openai SDK，
+# 异常形状相同。'insufficient_quota' 是 OpenAI 官方文档记录的额度耗尽错误 code，尚未用
+# 真实耗尽账户验证过（与 Gemini 当初的验证缺口同类型，见 CLAUDE.md）。
+def _classify_openai_error(e):
+    status_code = getattr(e, 'status_code', None)
+    err_code = getattr(e, 'code', None)
+    message = getattr(e, 'message', None) or str(e)
+
+    is_quota_exhausted = (
+        err_code == 'insufficient_quota'
+        or 'insufficient_quota' in message.lower()
+        or 'exceeded your current quota' in message.lower()
+    )
+    if is_quota_exhausted:
+        return 'QUOTA_EXHAUSTED', message
+    if status_code == 401:
+        return 'PERMISSION_DENIED', message
+    if status_code is not None:
+        return None, f'Error {status_code}: {message}'
+    return None, message
+
+
+# 前沿模型隐形 Prompt 路由表，与 ROUTE_PROMPTS_MAP 同构（首句 urgency 指令 + 立足真实
+# 公司理念的角色人设 + 字数上限），键是各自的 model_key（不是 (provider, model) 元组——
+# 每个前沿 Provider 一次调用只对应一个模型，没有 g4f 那种"同一 Provider 多模型"的歧义）：
+# - claude-sonnet-5/claude-haiku-4-5 → Anthropic 的 helpful-honest-harmless 传统：
+#   坦承不确定性优于假装自信，sonnet 是深度权衡的思考者，haiku 是同一诚实标准下的快答版。
+# - gpt-5.5/gpt-5.4-mini → OpenAI "for everyone" 的通用助理定位：5.5 是全面的多面手，
+#   5.4-mini 是同一多面手的高速无寒暄版。
+# - gemini-3.5-flash/gemini-3.1-flash-lite → Google 组织信息/多模态原生的传统：flash 是
+#   高密度事实综合者，flash-lite 是极简延迟、只给必要结论的版本。
+FRONTIER_STYLE_PROMPTS_MAP = {
+    'claude-sonnet-5': '\n\n[System: Respond thoughtfully but promptly. You are a careful, nuanced reasoner in the Anthropic tradition of helpful, honest, and harmless AI. Weigh the meaningful angles of the question, and explicitly flag genuine uncertainty rather than projecting false confidence. Keep the response well-structured and under 300 words.]',
+    'claude-haiku-4-5': '\n\n[System: Respond immediately. You are a fast reasoner who still holds the same honesty standard as your larger sibling model -- never trade accuracy for speed, and say so plainly when you are unsure. Keep the response concise, under 180 words.]',
+    'gpt-5.5': '\n\n[System: Respond immediately. You are a versatile, broadly capable generalist assistant in the OpenAI tradition of building useful AI for everyone. Cover the practical breadth of the question with clear structure -- conclusion first, then supporting detail. Keep the entire response under 300 words.]',
+    'gpt-5.4-mini': '\n\n[System: Respond immediately. You are the fast, no-preamble version of a broad generalist assistant. Get straight to the useful answer, skip throat-clearing. Keep the entire response under 150 words.]',
+    'gemini-3.5-flash': '\n\n[System: Respond immediately. You are an information-dense synthesizer in the Google tradition of organizing knowledge -- connect the relevant facts efficiently and structure the answer so it can be scanned quickly. Keep the entire response under 220 words.]',
+    'gemini-3.1-flash-lite': '\n\n[System: Respond immediately. You are the lowest-latency responder -- give only the essential answer with no elaboration or hedging. Keep the entire response under 100 words.]',
+}
+
+# 前沿模型的互评裁判人设，键为 model_key（与 g4f 用模型名做键不冲突，字符串本身不重叠）。
+# 每个人设跟 FRONTIER_STYLE_PROMPTS_MAP 里同一模型的回答人设保持同一种"性格"，只是从
+# "怎么回答"换成"怎么评价别人"：Claude 关注诚实/是否过度自信，ChatGPT 关注实用广度和
+# 完整性，Gemini 关注事实密度和结构化程度。用 .update() 合并进 PEER_REVIEW_PROMPTS_MAP，
+# 不写进上面 g4f 的 try/except 块，这样即使 g4f 不可用（那两个 except 分支会把
+# PEER_REVIEW_PROMPTS_MAP 重置成 {}），前沿模型的裁判人设依然存在——两者是独立的可用性。
+FRONTIER_JUDGE_PROMPTS_MAP = {
+    'claude-sonnet-5': 'You are a meticulous reviewer in the Anthropic tradition: rigorously check the following anonymous answer for honesty, nuance, and unacknowledged uncertainty -- treat overconfidence as a real flaw, not a strength. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one nuanced sentence noting a genuine strength or honesty gap"}',
+    'claude-haiku-4-5': 'Quickly but carefully check the following anonymous answer for factual overreach or false confidence. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one concise, calibrated sentence"}',
+    'gpt-5.5': 'You are a broad generalist reviewer. Assess the following anonymous answer for practical usefulness and completeness across the full scope of the question. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sentence on practical completeness"}',
+    'gpt-5.4-mini': 'Quickly assess the following anonymous answer for efficiency and directness. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one efficiency-focused sentence"}',
+    'gemini-3.5-flash': 'Assess the following anonymous answer for factual density and how well it is organized for fast scanning, in the tradition of structured knowledge synthesis. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sentence on factual grounding or structure"}',
+    'gemini-3.1-flash-lite': 'Rate the following anonymous answer purely on brevity and essential-content ratio -- penalize padding. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one terse sentence"}',
+}
+PEER_REVIEW_PROMPTS_MAP.update(FRONTIER_JUDGE_PROMPTS_MAP)
 
 
 # ==================================================
@@ -605,6 +741,109 @@ def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
 
 
 # ==================================================
+# 前沿模型专属的互评派发（2026-07-07 新增）。把 review_prompt 转发给
+# call_claude_model()/call_chatgpt_model()/call_gemini_text_model()（apply_persona=False，
+# 理由见这三个函数内该参数上方的注释：互评走裁判人设 FRONTIER_JUDGE_PROMPTS_MAP，不应该
+# 再叠加"怎么回答"的人设后缀），解析出的 score/comment 包成跟 run_peer_review() 完全同样
+# 的 {reviewer_provider, reviewer_model, score, comment} 形状，好让 run_cross_peer_review()
+# 不必区分 reviewer 是 g4f 还是前沿模型就能统一派发。user_api_key 非空时用它做这次评审
+# （与该 reviewer 自己回答本轮 prompt 时用的是不是同一把 Key 无关——两者各自独立路由，
+# 由调用方决定传什么）。已知的开发者账户余额/配额耗尽错误码（error_code 非空）转换成
+# 对用户友好的"reviewer 暂时不可用"文案，不把内部错误码泄漏进评语文本。
+# ==================================================
+def run_frontier_peer_review(kind, model_key, review_prompt, user_api_key=None):
+    call_fn = {
+        'Claude': call_claude_model,
+        'ChatGPT': call_chatgpt_model,
+        'Gemini': call_gemini_text_model,
+    }[kind]
+
+    review_result = {
+        'reviewer_provider': kind,
+        'reviewer_model': model_key,
+        'score': 80,
+        'comment': '',
+    }
+
+    call_result = call_fn(review_prompt, model_key, user_api_key, apply_persona=False)
+
+    if call_result['success']:
+        score, comment = parse_peer_review_json(call_result['response'])
+        review_result['score'] = score
+        review_result['comment'] = comment
+    elif call_result.get('error_code'):
+        review_result['comment'] = 'This reviewer is temporarily unavailable (server quota exhausted).'
+    else:
+        review_result['comment'] = f"Review failed: {call_result['error']}"
+
+    return review_result
+
+
+# ==================================================
+# 统一的跨 g4f/前沿模型互评调度（2026-07-07 新增，取代原先写死在 compare_providers()
+# 里、只覆盖 g4f 名字空间的互评阶段——见 CLAUDE.md 更新记录）。entries 是这次请求里所有
+# 判定为成功且经过校验的结果，每项形状为
+# {'kind': 'g4f'|'Claude'|'ChatGPT'|'Gemini', 'provider': str, 'model': str,
+#  'response': str, 'user_api_key': str|None}。
+#
+# 任务构建规则与旧版 compare_providers() 完全同构：每个成功结果被其他所有成功结果各评
+# 一次，不自评（按 provider 名字判断，同一 provider 名字在一次请求里只会出现一次）。
+# 唯一的区别是 reviewer/target 现在可能来自 g4f 也可能来自前沿模型，dispatch 时按
+# reviewer 的 kind 选 run_peer_review()（g4f，需要把 provider 名字换回 g4f Provider 类
+# 对象）还是 run_frontier_peer_review()（前沿模型）。
+#
+# 返回 {provider_name: [review_item, ...]}，调用方（/api/peer-review 路由）据此拼回
+# 每个结果自己的 peer_reviews 数组。
+# ==================================================
+def run_cross_peer_review(entries):
+    g4f_provider_obj_map = {p.__name__: p for p in G4F_PROVIDERS}
+
+    tasks = []
+    for target in entries:
+        for reviewer in entries:
+            if reviewer['provider'] == target['provider']:
+                continue
+            judge_prefix = PEER_REVIEW_PROMPTS_MAP.get(
+                reviewer['model'],
+                'Please evaluate the quality of the following answer, noting its strengths and weaknesses.'
+            )
+            review_prompt = f"{judge_prefix}\n\nHere is the anonymous text to review:\n{target['response']}"
+            tasks.append((reviewer, review_prompt, target['provider']))
+
+    reviews_by_provider = {entry['provider']: [] for entry in entries}
+    if not tasks:
+        return reviews_by_provider
+
+    def _dispatch(reviewer, review_prompt):
+        if reviewer['kind'] == 'g4f':
+            provider_obj = g4f_provider_obj_map.get(reviewer['provider'])
+            if provider_obj is None:
+                return None
+            return run_peer_review(provider_obj, reviewer['model'], review_prompt)
+        return run_frontier_peer_review(
+            reviewer['kind'], reviewer['model'], review_prompt, reviewer.get('user_api_key')
+        )
+
+    max_workers = min(10, len(tasks))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_dispatch, reviewer, review_prompt): target_provider
+            for reviewer, review_prompt, target_provider in tasks
+        }
+        for future, target_provider in futures.items():
+            try:
+                review_item = future.result(timeout=32)
+                if review_item is not None:
+                    reviews_by_provider[target_provider].append(review_item)
+            except TimeoutError:
+                logger.warning(f"Peer review for {target_provider} timed out after 32s")
+            except Exception as e:
+                logger.error(f"Peer review error for {target_provider}: {e}", exc_info=True)
+
+    return reviews_by_provider
+
+
+# ==================================================
 # 调用官方 Anthropic API 获取 Claude 的回答
 # 与 test_g4f_provider()/test_g4f_image_provider() 是第三条完全独立的调用链路：不经过
 # g4f，不参与 ROUTE_PROMPTS_MAP 隐形路由，也不参与互评（run_peer_review 只在
@@ -623,7 +862,7 @@ def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
 # 耗尽是两回事，不应该混淆。同时兼容性地保留 error.type == 'billing_error' 分支，
 # 以防某些账户/未来 API 版本确实走那个更"文档化"的错误形状。
 # ==================================================
-def call_claude_model(prompt, model_key, user_api_key=None):
+def call_claude_model(prompt, model_key, user_api_key=None, apply_persona=True):
     model_id = CLAUDE_MODELS.get(model_key)
     start_time = time.time()
     result = {
@@ -641,12 +880,19 @@ def call_claude_model(prompt, model_key, user_api_key=None):
         result['response_time'] = round(time.time() - start_time, 2)
         return result
 
+    # apply_persona=False 供 run_frontier_peer_review() 复用本函数发起互评请求时使用——
+    # 互评的 review_prompt 已经自带裁判人设（FRONTIER_JUDGE_PROMPTS_MAP）并要求纯 JSON
+    # 输出，不应该再叠加 FRONTIER_STYLE_PROMPTS_MAP 这个"怎么回答"的人设后缀，与 g4f 那边
+    # run_peer_review() 从不套用 ROUTE_PROMPTS_MAP 是同一个道理。原始 prompt/result 均不受
+    # 影响，只有实际发给官方 API 的内容会加上后缀。
+    routed_prompt = prompt + FRONTIER_STYLE_PROMPTS_MAP.get(model_key, '') if apply_persona else prompt
+
     try:
         client = anthropic.Anthropic(api_key=user_api_key) if user_api_key else anthropic.Anthropic()
         response = client.messages.create(
             model=model_id,
             max_tokens=CLAUDE_MAX_TOKENS,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": routed_prompt}],
         )
 
         text = next((block.text for block in response.content if block.type == 'text'), '')
@@ -763,20 +1009,178 @@ def call_gemini_image_model(prompt, model_key, user_api_key=None):
             result['error'] = 'Gemini did not return an image for this prompt.'
 
     except Exception as e:
-        status_code = getattr(e, 'status_code', None) or getattr(e, 'code', None)
-        status_str = (getattr(e, 'status', None) or '').upper()
-        message = getattr(e, 'message', None) or str(e)
-
-        is_quota_exhausted = status_code == 429 or status_str == 'RESOURCE_EXHAUSTED'
-        is_permission_denied = status_code == 403
-
-        if is_quota_exhausted:
+        classification, message = _classify_google_genai_error(e)
+        if classification == 'QUOTA_EXHAUSTED':
             result['error'] = 'SERVER_QUOTA_EXHAUSTED'
             result['error_code'] = 'SERVER_QUOTA_EXHAUSTED'
-        elif is_permission_denied:
+        elif classification == 'PERMISSION_DENIED':
             result['error'] = 'Invalid or missing Gemini API key.'
-        elif status_code is not None:
-            result['error'] = f'Error {status_code}: {message}'
+        else:
+            result['error'] = message
+
+    finally:
+        result['response_time'] = round(time.time() - start_time, 2)
+
+    return result
+
+
+# ==================================================
+# 官方 Gemini 对话调用（2026-07-06 新增）——与 call_gemini_image_model() 同一个
+# google-genai SDK、同一套 Key 路由/错误分类（_classify_google_genai_error()），但作用
+# 于对话场景：用 Interactions API 的 output_text 承载文本结果，是上面 output_image 分支
+# 的镜像。是与 Claude/ChatGPT 并列的第三个"聊天"前沿 Provider,返回值遵循 Claude
+# Result 同一套 7-key 契约（type='google_genai_text',与图片链路的 'google_genai' 区分）。
+# ==================================================
+def call_gemini_text_model(prompt, model_key, user_api_key=None, apply_persona=True):
+    model_id = GEMINI_TEXT_MODELS.get(model_key)
+    start_time = time.time()
+    result = {
+        'provider': 'Gemini',
+        'success': False,
+        'response': '',
+        'error': '',
+        'response_time': 0,
+        'model': model_key,
+        'type': 'google_genai_text',
+    }
+
+    if not model_id:
+        result['error'] = f'Unknown Gemini model "{model_key}".'
+        result['response_time'] = round(time.time() - start_time, 2)
+        return result
+
+    # apply_persona=False：见 call_claude_model() 上方同名参数的注释，供
+    # run_frontier_peer_review() 发起互评请求时跳过 FRONTIER_STYLE_PROMPTS_MAP。
+    routed_prompt = prompt + FRONTIER_STYLE_PROMPTS_MAP.get(model_key, '') if apply_persona else prompt
+
+    try:
+        client = google_genai.Client(api_key=user_api_key) if user_api_key else google_genai.Client()
+        interaction = client.interactions.create(model=model_id, input=routed_prompt)
+
+        text = getattr(interaction, 'output_text', None)
+        if text:
+            result['response'] = detect_and_truncate(text)
+            result['success'] = True
+        else:
+            result['error'] = 'Gemini did not return any text for this prompt.'
+
+    except Exception as e:
+        classification, message = _classify_google_genai_error(e)
+        if classification == 'QUOTA_EXHAUSTED':
+            result['error'] = 'SERVER_GEMINI_TEXT_QUOTA_EXHAUSTED'
+            result['error_code'] = 'SERVER_GEMINI_TEXT_QUOTA_EXHAUSTED'
+        elif classification == 'PERMISSION_DENIED':
+            result['error'] = 'Invalid or missing Gemini API key.'
+        else:
+            result['error'] = message
+
+    finally:
+        result['response_time'] = round(time.time() - start_time, 2)
+
+    return result
+
+
+# ==================================================
+# 官方 OpenAI（ChatGPT）对话调用（2026-07-06 新增）——与 call_claude_model() 同构的
+# 第五条独立链路，用官方 openai SDK 的 client.chat.completions.create()。Key 路由与
+# Claude 完全一致：user_api_key 非空时优先用它实例化客户端。错误分类见
+# _classify_openai_error()（与 call_chatgpt_image_model() 共用）。
+# ==================================================
+def call_chatgpt_model(prompt, model_key, user_api_key=None, apply_persona=True):
+    model_id = CHATGPT_MODELS.get(model_key)
+    start_time = time.time()
+    result = {
+        'provider': 'ChatGPT',
+        'success': False,
+        'response': '',
+        'error': '',
+        'response_time': 0,
+        'model': model_key,
+        'type': 'openai',
+    }
+
+    if not model_id:
+        result['error'] = f'Unknown ChatGPT model "{model_key}".'
+        result['response_time'] = round(time.time() - start_time, 2)
+        return result
+
+    # apply_persona=False：见 call_claude_model() 上方同名参数的注释，供
+    # run_frontier_peer_review() 发起互评请求时跳过 FRONTIER_STYLE_PROMPTS_MAP。
+    routed_prompt = prompt + FRONTIER_STYLE_PROMPTS_MAP.get(model_key, '') if apply_persona else prompt
+
+    try:
+        client = openai.OpenAI(api_key=user_api_key) if user_api_key else openai.OpenAI()
+        response = client.chat.completions.create(
+            model=model_id,
+            max_completion_tokens=CHATGPT_MAX_TOKENS,
+            messages=[{"role": "user", "content": routed_prompt}],
+        )
+
+        text = response.choices[0].message.content if response.choices else ''
+        result['response'] = detect_and_truncate(text or '')
+        result['success'] = True
+
+    except Exception as e:
+        classification, message = _classify_openai_error(e)
+        if classification == 'QUOTA_EXHAUSTED':
+            result['error'] = 'SERVER_CHATGPT_QUOTA_EXHAUSTED'
+            result['error_code'] = 'SERVER_CHATGPT_QUOTA_EXHAUSTED'
+        elif classification == 'PERMISSION_DENIED':
+            result['error'] = 'Invalid or missing ChatGPT API key.'
+        else:
+            result['error'] = message
+
+    finally:
+        result['response_time'] = round(time.time() - start_time, 2)
+
+    return result
+
+
+# ==================================================
+# 官方 OpenAI 图片生成调用（GPT Image 系列，2026-07-06 新增）——与 call_gemini_image_model()
+# 同构的第六条独立链路，用官方 openai SDK 的 client.images.generate()。返回值遵循图片
+# 8-key 契约，b64_json 承载结果（OpenAI 图片生成 API 直接返回 base64，无需像 g4f 那样
+# 落地本地文件）。错误分类见 _classify_openai_error()（与 call_chatgpt_model() 共用）。
+# ==================================================
+def call_chatgpt_image_model(prompt, model_key, user_api_key=None):
+    model_id = CHATGPT_IMAGE_MODELS.get(model_key)
+    start_time = time.time()
+    result = {
+        'provider': 'ChatGPT',
+        'success': False,
+        'url': None,
+        'b64_json': None,
+        'error': '',
+        'response_time': 0,
+        'model': model_key,
+        'type': 'openai_image',
+    }
+
+    if not model_id:
+        result['error'] = f'Unknown ChatGPT model "{model_key}".'
+        result['response_time'] = round(time.time() - start_time, 2)
+        return result
+
+    try:
+        client = openai.OpenAI(api_key=user_api_key) if user_api_key else openai.OpenAI()
+        response = client.images.generate(model=model_id, prompt=prompt)
+
+        image_data = response.data[0] if response and response.data else None
+        b64_json = getattr(image_data, 'b64_json', None) if image_data else None
+
+        if b64_json:
+            result['b64_json'] = b64_json
+            result['success'] = True
+        else:
+            result['error'] = 'ChatGPT did not return an image for this prompt.'
+
+    except Exception as e:
+        classification, message = _classify_openai_error(e)
+        if classification == 'QUOTA_EXHAUSTED':
+            result['error'] = 'SERVER_CHATGPT_IMAGE_QUOTA_EXHAUSTED'
+            result['error_code'] = 'SERVER_CHATGPT_IMAGE_QUOTA_EXHAUSTED'
+        elif classification == 'PERMISSION_DENIED':
+            result['error'] = 'Invalid or missing ChatGPT API key.'
         else:
             result['error'] = message
 
@@ -846,6 +1250,45 @@ def _consume_pending_frontier_refund(request_id, user_id, provider):
 
 
 # ==================================================
+# "Stop Generating"历史落库取消登记表（2026-07-06 新增）
+#
+# 同上方额度退款账本一个根因：abort() 只断客户端自己这端，compare_providers()/
+# generate_images() 落库、claude_chat()/gemini_image_chat() 追加历史都可能仍在
+# 服务器端继续跑到完成。这张表让前端在点击 Stop 时额外携带的 request_id 落地成
+# 一个内存标记：g4f 阶段在调用 save_chat_history()/save_image_history() 之前、
+# Claude/Gemini 在追加之前都会查一遍，命中就整个跳过这次写库，不让用户已经点了
+# Stop 的这次生成，回头在 Recents 里冒出一条他们以为不存在的记录。Claude/Gemini
+# 复用各自已有的 refund request_id，在 /refund 接口里顺手标记，不需要前端为此再
+# 多发一次请求；g4f 阶段的 request_id 是独立的，由 /api/compare/cancel、
+# /api/generate-images/cancel 两个新接口标记。
+#
+# 与退款账本同精神的简化：只在单进程内存里，不落库、不跨实例共享，请求恰好分配到
+# 另一个实例是已知的边界情况，不是这次要解决的问题。
+# ==================================================
+_CANCELLED_HISTORY_REQUESTS = {}
+_CANCELLED_HISTORY_REQUEST_TTL_SECONDS = 600
+
+
+def _mark_request_cancelled(request_id):
+    if not request_id:
+        return
+    now = time.time()
+    stale_ids = [
+        rid for rid, ts in _CANCELLED_HISTORY_REQUESTS.items()
+        if now - ts > _CANCELLED_HISTORY_REQUEST_TTL_SECONDS
+    ]
+    for rid in stale_ids:
+        _CANCELLED_HISTORY_REQUESTS.pop(rid, None)
+    _CANCELLED_HISTORY_REQUESTS[request_id] = now
+
+
+def _is_request_cancelled(request_id):
+    if not request_id:
+        return False
+    return request_id in _CANCELLED_HISTORY_REQUESTS
+
+
+# ==================================================
 # 辅助函数：把 Claude/Gemini 的结果追加进一条已存在的历史记录（2026-07-05 新增）
 #
 # 背景（修复的 bug）：/api/compare、/api/generate-images 各自在拿到 g4f 结果后立即
@@ -891,10 +1334,43 @@ def _append_claude_result_to_history(user_id, history_id, result):
         )
 
 
+# ==================================================
+# Gemini/ChatGPT 图片结果落库前的本地落盘转换（2026-07-06 新增）
+#
+# b64_json 直接内嵌进 Firestore 'results' 数组时，一旦 base64 长度越过约 1MB
+# （真实项目验证过，见 tests/test_image_history_media_cleanup_whitebox.py），Firestore
+# 对"数组里嵌套 entity 的属性大小"有硬限制，写入会报 400 Property array contains an
+# invalid nested entity——gpt-image 系列的默认输出几乎总会超过这个阈值。修复方式是
+# 持久化前把 base64 解码落盘到 get_media_dir()（与 g4f 图片同一套目录/路由），只把
+# url 写进 Firestore，b64_json 置空。本次请求返回给前端的 result 对象不受影响，仍然
+# 带着完整 b64_json 立即渲染，不需要多一次 /media 往返。解码/落盘失败就原样返回，
+# 不阻断这次追加尝试（大概率还是会在写入时报同样的错，但至少不会引入新的异常）。
+# ==================================================
+def _persist_image_result_local_copy(result):
+    b64_json = result.get('b64_json')
+    if not b64_json:
+        return result
+    try:
+        image_bytes = base64.b64decode(b64_json)
+        media_dir = get_media_dir()
+        os.makedirs(media_dir, exist_ok=True)
+        filename = f"{secrets.token_hex(16)}.png"
+        with open(os.path.join(media_dir, filename), 'wb') as f:
+            f.write(image_bytes)
+        persisted = dict(result)
+        persisted['url'] = f"/media/{filename}"
+        persisted['b64_json'] = None
+        return persisted
+    except Exception as e:
+        logger.error(f"Failed to persist local copy of {result.get('provider')} image: {e}", exc_info=True)
+        return result
+
+
 def _append_gemini_result_to_image_history(user_id, history_id, result):
     if not history_id:
         return
     try:
+        result = _persist_image_result_local_copy(result)
         appended = append_image_history_result(user_id, history_id, result)
         if not appended:
             logger.warning(
@@ -904,6 +1380,46 @@ def _append_gemini_result_to_image_history(user_id, history_id, result):
     except Exception as e:
         logger.error(
             f"Failed to append Gemini result to image history {history_id}: {e}",
+            exc_info=True
+        )
+
+
+# ==================================================
+# 通用版本（2026-07-06 新增），供 ChatGPT 文本、Gemini 文本、ChatGPT 图片这三个新增
+# 前沿 Provider 共用——上面 Claude/Gemini 图片各自的专属包装函数是历史遗留，行为
+# 完全同构，只是把 provider_label 从硬编码换成参数，不重复三份近乎相同的代码。
+# ==================================================
+def _append_frontier_chat_result(user_id, history_id, result, provider_label):
+    if not history_id:
+        return
+    try:
+        appended = append_chat_history_result(user_id, history_id, result)
+        if not appended:
+            logger.warning(
+                f"Could not append {provider_label} result to chat history {history_id} for user {user_id} "
+                "(entry not found, not owned by this user, or Firebase unavailable)"
+            )
+    except Exception as e:
+        logger.error(
+            f"Failed to append {provider_label} result to chat history {history_id}: {e}",
+            exc_info=True
+        )
+
+
+def _append_frontier_image_result(user_id, history_id, result, provider_label):
+    if not history_id:
+        return
+    try:
+        result = _persist_image_result_local_copy(result)
+        appended = append_image_history_result(user_id, history_id, result)
+        if not appended:
+            logger.warning(
+                f"Could not append {provider_label} result to image history {history_id} for user {user_id} "
+                "(entry not found, not owned by this user, or Firebase unavailable)"
+            )
+    except Exception as e:
+        logger.error(
+            f"Failed to append {provider_label} result to image history {history_id}: {e}",
             exc_info=True
         )
 
@@ -921,20 +1437,27 @@ def _append_gemini_result_to_image_history(user_id, history_id, result):
 def _get_frontier_quota_context():
     claude_quota = None
     gemini_quota = None
+    chatgpt_quota = None
+    gemini_text_quota = None
+    chatgpt_image_quota = None
     if session.get('user_id'):
-        claude_quota = {
-            'used': get_claude_free_tier_usage(session['user_id']),
-            'limit': CLAUDE_FREE_TIER_LIMIT,
-        }
-        gemini_quota = {
-            'used': get_gemini_free_tier_usage(session['user_id']),
-            'limit': GEMINI_FREE_TIER_LIMIT,
-        }
+        user_id = session['user_id']
+        claude_quota = {'used': get_claude_free_tier_usage(user_id), 'limit': CLAUDE_FREE_TIER_LIMIT}
+        gemini_quota = {'used': get_gemini_free_tier_usage(user_id), 'limit': GEMINI_FREE_TIER_LIMIT}
+        chatgpt_quota = {'used': get_free_tier_usage(user_id, CHATGPT_FREE_TIER_FIELD), 'limit': CHATGPT_FREE_TIER_LIMIT}
+        gemini_text_quota = {'used': get_free_tier_usage(user_id, GEMINI_TEXT_FREE_TIER_FIELD), 'limit': GEMINI_TEXT_FREE_TIER_LIMIT}
+        chatgpt_image_quota = {'used': get_free_tier_usage(user_id, CHATGPT_IMAGE_FREE_TIER_FIELD), 'limit': CHATGPT_IMAGE_FREE_TIER_LIMIT}
     return {
         'claude_quota': claude_quota,
         'gemini_quota': gemini_quota,
+        'chatgpt_quota': chatgpt_quota,
+        'gemini_text_quota': gemini_text_quota,
+        'chatgpt_image_quota': chatgpt_image_quota,
         'claude_free_tier_limit': CLAUDE_FREE_TIER_LIMIT,
         'gemini_free_tier_limit': GEMINI_FREE_TIER_LIMIT,
+        'chatgpt_free_tier_limit': CHATGPT_FREE_TIER_LIMIT,
+        'gemini_text_free_tier_limit': GEMINI_TEXT_FREE_TIER_LIMIT,
+        'chatgpt_image_free_tier_limit': CHATGPT_IMAGE_FREE_TIER_LIMIT,
     }
 
 
@@ -1023,7 +1546,7 @@ def view_history(history_id):
     if session.get('user_id'):
         entry = get_chat_history_by_id(session['user_id'], history_id)
         if not entry:
-            flash('History entry not found', 'error')
+            flash('History entry not found.', 'error')
             return redirect(url_for('index'))
         return render_template(
             'history.html',
@@ -1057,7 +1580,7 @@ def view_image_history(history_id):
 
     entry = get_image_history_by_id(session['user_id'], history_id)
     if not entry:
-        flash('Image history entry not found', 'error')
+        flash('Image history entry not found.', 'error')
         return redirect(url_for('index'))
 
     return render_template(
@@ -1157,6 +1680,11 @@ def compare_providers():
         # 用户全局指定的单选模型名称（可选）
         requested_model = data.get('model', None)
 
+        # 前端为这次调用生成的一次性 UUID，供"Stop Generating"取消落库使用
+        # （见 _is_request_cancelled() 上方注释），与 Claude/Gemini 各自的
+        # request_id 是不同命名空间，不会冲突。
+        request_id = data.get('request_id')
+
         # 最大线程数
         max_workers = min(
             data.get('max_workers', 3),
@@ -1218,69 +1746,13 @@ def compare_providers():
                         logger.error(f"Error testing {name}: {e}", exc_info=True)
                     results.append(fallback_result)
 
-        # 为所有结果初始化空的互评列表（必须在互评 try 块之前，保证字段始终存在）
+        # 为所有结果初始化空的互评列表，保留 8-field 契约的字段存在性。互评本身不再在这里
+        # 跑——现在推迟到前端拿到本轮全部结果（g4f + 可能的前沿模型）之后，统一调用
+        # POST /api/peer-review 触发跨 g4f/前沿模型的互评（见 run_cross_peer_review()
+        # 上方注释、CLAUDE.md 更新记录）。这样设计是因为互评需要同时看到 g4f 和前沿模型的
+        # 结果才能双向互评，而前沿模型的调用发生在 /api/compare 返回之后。
         for r in results:
             r['peer_reviews'] = []
-
-        # 第二阶段：AI 互评（独立 try-except，任何崩溃不影响第一轮结果交付）
-        try:
-            successful_results = [r for r in results if r['success']]
-            if len(providers_to_test) >= 2 and len(successful_results) >= 2:
-                logger.info(
-                    f"Peer review phase started: {len(successful_results)} successful providers"
-                )
-                provider_obj_map = {p.__name__: p for p in providers_to_test}
-
-                # 构建互评任务：对每个成功结果 A，让其他成功模型 B 进行点评
-                peer_review_tasks = []
-                for result_a in successful_results:
-                    for result_b in successful_results:
-                        if result_b['provider'] == result_a['provider']:
-                            continue
-                        reviewer_provider = provider_obj_map[result_b['provider']]
-                        reviewer_model = result_b['model']
-                        judge_prefix = PEER_REVIEW_PROMPTS_MAP.get(
-                            reviewer_model,
-                            'Please evaluate the quality of the following answer, noting its strengths and weaknesses.'
-                        )
-                        review_prompt = (
-                            f"{judge_prefix}\n\nHere is the anonymous text to review:\n{result_a['response']}"
-                        )
-                        peer_review_tasks.append(
-                            (reviewer_provider, reviewer_model, review_prompt, result_a['provider'])
-                        )
-
-                logger.info(f"Peer review phase: {len(peer_review_tasks)} tasks scheduled")
-                max_peer_workers = min(10, len(peer_review_tasks))
-                with ThreadPoolExecutor(max_workers=max_peer_workers) as peer_executor:
-                    peer_futures = {
-                        peer_executor.submit(run_peer_review, rp, rm, rpr): target
-                        for rp, rm, rpr, target in peer_review_tasks
-                    }
-                    for future, target_provider in peer_futures.items():
-                        try:
-                            review_item = future.result(timeout=32)
-                            for r in results:
-                                if r['provider'] == target_provider:
-                                    r['peer_reviews'].append(review_item)
-                                    break
-                            logger.info(
-                                f"Peer review: {review_item['reviewer_provider']} "
-                                f"scored {target_provider} {review_item['score']}/100"
-                            )
-                        except TimeoutError:
-                            logger.warning(
-                                f"Peer review for {target_provider} timed out after 32s"
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Peer review error for {target_provider}: {e}",
-                                exc_info=True
-                            )
-                logger.info("Peer review phase completed")
-        except Exception as e:
-            logger.error(f"Peer review phase failed entirely: {e}", exc_info=True)
-            # peer_reviews 字段已初始化为 []，第一轮回答数据完整，安全返回
 
         # 排序：成功优先，耗时短优先
         results.sort(
@@ -1292,9 +1764,11 @@ def compare_providers():
 
         successful_count = sum(1 for r in results if r['success'])
 
-        # 已登录用户持久化对话历史；游客不落库。持久化失败不影响本次对比结果返回
+        # 已登录用户持久化对话历史；游客不落库。持久化失败不影响本次对比结果返回。
+        # 用户点了 Stop 且这个 request_id 已经被标记取消时，整个跳过落库——不产生
+        # 一条用户以为不存在的历史记录（见 _is_request_cancelled() 上方注释）。
         history_id = None
-        if session.get('user_id'):
+        if session.get('user_id') and not _is_request_cancelled(request_id):
             try:
                 saved = save_chat_history(session['user_id'], prompt, results)
                 if saved:
@@ -1312,6 +1786,174 @@ def compare_providers():
 
     except Exception as e:
         logger.error(f"Error in compare_providers: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
+# POST /api/compare/cancel（2026-07-06 新增，"Stop Generating"配套接口）
+#
+# 前端在点击 Stop 时，除了 abort() 掉 /api/compare 的 fetch，还会带着同一次调用的
+# request_id 发一次这个接口，把它记进 _CANCELLED_HISTORY_REQUESTS（见其上方注释）。
+# 不需要登录态守卫——游客和匿名也能用 g4f 对比功能，这个接口本身也不读写任何有归属
+# 的数据，标记一个不存在的/已经用过的 request_id 都是无副作用的空操作。
+# ==================================================
+@app.route('/api/compare/cancel', methods=['POST'])
+def compare_cancel():
+    data = request.get_json() or {}
+    _mark_request_cancelled(data.get('request_id'))
+    return jsonify({'ok': True})
+
+
+# 每次请求最多接受的待互评结果条目数——防止客户端提交任意数量的、client 端拼装出来的
+# "success": true 结果（前沿模型条目一旦被接受为 reviewer 就会真的花掉开发者/用户的
+# 官方 API 额度），把单次请求的互评调用规模钉死在跟"这个项目总共有多少个真实
+# Provider"同一量级（当前 4 个 g4f + 3 个前沿文本 = 7），不会随请求体大小线性增长。
+MAX_PEER_REVIEW_ENTRIES = 10
+
+
+def _valid_g4f_entry(item):
+    provider = item.get('provider')
+    model = item.get('model')
+    return provider in PROVIDER_MODELS_MAP and model in PROVIDER_MODELS_MAP.get(provider, [])
+
+
+# type 字段 → (kind, availability flag, 模型映射表) 的校验规则，只有三条前沿文本 Provider
+# 和 g4f 需要在这里登记；图片类/frontier-image 的 type（google_genai/openai_image 等）
+# 不在文本互评的范围内，不出现在这张表里也就永远不会被接受。
+_FRONTIER_ENTRY_RULES = {
+    'anthropic': ('Claude', lambda: CLAUDE_AVAILABLE, CLAUDE_MODELS),
+    'openai': ('ChatGPT', lambda: CHATGPT_AVAILABLE, CHATGPT_MODELS),
+    'google_genai_text': ('Gemini', lambda: GEMINI_AVAILABLE, GEMINI_TEXT_MODELS),
+}
+
+
+# 前沿 kind → 用来发起互评的官方 Key 请求头名——与各自原本回答这轮 prompt 时用的是同一个
+# Header（见 claude_chat()/chatgpt_chat()/gemini_text_chat()），不从请求体里读客户端声称
+# 的 Key 归属，避免信任一个可以被随意拼装的 JSON 字段。
+_FRONTIER_KEY_HEADERS = {
+    'Claude': 'X-User-Claude-Key',
+    'ChatGPT': 'X-User-ChatGPT-Key',
+    'Gemini': 'X-User-Gemini-Key',
+}
+
+
+def _sanitize_peer_review_entries(raw_results):
+    """把客户端提交的 results 列表过滤/校验成 run_cross_peer_review() 需要的 entries
+    形状，绝不相信客户端声称的 provider/model/type 组合——必须实际匹配已知的映射表，
+    且对应的 *_AVAILABLE 标志为真，否则整条丢弃（不报错，静默忽略，与其它路由对无法
+    识别输入的宽松处理方式一致）。返回 (entries, has_frontier_reviewer_candidate)。
+    """
+    entries = []
+    has_frontier = False
+
+    for item in raw_results[:MAX_PEER_REVIEW_ENTRIES]:
+        if not isinstance(item, dict) or not item.get('success'):
+            continue
+        response_text = item.get('response')
+        if not response_text or not isinstance(response_text, str):
+            continue
+
+        provider = item.get('provider')
+        model = item.get('model')
+        item_type = item.get('type')
+
+        if item_type == 'g4f':
+            if not _valid_g4f_entry(item):
+                continue
+            entries.append({
+                'kind': 'g4f', 'provider': provider, 'model': model,
+                'response': response_text, 'user_api_key': None,
+            })
+            continue
+
+        rule = _FRONTIER_ENTRY_RULES.get(item_type)
+        if not rule:
+            continue
+        kind, is_available, models_map = rule
+        if provider != kind or not is_available() or model not in models_map:
+            continue
+        has_frontier = True
+        user_api_key = request.headers.get(_FRONTIER_KEY_HEADERS[kind], '').strip() or None
+        entries.append({
+            'kind': kind, 'provider': provider, 'model': model,
+            'response': response_text,
+            'user_api_key': user_api_key,
+        })
+
+    return entries, has_frontier
+
+
+# ==================================================
+# POST /api/peer-review（2026-07-07 新增，取代原先写死在 compare_providers() 里、只覆盖
+# g4f 名字空间的互评阶段）
+#
+# 前端在拿到本轮全部结果（g4f 的 /api/compare + 可能勾选的 Claude/ChatGPT/Gemini 各自的
+# 独立请求）之后，统一把合并好的 results 数组发到这里，一次性触发跨 g4f/前沿模型的双向
+# 互评（见 run_cross_peer_review() 上方注释）。请求体：
+#   {"results": [...], "history_id": "..."（可选）}
+# 每个 result 沿用 7-key 文本契约的字段（provider/model/type/success/response），前沿
+# 模型条目可以额外带 user_api_key（前端从 localStorage 读出的用户自带 Key，若使用了自己
+# 的 Key 回答本轮 prompt，评审时也用同一把 Key，见 CLAUDE.md 关于"审校复用答题 Key，不
+# 消耗额外额度"的约定）。
+#
+# 安全边界（因为审校前沿模型是真实、开发者/用户掏钱的 API 调用，不能无条件信任客户端）：
+# 1. _sanitize_peer_review_entries() 校验/丢弃任何 provider/model/type 组合对不上已知
+#    映射表、或对应 Provider 当前不可用的条目，且整体最多只看前 MAX_PEER_REVIEW_ENTRIES
+#    条——避免客户端伪造任意数量的"success": true 假条目来无限次触发真实付费调用。
+# 2. 只要 sanitize 后的条目里有任何一条是前沿模型，就必须先过 _get_authenticated_user_id()
+#    这道认证守卫（跟 /api/claude-chat 等前沿路由完全同一套守卫）；纯 g4f 的条目列表不需要
+#    登录，保持游客/匿名今天就能用的免费互评体验不变。
+# 3. 复用现有的免费额度决策（本次评审不检查、不递增任何 *_free_tier_usage 计数器）——
+#    见 CLAUDE.md 关于"审校不消耗额外额度"的约定，成本已经通过 1 的条目数上限兜底。
+# 有效条目少于 2 条时直接返回空结果，不启动任何线程池/真实调用（同 compare_providers()
+# 原来 "len(providers_to_test) >= 2 and len(successful_results) >= 2" 的触发条件同构）。
+# history_id 非空且当前用户已登录时，把最终的互评结果原地写回该历史记录（见
+# update_chat_history_peer_reviews() 上方注释）——失败只记日志，不影响本次响应。
+# ==================================================
+@app.route('/api/peer-review', methods=['POST'])
+def peer_review():
+    try:
+        data = request.get_json() or {}
+        raw_results = data.get('results')
+        history_id = data.get('history_id')
+
+        if not isinstance(raw_results, list):
+            return jsonify({'error': 'results must be a list'}), 400
+
+        entries, has_frontier_reviewer_candidate = _sanitize_peer_review_entries(raw_results)
+
+        user_id = None
+        if has_frontier_reviewer_candidate:
+            user_id, err_response = _get_authenticated_user_id()
+            if err_response:
+                return err_response
+        else:
+            user_id = session.get('user_id')
+
+        if len(entries) < 2:
+            return jsonify({'peer_reviews': {}})
+
+        # 独立 try-except：互评阶段整体崩溃（如任务构建时抛异常）不应该让这次请求变成
+        # 500——跟旧版 compare_providers() 里"互评 phase 崩溃不影响第一轮结果"是同一个
+        # 健壮性原则，只是现在互评已经是独立请求，"保底返回空互评"就是这里的对应形态。
+        try:
+            peer_reviews = run_cross_peer_review(entries)
+        except Exception as e:
+            logger.error(f"Cross peer review phase failed entirely: {e}", exc_info=True)
+            peer_reviews = {entry['provider']: [] for entry in entries}
+
+        if user_id and history_id:
+            try:
+                update_chat_history_peer_reviews(user_id, history_id, peer_reviews)
+            except Exception as e:
+                logger.error(f"Failed to persist peer reviews to history {history_id}: {e}", exc_info=True)
+
+        return jsonify({'peer_reviews': peer_reviews})
+
+    except Exception as e:
+        logger.error(f"Error in peer_review: {str(e)}", exc_info=True)
         return jsonify({
             'error': 'Service temporarily unavailable. Please try again later.'
         }), 500
@@ -1436,7 +2078,10 @@ def claude_chat():
             # 原样存进 Firestore。
             history_result = {k: v for k, v in result.items() if k != 'error_code'}
             history_result['error'] = friendly_message
-            _append_claude_result_to_history(user_id, history_id, history_result)
+            # request_id 被 /api/claude-chat/refund 标记取消（用户点了 Stop）时跳过
+            # 追加——见 _is_request_cancelled() 上方注释。
+            if not _is_request_cancelled(request_id):
+                _append_claude_result_to_history(user_id, history_id, history_result)
             return jsonify({
                 'error': 'SERVER_CREDITS_EXHAUSTED',
                 'message': friendly_message
@@ -1454,7 +2099,8 @@ def claude_chat():
                     exc_info=True
                 )
 
-        _append_claude_result_to_history(user_id, history_id, result)
+        if not _is_request_cancelled(request_id):
+            _append_claude_result_to_history(user_id, history_id, result)
 
         return jsonify(result)
 
@@ -1496,10 +2142,234 @@ def claude_chat_refund():
                     exc_info=True
                 )
 
+        # 不管账本有没有命中都标记取消：claude_chat() 可能仍在另一个线程里运行，
+        # 还没跑到追加历史那一步（见 _is_request_cancelled() 上方注释）。
+        _mark_request_cancelled(request_id)
+
         return jsonify({'refunded': refunded})
 
     except Exception as e:
         logger.error(f"Error in claude_chat_refund: {str(e)}", exc_info=True)
+        return jsonify({'refunded': False}), 500
+
+
+# ==================================================
+# 官方 ChatGPT 对话接口（2026-07-06 新增）
+# POST /api/chatgpt-chat
+#
+# 与 /api/claude-chat 逐一同构（同一套权限/额度/退款/取消登记模式，见其上方注释），
+# 只是换成 ChatGPT 自己的调用函数/模型映射/额度常量/Header/refund 账本 provider key。
+# ==================================================
+@app.route('/api/chatgpt-chat', methods=['POST'])
+def chatgpt_chat():
+    try:
+        if not CHATGPT_AVAILABLE:
+            return jsonify({
+                'error': 'CHATGPT_UNAVAILABLE',
+                'message': 'ChatGPT integration is not available on this server.'
+            }), 503
+
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        prompt = data.get('prompt', '').strip()
+        model_key = data.get('model')
+        history_id = data.get('history_id')
+        request_id = data.get('request_id')
+
+        if not prompt or model_key not in CHATGPT_MODELS:
+            return jsonify({
+                'error': 'INVALID_REQUEST',
+                'message': 'A non-empty prompt and a valid ChatGPT model are required.'
+            }), 400
+
+        user_api_key = request.headers.get('X-User-ChatGPT-Key', '').strip()
+        using_own_key = bool(user_api_key)
+
+        if not using_own_key:
+            usage = get_free_tier_usage(user_id, CHATGPT_FREE_TIER_FIELD)
+            if usage >= CHATGPT_FREE_TIER_LIMIT:
+                return jsonify({'error': 'FREE_TIER_EXHAUSTED'}), 403
+
+        result = call_chatgpt_model(prompt, model_key, user_api_key if using_own_key else None)
+
+        if result.get('error_code') == 'SERVER_CHATGPT_QUOTA_EXHAUSTED':
+            if using_own_key:
+                friendly_message = 'Your personal ChatGPT API key has run out of quota. Please check your OpenAI account balance.'
+            else:
+                friendly_message = (
+                    "Your free trial quota still has uses left, but the developer's ChatGPT "
+                    "API account has run out of quota. Please contact the developer to restore access."
+                )
+            history_result = {k: v for k, v in result.items() if k != 'error_code'}
+            history_result['error'] = friendly_message
+            if not _is_request_cancelled(request_id):
+                _append_frontier_chat_result(user_id, history_id, history_result, 'ChatGPT')
+            return jsonify({
+                'error': 'SERVER_CHATGPT_QUOTA_EXHAUSTED',
+                'message': friendly_message
+            }), 503
+
+        if result['success'] and not using_own_key:
+            try:
+                increment_free_tier_usage(user_id, CHATGPT_FREE_TIER_FIELD)
+                _record_pending_frontier_refund(request_id, user_id, 'chatgpt')
+            except Exception as e:
+                logger.error(
+                    f"Failed to increment chatgpt_free_tier_usage for {user_id}: {e}",
+                    exc_info=True
+                )
+
+        if not _is_request_cancelled(request_id):
+            _append_frontier_chat_result(user_id, history_id, result, 'ChatGPT')
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error in chatgpt_chat: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+@app.route('/api/chatgpt-chat/refund', methods=['POST'])
+def chatgpt_chat_refund():
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        request_id = data.get('request_id')
+
+        refunded = False
+        if _consume_pending_frontier_refund(request_id, user_id, 'chatgpt'):
+            try:
+                refunded = bool(decrement_free_tier_usage(user_id, CHATGPT_FREE_TIER_FIELD))
+            except Exception as e:
+                logger.error(
+                    f"Failed to decrement chatgpt_free_tier_usage for {user_id}: {e}",
+                    exc_info=True
+                )
+
+        _mark_request_cancelled(request_id)
+        return jsonify({'refunded': refunded})
+
+    except Exception as e:
+        logger.error(f"Error in chatgpt_chat_refund: {str(e)}", exc_info=True)
+        return jsonify({'refunded': False}), 500
+
+
+# ==================================================
+# 官方 Gemini 对话接口（2026-07-06 新增）
+# POST /api/gemini-chat
+#
+# 与 /api/claude-chat 逐一同构，作用场景是对话而不是图片生成（那是 /api/gemini-image
+# 的场景）。与 /api/gemini-image 共用同一个 X-User-Gemini-Key Header 语义（同一个
+# Gemini API Key 既能用于文本也能用于图片），但额度计数器/refund 账本 provider key
+# （'gemini_text'）与图片场景（'gemini'）完全独立，不共享。
+# ==================================================
+@app.route('/api/gemini-chat', methods=['POST'])
+def gemini_text_chat():
+    try:
+        if not GEMINI_AVAILABLE:
+            return jsonify({
+                'error': 'GEMINI_UNAVAILABLE',
+                'message': 'Gemini integration is not available on this server.'
+            }), 503
+
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        prompt = data.get('prompt', '').strip()
+        model_key = data.get('model')
+        history_id = data.get('history_id')
+        request_id = data.get('request_id')
+
+        if not prompt or model_key not in GEMINI_TEXT_MODELS:
+            return jsonify({
+                'error': 'INVALID_REQUEST',
+                'message': 'A non-empty prompt and a valid Gemini model are required.'
+            }), 400
+
+        user_api_key = request.headers.get('X-User-Gemini-Key', '').strip()
+        using_own_key = bool(user_api_key)
+
+        if not using_own_key:
+            usage = get_free_tier_usage(user_id, GEMINI_TEXT_FREE_TIER_FIELD)
+            if usage >= GEMINI_TEXT_FREE_TIER_LIMIT:
+                return jsonify({'error': 'FREE_TIER_EXHAUSTED'}), 403
+
+        result = call_gemini_text_model(prompt, model_key, user_api_key if using_own_key else None)
+
+        if result.get('error_code') == 'SERVER_GEMINI_TEXT_QUOTA_EXHAUSTED':
+            if using_own_key:
+                friendly_message = 'Your personal Gemini API key has run out of quota. Please check your Google AI account.'
+            else:
+                friendly_message = (
+                    "Your free trial quota still has uses left, but the developer's Gemini "
+                    "API account has run out of quota. Please contact the developer to restore access."
+                )
+            history_result = {k: v for k, v in result.items() if k != 'error_code'}
+            history_result['error'] = friendly_message
+            if not _is_request_cancelled(request_id):
+                _append_frontier_chat_result(user_id, history_id, history_result, 'Gemini')
+            return jsonify({
+                'error': 'SERVER_GEMINI_TEXT_QUOTA_EXHAUSTED',
+                'message': friendly_message
+            }), 503
+
+        if result['success'] and not using_own_key:
+            try:
+                increment_free_tier_usage(user_id, GEMINI_TEXT_FREE_TIER_FIELD)
+                _record_pending_frontier_refund(request_id, user_id, 'gemini_text')
+            except Exception as e:
+                logger.error(
+                    f"Failed to increment gemini_text_free_tier_usage for {user_id}: {e}",
+                    exc_info=True
+                )
+
+        if not _is_request_cancelled(request_id):
+            _append_frontier_chat_result(user_id, history_id, result, 'Gemini')
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error in gemini_text_chat: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+@app.route('/api/gemini-chat/refund', methods=['POST'])
+def gemini_text_chat_refund():
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        request_id = data.get('request_id')
+
+        refunded = False
+        if _consume_pending_frontier_refund(request_id, user_id, 'gemini_text'):
+            try:
+                refunded = bool(decrement_free_tier_usage(user_id, GEMINI_TEXT_FREE_TIER_FIELD))
+            except Exception as e:
+                logger.error(
+                    f"Failed to decrement gemini_text_free_tier_usage for {user_id}: {e}",
+                    exc_info=True
+                )
+
+        _mark_request_cancelled(request_id)
+        return jsonify({'refunded': refunded})
+
+    except Exception as e:
+        logger.error(f"Error in gemini_text_chat_refund: {str(e)}", exc_info=True)
         return jsonify({'refunded': False}), 500
 
 
@@ -1546,6 +2416,10 @@ def generate_images():
 
         # 用户全局指定的单选模型名称（可选）
         requested_model = data.get('model', None)
+
+        # 前端为这次调用生成的一次性 UUID，供"Stop Generating"取消落库使用，
+        # 与 compare_providers() 的 request_id 是独立命名空间。
+        request_id = data.get('request_id')
 
         # 最大线程数
         max_workers = min(
@@ -1628,9 +2502,11 @@ def generate_images():
         # 顶部注释）；游客与匿名不落库——图片版 Recents 侧边栏专门限定只有已登录用户
         # 才能使用，游客侧连"仅浏览器内存/sessionStorage"级别的临时记录都不提供
         # （与文本对话历史对游客的处理方式刻意不同，见 CLAUDE.md 第 6 节）。
-        # 持久化失败不影响本次生成结果返回，独立 try/except。
+        # 持久化失败不影响本次生成结果返回，独立 try/except。用户点了 Stop 且这个
+        # request_id 已经被标记取消时，整个跳过落库（见 _is_request_cancelled()
+        # 上方注释）。
         history_id = None
-        if session.get('user_id'):
+        if session.get('user_id') and not _is_request_cancelled(request_id):
             try:
                 saved = save_image_history(session['user_id'], prompt, results)
                 if saved:
@@ -1651,6 +2527,17 @@ def generate_images():
         return jsonify({
             'error': 'Service temporarily unavailable. Please try again later.'
         }), 500
+
+
+# ==================================================
+# POST /api/generate-images/cancel（2026-07-06 新增），与 /api/compare/cancel 同构，
+# 见其上方注释。
+# ==================================================
+@app.route('/api/generate-images/cancel', methods=['POST'])
+def generate_images_cancel():
+    data = request.get_json() or {}
+    _mark_request_cancelled(data.get('request_id'))
+    return jsonify({'ok': True})
 
 
 # ==================================================
@@ -1731,7 +2618,10 @@ def gemini_image_chat():
             # Gemini Image Result 契约）并把 error 换成友好文案，而不是内部标记字符串。
             history_result = {k: v for k, v in result.items() if k != 'error_code'}
             history_result['error'] = friendly_message
-            _append_gemini_result_to_image_history(user_id, history_id, history_result)
+            # request_id 被 /api/gemini-image/refund 标记取消（用户点了 Stop）时跳过
+            # 追加——见 _is_request_cancelled() 上方注释。
+            if not _is_request_cancelled(request_id):
+                _append_gemini_result_to_image_history(user_id, history_id, history_result)
             return jsonify({
                 'error': 'SERVER_QUOTA_EXHAUSTED',
                 'message': friendly_message
@@ -1749,7 +2639,8 @@ def gemini_image_chat():
                     exc_info=True
                 )
 
-        _append_gemini_result_to_image_history(user_id, history_id, result)
+        if not _is_request_cancelled(request_id):
+            _append_gemini_result_to_image_history(user_id, history_id, result)
 
         return jsonify(result)
 
@@ -1784,10 +2675,127 @@ def gemini_image_refund():
                     exc_info=True
                 )
 
+        # 不管账本有没有命中都标记取消：gemini_image_chat() 可能仍在另一个线程里
+        # 运行，还没跑到追加历史那一步（见 _is_request_cancelled() 上方注释）。
+        _mark_request_cancelled(request_id)
+
         return jsonify({'refunded': refunded})
 
     except Exception as e:
         logger.error(f"Error in gemini_image_refund: {str(e)}", exc_info=True)
+        return jsonify({'refunded': False}), 500
+
+
+# ==================================================
+# 官方 ChatGPT 图片生成接口（GPT Image 系列，2026-07-06 新增）
+# POST /api/chatgpt-image
+#
+# 与 /api/gemini-image 逐一同构，只是换成 ChatGPT 自己的调用函数/模型映射/额度常量/
+# refund 账本 provider key。与 /api/chatgpt-chat 共用同一个 X-User-ChatGPT-Key Header
+# 语义（同一个 OpenAI Key 既能用于文本也能用于图片），但额度计数器/refund 账本
+# provider key（'chatgpt_image'）与文本场景（'chatgpt'）完全独立。同样**不会**调用
+# save_image_history() 创建新记录，只能追加进一条已由 /api/generate-images 创建好的
+# 记录（与 gemini_image_chat() 的既有约束一致）。
+# ==================================================
+@app.route('/api/chatgpt-image', methods=['POST'])
+def chatgpt_image_chat():
+    try:
+        if not CHATGPT_AVAILABLE:
+            return jsonify({
+                'error': 'CHATGPT_UNAVAILABLE',
+                'message': 'ChatGPT integration is not available on this server.'
+            }), 503
+
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        prompt = data.get('prompt', '').strip()
+        model_key = data.get('model')
+        history_id = data.get('history_id')
+        request_id = data.get('request_id')
+
+        if not prompt or model_key not in CHATGPT_IMAGE_MODELS:
+            return jsonify({
+                'error': 'INVALID_REQUEST',
+                'message': 'A non-empty prompt and a valid ChatGPT model are required.'
+            }), 400
+
+        user_api_key = request.headers.get('X-User-ChatGPT-Key', '').strip()
+        using_own_key = bool(user_api_key)
+
+        if not using_own_key:
+            usage = get_free_tier_usage(user_id, CHATGPT_IMAGE_FREE_TIER_FIELD)
+            if usage >= CHATGPT_IMAGE_FREE_TIER_LIMIT:
+                return jsonify({'error': 'FREE_TIER_EXHAUSTED'}), 403
+
+        result = call_chatgpt_image_model(prompt, model_key, user_api_key if using_own_key else None)
+
+        if result.get('error_code') == 'SERVER_CHATGPT_IMAGE_QUOTA_EXHAUSTED':
+            if using_own_key:
+                friendly_message = 'Your personal ChatGPT API key has run out of quota. Please check your OpenAI account balance.'
+            else:
+                friendly_message = (
+                    "Your free trial quota still has uses left, but the developer's ChatGPT "
+                    "API account has run out of quota. Please contact the developer to restore access."
+                )
+            history_result = {k: v for k, v in result.items() if k != 'error_code'}
+            history_result['error'] = friendly_message
+            if not _is_request_cancelled(request_id):
+                _append_frontier_image_result(user_id, history_id, history_result, 'ChatGPT')
+            return jsonify({
+                'error': 'SERVER_CHATGPT_IMAGE_QUOTA_EXHAUSTED',
+                'message': friendly_message
+            }), 503
+
+        if result['success'] and not using_own_key:
+            try:
+                increment_free_tier_usage(user_id, CHATGPT_IMAGE_FREE_TIER_FIELD)
+                _record_pending_frontier_refund(request_id, user_id, 'chatgpt_image')
+            except Exception as e:
+                logger.error(
+                    f"Failed to increment chatgpt_image_free_tier_usage for {user_id}: {e}",
+                    exc_info=True
+                )
+
+        if not _is_request_cancelled(request_id):
+            _append_frontier_image_result(user_id, history_id, result, 'ChatGPT')
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error in chatgpt_image_chat: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+@app.route('/api/chatgpt-image/refund', methods=['POST'])
+def chatgpt_image_refund():
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        request_id = data.get('request_id')
+
+        refunded = False
+        if _consume_pending_frontier_refund(request_id, user_id, 'chatgpt_image'):
+            try:
+                refunded = bool(decrement_free_tier_usage(user_id, CHATGPT_IMAGE_FREE_TIER_FIELD))
+            except Exception as e:
+                logger.error(
+                    f"Failed to decrement chatgpt_image_free_tier_usage for {user_id}: {e}",
+                    exc_info=True
+                )
+
+        _mark_request_cancelled(request_id)
+        return jsonify({'refunded': refunded})
+
+    except Exception as e:
+        logger.error(f"Error in chatgpt_image_refund: {str(e)}", exc_info=True)
         return jsonify({'refunded': False}), 500
 
 
@@ -1808,6 +2816,37 @@ def serve_generated_media(filename):
     safe_filename = os.path.basename(filename)
     media_dir = os.path.abspath(get_media_dir())
     return send_from_directory(media_dir, safe_filename)
+
+
+# ==================================================
+# targeted 本地图片文件清理：仅在一条 image_history 记录被用户显式删除时触发（不是
+# 按年龄的惰性清理，也不是清空整个目录，所以不违反"不引入自动清理机制"的约束——
+# 记录都没了，这些本地文件不可能再被任何页面引用到，删除是安全的，还能为
+# get_media_dir() 持续增长的磁盘占用释放一部分空间）。处理 g4f 图片结果的 url 字段
+# （形如 "/media/<filename>?url=..."），以及 Gemini/ChatGPT 官方图片结果落库时经
+# _persist_image_result_local_copy() 落盘的本地文件（形如 "/media/<filename>"，2026-07-06
+# 起这两个 provider 的持久化副本不再恒为 None，见该函数上方注释）。
+# ==================================================
+def _delete_local_media_files_for_image_results(results):
+    if not results:
+        return
+    media_dir = os.path.abspath(get_media_dir())
+    for result in results:
+        if result.get('type') not in ('g4f_image', 'openai_image', 'google_genai'):
+            continue
+        url = result.get('url')
+        if not url:
+            continue
+        filename = os.path.basename(urlparse(url).path)
+        if not filename:
+            continue
+        file_path = os.path.join(media_dir, filename)
+        try:
+            os.remove(file_path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.warning(f"Could not delete generated media file {filename}: {str(e)}")
 
 
 # ==================================================
@@ -1992,9 +3031,16 @@ def delete_image_history_route(history_id):
         if err_response:
             return err_response
 
+        # 删除 Firestore 记录之前先取一份 results 快照，用来定位需要一并清理的本地
+        # 文件——记录删掉之后就再也拿不到这次生成引用过哪些文件名了。
+        entry = get_image_history_by_id(user_id, history_id)
+
         success = delete_image_history(user_id, history_id)
         if not success:
             return jsonify({'error': 'History entry not found'}), 404
+
+        if entry:
+            _delete_local_media_files_for_image_results(entry.get('results'))
 
         return jsonify({'status': 'ok'})
 
@@ -2057,6 +3103,18 @@ def quota_status():
                 'used': get_gemini_free_tier_usage(user_id),
                 'limit': GEMINI_FREE_TIER_LIMIT,
             },
+            'chatgpt': {
+                'used': get_free_tier_usage(user_id, CHATGPT_FREE_TIER_FIELD),
+                'limit': CHATGPT_FREE_TIER_LIMIT,
+            },
+            'gemini_text': {
+                'used': get_free_tier_usage(user_id, GEMINI_TEXT_FREE_TIER_FIELD),
+                'limit': GEMINI_TEXT_FREE_TIER_LIMIT,
+            },
+            'chatgpt_image': {
+                'used': get_free_tier_usage(user_id, CHATGPT_IMAGE_FREE_TIER_FIELD),
+                'limit': CHATGPT_IMAGE_FREE_TIER_LIMIT,
+            },
         })
 
     except Exception as e:
@@ -2082,6 +3140,10 @@ def health_check():
         'claude_models': list(CLAUDE_MODELS.keys()),
         'gemini_available': GEMINI_AVAILABLE,
         'gemini_models': list(GEMINI_IMAGE_MODELS.keys()),
+        'gemini_text_models': list(GEMINI_TEXT_MODELS.keys()),
+        'chatgpt_available': CHATGPT_AVAILABLE,
+        'chatgpt_models': list(CHATGPT_MODELS.keys()),
+        'chatgpt_image_models': list(CHATGPT_IMAGE_MODELS.keys()),
         'timestamp': time.time()
     })
 

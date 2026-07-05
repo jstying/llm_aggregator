@@ -47,7 +47,6 @@
         .nav-container {
             padding: 0 2rem 0 0;
             display: flex;
-            justify-content: space-between;
             align-items: center;
         }
 
@@ -95,6 +94,7 @@
             gap: 0.4rem;
             list-style: none;
             align-items: center;
+            margin-left: auto;
         }
 
         .nav-links a {
@@ -1571,22 +1571,38 @@
             });
         }
 
+        // For the currently-viewed entry, the backend removal must finish *before*
+        // navigating away -- window.location.href can cancel an in-flight fetch, which used
+        // to leave the entry undeleted while still bouncing the user back to '/'
+        // (2026-07-05 user-reported bug, intermittent because it raced navigation vs. fetch
+        // completion). Any other entry stays optimistic: remove locally + re-render
+        // immediately, roll back if the backend request fails.
         async function deleteHistoryItem(id) {
             const targetItem = currentHistoryItems.find(h => h.id === id);
             if (!targetItem) return;
             const confirmed = await showDeleteConfirmModal(targetItem.title);
             if (!confirmed) return;
 
-            // If the entry being deleted is the one currently shown in the main panel,
-            // there's nothing left to display -- leave for the app instead of showing a
-            // "ghost" of an image batch that no longer exists.
+            const index = currentHistoryItems.findIndex(h => h.id === id);
+            if (index === -1) return;
+
             if (id === targetHistoryId) {
-                window.location.href = '/';
+                try {
+                    const response = await fetch(`/api/image-history/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                    if (!response.ok) throw new Error('delete failed: ' + response.status);
+                } catch (error) {
+                    console.error('Error deleting image history:', error);
+                    showHistoryErrorToast('Could not delete image batch. Please try again.');
+                    return;
+                }
+                // Nothing left to display for the entry that was just deleted -- leave for
+                // the app instead of showing a "ghost" of an image batch that no longer
+                // exists. '/?mode=image' (not bare '/') so the app lands back in image mode
+                // instead of defaulting to text generation (2026-07-05 user-reported bug).
+                window.location.href = '/?mode=image';
                 return;
             }
 
-            const index = currentHistoryItems.findIndex(h => h.id === id);
-            if (index === -1) return;
             const [removedItem] = currentHistoryItems.splice(index, 1);
             renderCurrentHistory();
 

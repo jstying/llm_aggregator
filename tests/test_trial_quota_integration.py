@@ -204,10 +204,12 @@ class TestIndexPageTrialQuotaBadgeMarkup(unittest.TestCase):
             html = self._get_index_html(logged_in=True)
 
         self.assertIn('id="trialQuotaBadges"', html)
-        # Claude backs the text/compare form's badge: 10 - 3 = 7 remaining.
-        self.assertIn('<span id="textQuotaValue">7</span>', html)
-        self.assertIn('<span id="textQuotaLimit">10</span>', html)
-        # Gemini backs the image form's badge: 10 - 7 = 3 remaining.
+        # Claude is one of three pills inside the text/compare form's badge group
+        # (2026-07-06: ChatGPT/Gemini-text joined it there): 10 - 3 = 7 remaining.
+        self.assertIn('<span id="claudeQuotaValue">7</span>', html)
+        self.assertIn('<span id="claudeQuotaLimit">10</span>', html)
+        # Gemini is one of two pills inside the image form's badge group (2026-07-06:
+        # ChatGPT-image joined it there): 10 - 7 = 3 remaining.
         self.assertIn('<span id="imageQuotaValue">3</span>', html)
         self.assertIn('<span id="imageQuotaLimit">10</span>', html)
 

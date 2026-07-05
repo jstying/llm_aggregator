@@ -240,6 +240,39 @@ def append_chat_history_result(user_id, history_id, result):
 
 
 # ==================================================
+# 把跨 g4f/前沿模型的统一互评结果（main.py 的 run_cross_peer_review()，由新的
+# POST /api/peer-review 路由触发）写回一条已经存在的对话历史记录（2026-07-07 新增）。
+# 与 append_chat_history_result() 同样"只能更新已有记录，不能创建新记录"，但语义不同：
+# 不追加新的 result 条目，而是按 provider 名字匹配，把已有条目的 peer_reviews 字段原地
+# 替换成传入的最终版本。之所以需要这一步：compare_providers() 保存历史记录时互评还没
+# 跑（互评现在推迟到所有前沿模型调用都返回之后才统一触发，见 main.py 的
+# run_cross_peer_review() 上方注释），如果不回写，历史详情页会永久丢失互评内容。
+# peer_reviews_by_provider 形状是 {provider_name: [review_item, ...]}，只覆盖其中出现
+# 的 provider，其余条目的 peer_reviews 保持不变。
+# ==================================================
+def update_chat_history_peer_reviews(user_id, history_id, peer_reviews_by_provider):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("update_chat_history_peer_reviews called but Firebase unavailable")
+        return False
+
+    doc_ref = db.collection('history').document(history_id)
+    doc = doc_ref.get()
+    if not doc.exists or doc.to_dict().get('user_id') != user_id:
+        logger.warning(f"update_chat_history_peer_reviews denied: {history_id} not owned by {user_id}")
+        return False
+
+    existing_results = doc.to_dict().get('results', [])
+    for r in existing_results:
+        provider = r.get('provider')
+        if provider in peer_reviews_by_provider:
+            r['peer_reviews'] = peer_reviews_by_provider[provider]
+
+    doc_ref.update({'results': existing_results})
+    logger.info(f"Updated peer reviews on chat history {history_id} for user {user_id}")
+    return True
+
+
+# ==================================================
 # 文生图历史 CRUD：与上面 6 个对话历史函数逐一同构，但写入独立的 'image_history'
 # 集合，而不是复用 'history'。这与文本/图片两条 g4f 调用链路（ChatCompletion vs
 # images.generate()）、两套 Provider 映射表（PROVIDER_MODELS_MAP vs
@@ -490,4 +523,48 @@ def decrement_gemini_free_tier_usage(user_id):
         return False
     doc_ref.update({'gemini_free_tier_usage': firestore.Increment(-1)})
     logger.info(f"Decremented gemini_free_tier_usage for user {user_id}")
+    return True
+
+
+# ==================================================
+# 通用免费额度计数器（2026-07-06 新增）：Claude/Gemini 各有一套专属命名函数（above），
+# 是历史遗留；新增的前沿 Provider（ChatGPT 文本/图片、Gemini 文本）改用这一套按
+# field_name 参数化的通用版本,避免为每个新计数器都各写三个近乎逐行相同的函数。
+# 语义、非原子性简化、"退款下限不为负"都与上面 Claude/Gemini 专属版本完全一致，
+# 只是把要读写的字段名从硬编码换成参数。
+# ==================================================
+def get_free_tier_usage(user_id, field_name):
+    if not FIREBASE_AVAILABLE:
+        logger.warning(f"get_free_tier_usage({field_name}) called but Firebase unavailable")
+        return 0
+
+    doc = db.collection('users').document(user_id).get()
+    if not doc.exists:
+        return 0
+    return doc.to_dict().get(field_name, 0)
+
+
+def increment_free_tier_usage(user_id, field_name):
+    if not FIREBASE_AVAILABLE:
+        logger.warning(f"increment_free_tier_usage({field_name}) called but Firebase unavailable")
+        return None
+
+    doc_ref = db.collection('users').document(user_id)
+    doc_ref.update({field_name: firestore.Increment(1)})
+    logger.info(f"Incremented {field_name} for user {user_id}")
+    return True
+
+
+def decrement_free_tier_usage(user_id, field_name):
+    if not FIREBASE_AVAILABLE:
+        logger.warning(f"decrement_free_tier_usage({field_name}) called but Firebase unavailable")
+        return None
+
+    doc_ref = db.collection('users').document(user_id)
+    doc = doc_ref.get()
+    current = doc.to_dict().get(field_name, 0) if doc.exists else 0
+    if current <= 0:
+        return False
+    doc_ref.update({field_name: firestore.Increment(-1)})
+    logger.info(f"Decremented {field_name} for user {user_id}")
     return True

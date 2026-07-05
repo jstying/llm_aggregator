@@ -463,12 +463,16 @@ class TestPeerReviewPartialFailure(unittest.TestCase):
         response = self._post_compare()
         self.assertEqual(response.status_code, 200)
 
-    def test_two_successful_providers_each_have_one_peer_review(self):
+    def test_compare_no_longer_populates_peer_reviews_itself(self):
+        """2026-07-07: /api/compare stopped running peer review inline -- that phase now
+        lives in POST /api/peer-review (see run_cross_peer_review()), triggered by the
+        frontend only after all g4f + frontier results for this submit are known. Every
+        result here must come back with an empty peer_reviews regardless of success."""
         data = json.loads(self._post_compare().data)
         successful = [r for r in data['results'] if r['success']]
         self.assertEqual(len(successful), 2)
-        for result in successful:
-            self.assertEqual(len(result['peer_reviews']), 1)
+        for result in data['results']:
+            self.assertEqual(result['peer_reviews'], [])
 
     def test_failed_provider_has_empty_peer_reviews(self):
         data = json.loads(self._post_compare().data)
@@ -477,9 +481,10 @@ class TestPeerReviewPartialFailure(unittest.TestCase):
 
 
 # ============================================================
-# 6. 互评阶段整体崩溃健壮性测试
-# 模拟互评 phase 内部整体异常（如任务构建崩溃），验证第一轮
-# 结果仍能安全返回 200，peer_reviews 字段保持空列表。
+# 6. 互评阶段整体崩溃健壮性测试（2026-07-07 更新：互评已从 compare_providers() 移到
+# 独立的 POST /api/peer-review，见 main.py 的 run_cross_peer_review() 与该路由里包住
+# 它的 try/except）。模拟互评任务构建阶段整体异常，验证接口仍能安全返回 200，
+# peer_reviews 保持空。
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestPeerReviewPhaseRobustness(unittest.TestCase):
@@ -488,47 +493,43 @@ class TestPeerReviewPhaseRobustness(unittest.TestCase):
         main.app.config['TESTING'] = True
         self.client = main.app.test_client()
 
-    def _make_two_providers(self):
-        p1 = MagicMock(); p1.__name__ = 'ProvA'
-        p2 = MagicMock(); p2.__name__ = 'ProvB'
-        return [p1, p2]
+    def _g4f_result(self, provider, model):
+        return {
+            'provider': provider, 'success': True, 'response': 'ok response', 'error': '',
+            'response_time': 1.0, 'model': model, 'type': 'g4f', 'peer_reviews': [],
+        }
 
     def _post_with_crashing_peer_review(self):
-        """Two providers both succeed; PEER_REVIEW_PROMPTS_MAP.get raises during task build."""
-        providers = self._make_two_providers()
+        """Two already-successful g4f results submitted to /api/peer-review;
+        PEER_REVIEW_PROMPTS_MAP.get raises during run_cross_peer_review()'s task build."""
+        providers = [MagicMock(), MagicMock()]
+        providers[0].__name__ = 'ProvA'
+        providers[1].__name__ = 'ProvB'
         crashing_map = MagicMock()
         crashing_map.get.side_effect = RuntimeError('simulated peer review phase crash')
-        with patch('main.g4f.ChatCompletion.create', return_value='ok response'), \
-             patch('main.G4F_PROVIDERS', providers), \
+        with patch('main.G4F_PROVIDERS', providers), \
              patch('main.PROVIDER_MODELS_MAP', {'ProvA': ['gpt-3.5-turbo'], 'ProvB': ['aria']}), \
-             patch('main.ROUTE_PROMPTS_MAP', {}), \
              patch('main.PEER_REVIEW_PROMPTS_MAP', crashing_map):
             return self.client.post(
-                '/api/compare',
-                data=json.dumps({'prompt': 'test', 'providers': ['ProvA', 'ProvB']}),
+                '/api/peer-review',
+                data=json.dumps({'results': [
+                    self._g4f_result('ProvA', 'gpt-3.5-turbo'),
+                    self._g4f_result('ProvB', 'aria'),
+                ]}),
                 content_type='application/json'
             )
 
     def test_peer_review_phase_crash_returns_200(self):
-        """Outer peer review try-except must catch the crash and still return 200."""
+        """The route's own try/except around run_cross_peer_review() must catch the
+        crash and still return 200."""
         response = self._post_with_crashing_peer_review()
         self.assertEqual(response.status_code, 200)
 
-    def test_peer_review_phase_crash_first_round_results_preserved(self):
-        """First-round responses must be intact when peer review phase crashes."""
-        data = json.loads(self._post_with_crashing_peer_review().data)
-        self.assertEqual(data['total_providers'], 2)
-        self.assertEqual(data['successful_providers'], 2)
-        for result in data['results']:
-            self.assertTrue(result['success'])
-            self.assertEqual(result['response'], 'ok response')
-
     def test_peer_review_phase_crash_peer_reviews_are_empty(self):
-        """peer_reviews must remain [] when the peer review phase crashes entirely."""
+        """peer_reviews must fall back to [] per submitted provider when the phase
+        crashes entirely, not bubble up as a 500."""
         data = json.loads(self._post_with_crashing_peer_review().data)
-        for result in data['results']:
-            self.assertIn('peer_reviews', result)
-            self.assertEqual(result['peer_reviews'], [])
+        self.assertEqual(data['peer_reviews'], {'ProvA': [], 'ProvB': []})
 
 
 # ============================================================
@@ -698,9 +699,17 @@ class TestPeerReviewOuterTimeoutValue(unittest.TestCase):
         p2 = MagicMock(); p2.__name__ = 'ProvB'
         return [p1, p2]
 
+    def _g4f_result(self, provider, model):
+        return {
+            'provider': provider, 'success': True, 'response': 'ok response', 'error': '',
+            'response_time': 1.0, 'model': model, 'type': 'g4f', 'peer_reviews': [],
+        }
+
     def test_peer_review_future_result_waits_up_to_32_seconds(self):
-        """future.result() for the peer review stage must be called with timeout=32,
-        not the old 25, so slower providers get the extra advisory-timeout headroom."""
+        """future.result() inside run_cross_peer_review() (now reached via
+        POST /api/peer-review, not /api/compare -- see 2026-07-07 changelog) must be
+        called with timeout=32, not the old 25, so slower reviewers get the extra
+        advisory-timeout headroom."""
         providers = self._make_two_providers()
         original_result = concurrent.futures.Future.result
         captured_timeouts = []
@@ -712,11 +721,13 @@ class TestPeerReviewOuterTimeoutValue(unittest.TestCase):
         with patch('main.g4f.ChatCompletion.create', return_value='ok response'), \
              patch('main.G4F_PROVIDERS', providers), \
              patch('main.PROVIDER_MODELS_MAP', {'ProvA': ['gpt-3.5-turbo'], 'ProvB': ['aria']}), \
-             patch('main.ROUTE_PROMPTS_MAP', {}), \
              patch.object(concurrent.futures.Future, 'result', spy_result):
             response = self.client.post(
-                '/api/compare',
-                data=json.dumps({'prompt': 'test', 'providers': ['ProvA', 'ProvB']}),
+                '/api/peer-review',
+                data=json.dumps({'results': [
+                    self._g4f_result('ProvA', 'gpt-3.5-turbo'),
+                    self._g4f_result('ProvB', 'aria'),
+                ]}),
                 content_type='application/json'
             )
 
@@ -726,24 +737,23 @@ class TestPeerReviewOuterTimeoutValue(unittest.TestCase):
 
     def test_peer_review_timeout_error_does_not_crash_and_leaves_that_review_missing(self):
         """A simulated TimeoutError from run_peer_review must be caught per-future;
-        the route still returns 200 and first-round results stay intact."""
+        the route still returns 200 with an empty peer_reviews list for that provider."""
         providers = self._make_two_providers()
-        with patch('main.g4f.ChatCompletion.create', return_value='ok response'), \
-             patch('main.G4F_PROVIDERS', providers), \
+        with patch('main.G4F_PROVIDERS', providers), \
              patch('main.PROVIDER_MODELS_MAP', {'ProvA': ['gpt-3.5-turbo'], 'ProvB': ['aria']}), \
-             patch('main.ROUTE_PROMPTS_MAP', {}), \
              patch('main.run_peer_review', side_effect=concurrent.futures.TimeoutError('simulated')):
             response = self.client.post(
-                '/api/compare',
-                data=json.dumps({'prompt': 'test', 'providers': ['ProvA', 'ProvB']}),
+                '/api/peer-review',
+                data=json.dumps({'results': [
+                    self._g4f_result('ProvA', 'gpt-3.5-turbo'),
+                    self._g4f_result('ProvB', 'aria'),
+                ]}),
                 content_type='application/json'
             )
 
         self.assertEqual(response.status_code, 200)
         data = json.loads(response.data)
-        for result in data['results']:
-            self.assertTrue(result['success'])
-            self.assertEqual(result['peer_reviews'], [])
+        self.assertEqual(data['peer_reviews'], {'ProvA': [], 'ProvB': []})
 
 
 def _make_image_result(provider, success, response_time, model='auto', url=None,
