@@ -404,10 +404,15 @@ class TestClaudeChatFreeTierFlow(unittest.TestCase):
         self.assertTrue(data['success'])
         self.assertEqual(data['response'], '4')
 
-    def test_second_request_without_own_key_returns_free_tier_exhausted(self):
+    def test_request_at_limit_without_own_key_returns_free_tier_exhausted(self):
+        """usage already == CLAUDE_FREE_TIER_LIMIT (10, 2026-07-05 raised from 1) --
+        the (limit+1)th request without an own key must be rejected before ever calling
+        call_claude_model(). Reads the limit off main.CLAUDE_FREE_TIER_LIMIT rather than
+        hardcoding a number so this test doesn't silently stop testing "at the limit" if
+        the constant changes again."""
         with main.app.test_client() as client:
             self._login(client)
-            with patch.object(main, 'get_claude_free_tier_usage', return_value=1), \
+            with patch.object(main, 'get_claude_free_tier_usage', return_value=main.CLAUDE_FREE_TIER_LIMIT), \
                  patch.object(main, 'call_claude_model') as mock_call:
                 resp = client.post('/api/claude-chat', json={
                     'prompt': 'another question', 'model': 'claude-sonnet-5'

@@ -171,6 +171,126 @@ class TestProviderSelectionSectionMarkup(unittest.TestCase):
         self.assertIn('Select free models (single selection):', html)
 
 
+class TestImageFormProviderSelectionSectionMarkup(unittest.TestCase):
+    """GET / (2026-07-04 新增): the image-generation form (#imageModeContainer) gets the
+    exact same "frontier vs free" split as the compare form above, but as its own,
+    independent container/namespace -- Gemini (Nano Banana Pro) is the image form's
+    frontier provider, mirroring Claude's role in the compare form. Scoped to
+    #imageModeContainer only so none of this collides with
+    TestProviderSelectionSectionMarkup's assertions about the compare form."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def _get_index_html(self, logged_in=True):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                if logged_in:
+                    sess['user_id'] = 'uid1'
+                    sess['username'] = 'alice'
+                else:
+                    sess['is_guest'] = True
+            response = client.get('/')
+        return response.data.decode()
+
+    def _get_image_form_html(self, logged_in=True):
+        html = self._get_index_html(logged_in=logged_in)
+        start = html.index('id="imageModeContainer"')
+        return html[start:]
+
+    def test_frontier_image_providers_label_and_container_present(self):
+        html = self._get_image_form_html()
+        self.assertIn('Select frontier image providers:', html)
+        self.assertIn('id="frontierImageProviderSelection"', html)
+
+    def test_free_image_providers_label_renamed(self):
+        html = self._get_image_form_html()
+        self.assertIn('Select free image providers (leave all unchecked to test all):', html)
+        self.assertNotIn('>Select Image Providers (leave all unchecked to test all):<', html)
+
+    def test_free_image_models_label_renamed(self):
+        html = self._get_image_form_html()
+        self.assertIn('Select free models (single selection):', html)
+        self.assertNotIn('>Select Model (Single Selection):<', html)
+
+    def test_gemini_card_lives_in_frontier_container_not_free_providers(self):
+        html = self._get_image_form_html()
+        frontier_start = html.index('id="frontierImageProviderSelection"')
+        free_start = html.index('id="imageProviderSelection"')
+        gemini_card_pos = html.index('id="geminiProviderCard"')
+        self.assertTrue(
+            frontier_start < gemini_card_pos < free_start,
+            'Gemini card must be inside #frontierImageProviderSelection, before #imageProviderSelection',
+        )
+        free_providers_section = html[free_start:html.index('id="imageCustomSelectWrapper"')]
+        self.assertNotIn('geminiProviderCard', free_providers_section)
+        self.assertNotIn('gemini-provider-checkbox', free_providers_section)
+
+    def test_section_order_frontier_then_gemini_model_then_free_providers_then_free_models(self):
+        html = self._get_image_form_html()
+        frontier_pos = html.index('Select frontier image providers:')
+        gemini_model_pos = html.index('id="geminiModelSelect"')
+        free_providers_pos = html.index('Select free image providers (leave all unchecked to test all):')
+        free_models_pos = html.index('Select free models (single selection):')
+        self.assertTrue(frontier_pos < gemini_model_pos < free_providers_pos < free_models_pos)
+
+    def test_gemini_model_select_present(self):
+        html = self._get_image_form_html()
+        self.assertIn('<label for="geminiModelSelect">Gemini Model:</label>', html)
+        self.assertIn('<option value="nano-banana-pro">Nano Banana Pro</option>', html)
+
+    def test_gemini_model_select_lists_all_three_nano_banana_tiers(self):
+        """2026-07-05: Nano Banana 2/Lite were added alongside Pro (previously only Pro
+        was wired into the dropdown even though CLAUDE.md already documented all three
+        model IDs as verified-legitimate). All three <option>s must be present so users
+        can actually pick the lighter-weight tiers, not just the flagship."""
+        html = self._get_image_form_html()
+        select_start = html.index('id="geminiModelSelect"')
+        select_end = html.index('</select>', select_start)
+        select_html = html[select_start:select_end]
+        self.assertIn('<option value="nano-banana-pro">Nano Banana Pro</option>', select_html)
+        self.assertIn('<option value="nano-banana-2">Nano Banana 2</option>', select_html)
+        self.assertIn('<option value="nano-banana-lite">Nano Banana Lite</option>', select_html)
+
+    def test_free_image_providers_container_still_lists_g4f_image_providers(self):
+        html = self._get_image_form_html()
+        free_start = html.index('id="imageProviderSelection"')
+        free_providers_section = html[free_start:html.index('id="imageCustomSelectWrapper"')]
+        self.assertIn('image-provider-checkbox', free_providers_section)
+        self.assertIn('name="image_providers"', free_providers_section)
+
+    def test_gemini_card_does_not_reuse_isolated_checkbox_classes(self):
+        """Regression guard mirroring CLAUDE.md's provider-namespace-isolation rule:
+        Gemini's card must use its own .gemini-provider-checkbox/.gemini-provider-trigger
+        classes, never .image-provider-checkbox/.image-provider-trigger (which the JS
+        queries globally via querySelectorAll and would otherwise submit Gemini into
+        /api/generate-images' providers array)."""
+        html = self._get_image_form_html()
+        gemini_card_start = html.index('id="geminiProviderCard"')
+        gemini_card_end = html.index('</label>', gemini_card_start)
+        gemini_card_html = html[gemini_card_start:gemini_card_end]
+        self.assertIn('gemini-provider-checkbox', html[html.rindex('<label', 0, gemini_card_start):gemini_card_end])
+        self.assertNotIn('class="image-provider-checkbox"', gemini_card_html)
+        self.assertNotIn('image-provider-trigger', gemini_card_html)
+
+    def test_guest_session_sees_locked_gemini_card(self):
+        html = self._get_image_form_html(logged_in=False)
+        self.assertIn('Select frontier image providers:', html)
+        gemini_card_start = html.index('id="geminiProviderCard"')
+        label_start = html.rindex('<label', 0, gemini_card_start)
+        gemini_card_end = html.index('</label>', gemini_card_start)
+        gemini_card_html = html[label_start:gemini_card_end]
+        self.assertIn('is-locked', gemini_card_html)
+        self.assertIn('disabled', gemini_card_html)
+        self.assertIn('Log in to unlock frontier models', gemini_card_html)
+
+    def test_reorg_holds_for_guest_session_too(self):
+        html = self._get_image_form_html(logged_in=False)
+        self.assertIn('Select frontier image providers:', html)
+        self.assertIn('Select free image providers (leave all unchecked to test all):', html)
+        self.assertIn('Select free models (single selection):', html)
+
+
 class TestViewHistoryPage(unittest.TestCase):
     """GET /history/<history_id> (2026-07-03): the read-only history.html detail page.
     Logged-in visitors get the entry fetched from Firestore by id (with the usual ownership
@@ -1102,13 +1222,16 @@ class TestGenerateImagesEndpoint(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
 
 
-class TestGenerateImagesTriggersMediaCleanup(unittest.TestCase):
-    """POST /api/generate-images must opportunistically purge stale files from
-    get_media_dir() before generating (main.cleanup_old_generated_media), so the shared,
-    unnamespaced local media folder does not grow unbounded across requests/users (see
-    GENERATED_MEDIA_MAX_AGE_SECONDS). This must NOT wipe the whole directory -- only files
-    older than the age threshold -- since recently generated files may still be displayed/
-    downloaded from another concurrent request."""
+class TestGenerateImagesNeverDeletesMedia(unittest.TestCase):
+    """2026-07-05: POST /api/generate-images used to opportunistically purge stale files
+    from get_media_dir() before generating (main.cleanup_old_generated_media, gated by
+    GENERATED_MEDIA_MAX_AGE_SECONDS = 1 hour). That sweep was removed so that images
+    referenced by the image Recents/history detail pages remain viewable indefinitely --
+    an hour-old history entry's <img> tag points at a local file under get_media_dir(),
+    and the old sweep would silently 404 it. This class is the black-box mirror of
+    tests/test_main_whitebox.py::TestGeneratedMediaCleanupFeatureRemoved: it drives a
+    real request through the route and asserts an old file survives, rather than just
+    checking the removed symbols are gone."""
 
     def setUp(self):
         main.app.config['TESTING'] = True
@@ -1122,49 +1245,23 @@ class TestGenerateImagesTriggersMediaCleanup(unittest.TestCase):
     def _write_file(self, name, age_seconds=0):
         path = os.path.join(self.tmpdir.name, name)
         with open(path, 'wb') as f:
-            f.write(b'stale-bytes')
+            f.write(b'old-bytes')
         mtime = time.time() - age_seconds
         os.utime(path, (mtime, mtime))
         return path
 
     @patch('main.G4FImageClient')
-    def test_stale_file_removed_by_generate_request(self, mock_client_cls):
+    def test_very_old_file_survives_a_new_generate_request(self, mock_client_cls):
+        """A file older than the former 1-hour threshold (well beyond it, to make the
+        intent unambiguous) must still be there after a new /api/generate-images
+        request -- there is no cleanup step left to remove it."""
         mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
             [_fake_image(url='https://example.com/a.png')]
         )
-        stale_path = self._write_file('old.jpg', age_seconds=main.GENERATED_MEDIA_MAX_AGE_SECONDS + 60)
+        old_path = self._write_file('very-old.jpg', age_seconds=60 * 60 * 24 * 30)
         payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage']}
         self.client.post('/api/generate-images', data=json.dumps(payload), content_type='application/json')
-        self.assertFalse(os.path.exists(stale_path))
-
-    @patch('main.G4FImageClient')
-    def test_recent_file_survives_generate_request(self, mock_client_cls):
-        """A file younger than the age threshold must not be deleted just because a new
-        generation request came in -- it may still be referenced by another in-flight
-        browser tab/user."""
-        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
-            [_fake_image(url='https://example.com/a.png')]
-        )
-        recent_path = self._write_file('recent.jpg', age_seconds=5)
-        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage']}
-        self.client.post('/api/generate-images', data=json.dumps(payload), content_type='application/json')
-        self.assertTrue(os.path.exists(recent_path))
-
-    @patch('main.G4FImageClient')
-    def test_missing_media_dir_does_not_break_generation_response(self, mock_client_cls):
-        """get_media_dir() may not exist yet (e.g. first-ever generation on a fresh
-        instance) -- cleanup must swallow the resulting OSError internally rather than
-        letting it propagate up into the route's top-level try/except as a 500."""
-        mock_client_cls.return_value.images.generate.return_value = _fake_image_response(
-            [_fake_image(url='https://example.com/a.png')]
-        )
-        missing_dir = os.path.join(self.tmpdir.name, 'does-not-exist')
-        payload = {'prompt': 'a red apple', 'providers': ['PollinationsImage']}
-        with patch('main.get_media_dir', return_value=missing_dir):
-            response = self.client.post(
-                '/api/generate-images', data=json.dumps(payload), content_type='application/json'
-            )
-        self.assertEqual(response.status_code, 200)
+        self.assertTrue(os.path.exists(old_path))
 
 
 class TestServeGeneratedMediaEndpoint(unittest.TestCase):

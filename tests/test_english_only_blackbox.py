@@ -249,8 +249,62 @@ class TestClaudeServerCreditsExhaustedMessageIsEnglish(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(
             data['message'],
-            'Developer account balance is insufficient. Please configure your '
-            'personal API key to continue.'
+            "Your free trial quota still has uses left, but the developer's Claude "
+            "API account has run out of credits. Please contact the developer to "
+            "restore access."
+        )
+
+
+class TestGeminiServerQuotaExhaustedMessageIsEnglish(unittest.TestCase):
+    """Mirrors TestClaudeServerCreditsExhaustedMessageIsEnglish for the Gemini
+    ("Nano Banana") image-generation integration's own SERVER_QUOTA_EXHAUSTED friendly
+    message returned by POST /api/gemini-image -- this was written in English from the
+    start (Gemini was added after the English-only policy already existed), but is
+    tested here for the same reason as its Claude counterpart: it's rendered directly
+    onto a failed result card in the browser, so a future edit reintroducing Chinese
+    here would be a real, user-visible regression."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def test_server_quota_exhausted_message_has_no_chinese(self):
+        fake_result = {
+            'provider': 'Gemini', 'success': False, 'url': None, 'b64_json': None,
+            'error': 'quota', 'response_time': 0.1, 'model': 'nano-banana-pro',
+            'type': 'google_genai', 'error_code': 'SERVER_QUOTA_EXHAUSTED',
+        }
+        with patch.object(main, 'get_gemini_free_tier_usage', return_value=0), \
+             patch.object(main, 'call_gemini_image_model', return_value=fake_result):
+            with main.app.test_client() as client:
+                with client.session_transaction() as sess:
+                    sess['user_id'] = 'uid1'
+                resp = client.post('/api/gemini-image', json={
+                    'prompt': 'a cat', 'model': 'nano-banana-pro'
+                })
+        self.assertEqual(resp.status_code, 503)
+        data = resp.get_json()
+        self.assertFalse(CJK_PATTERN.search(data['message']))
+
+    def test_server_quota_exhausted_message_matches_documented_english_text(self):
+        fake_result = {
+            'provider': 'Gemini', 'success': False, 'url': None, 'b64_json': None,
+            'error': 'quota', 'response_time': 0.1, 'model': 'nano-banana-pro',
+            'type': 'google_genai', 'error_code': 'SERVER_QUOTA_EXHAUSTED',
+        }
+        with patch.object(main, 'get_gemini_free_tier_usage', return_value=0), \
+             patch.object(main, 'call_gemini_image_model', return_value=fake_result):
+            with main.app.test_client() as client:
+                with client.session_transaction() as sess:
+                    sess['user_id'] = 'uid1'
+                resp = client.post('/api/gemini-image', json={
+                    'prompt': 'a cat', 'model': 'nano-banana-pro'
+                })
+        data = resp.get_json()
+        self.assertEqual(
+            data['message'],
+            "Your free trial quota still has uses left, but the developer's Gemini "
+            "API account has run out of quota. Please contact the developer to "
+            "restore access."
         )
 
 

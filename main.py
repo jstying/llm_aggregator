@@ -39,16 +39,20 @@ from auth.db import (  # noqa: E402
     delete_chat_history,
     update_chat_history_title,
     toggle_pin_chat_history,
+    append_chat_history_result,
     save_image_history,
     get_image_history_list,
     get_image_history_by_id,
     delete_image_history,
     update_image_history_title,
     toggle_pin_image_history,
+    append_image_history_result,
     get_claude_free_tier_usage,
     increment_claude_free_tier_usage,
+    decrement_claude_free_tier_usage,
     get_gemini_free_tier_usage,
     increment_gemini_free_tier_usage,
+    decrement_gemini_free_tier_usage,
 )
 
 
@@ -176,8 +180,11 @@ CLAUDE_MODELS = {
 # 超时保护阈值），足够支撑本项目"多 Provider 对比"场景下的一次简短回答，不需要流式。
 CLAUDE_MAX_TOKENS = 2048
 
-# 单个注册用户在未自带 Key 时，可免费消耗开发者账户额度调用 Claude 的次数上限。
-CLAUDE_FREE_TIER_LIMIT = 1
+# 单个注册用户在未自带 Key 时，可免费消耗开发者账户额度调用 Claude 的次数上限。一次
+# "Compare"点击无论前端后续还勾选了多少个免 Key g4f Provider 都只发起一次
+# /api/claude-chat 请求，因此只消耗 1 次额度——这条"一次点击=一次额度"的语义与
+# GEMINI_FREE_TIER_LIMIT 同构（见 CLAUDE.md 第 6 节）。
+CLAUDE_FREE_TIER_LIMIT = 10
 
 
 # =========================
@@ -204,21 +211,27 @@ except ImportError as e:
     logger.warning(f"google-genai SDK not available: {e}")
 
 # 模型 key（前端 <select> 的 value）→ 官方 API model ID 的映射，与 CLAUDE_MODELS 同构。
-# 当前只接入 Nano Banana Pro（官方 model ID: gemini-3-pro-image）——Google 官方文档
-# （https://ai.google.dev/gemini-api/docs/models，2026-07-04 查证）里"Nano Banana"是
-# 三档同系列图片生成模型的社区/文档昵称，Pro 档定位为"Professional design engine with
-# a reasoning core for studio-quality 4K visuals, complex layouts, and precise text
-# rendering"，是三档里的旗舰档位，与 Claude Sonnet 5（CLAUDE_MODELS 里的旗舰模型）同属
-# "frontier"定位这一叙事对齐。Nano Banana 2（gemini-3.1-flash-image）与 Nano Banana
-# Lite（gemini-3.1-flash-lite-image）是同系列里更轻量/低延迟的档位，留作未来按同一模式
-# （追加一条映射 + 前端加一个 <option>）追加的可选项，不在本次范围内。
+# 三档 Nano Banana 系列模型（官方文档 https://ai.google.dev/gemini-api/docs/models，
+# 2026-07-04 查证）全部已接入（2026-07-05 补齐 Nano Banana 2/Lite 两档，此前只有 Pro）：
+# - nano-banana-pro（gemini-3-pro-image）：旗舰档位，"Professional design engine with
+#   a reasoning core for studio-quality 4K visuals, complex layouts, and precise text
+#   rendering"，与 Claude Sonnet 5（CLAUDE_MODELS 里的旗舰模型）同属"frontier"定位。
+# - nano-banana-2（gemini-3.1-flash-image）：中档，更轻量/低延迟。
+# - nano-banana-lite（gemini-3.1-flash-lite-image）：最轻量档位。
+# 三个 model ID 均已用真实 GEMINI_API_KEY 直接调用验证过合法（见 call_gemini_image_model()
+# 上方注释——一个零配额的真实账户对三者都得到同一种 429 配额耗尽错误，而不是模型不存在
+# 才会出现的 404/400，说明三者都通过了模型名校验）。
 GEMINI_IMAGE_MODELS = {
     'nano-banana-pro': 'gemini-3-pro-image',
+    'nano-banana-2': 'gemini-3.1-flash-image',
+    'nano-banana-lite': 'gemini-3.1-flash-lite-image',
 }
 
 # 单个注册用户在未自带 Key 时，可免费消耗开发者账户额度调用 Gemini 图片生成的次数上限。
-# 与 CLAUDE_FREE_TIER_LIMIT 同构，各自独立计数（互不共享额度）。
-GEMINI_FREE_TIER_LIMIT = 1
+# 与 CLAUDE_FREE_TIER_LIMIT 同构，各自独立计数（互不共享额度）。一次生成点击无论
+# geminiModelSelect 选中哪一档模型都只发起一次 /api/gemini-image 请求，因此只消耗 1 次
+# 额度——这条"一次点击=一次额度"的语义不随模型档位数量变化（见 CLAUDE.md 第 6 节）。
+GEMINI_FREE_TIER_LIMIT = 10
 
 
 # ==================================================
@@ -465,38 +478,6 @@ def get_image_timeouts(provider_name):
     return advisory, _compute_outer_timeout(advisory)
 
 
-# generated_media/ 里的文件没有用户/会话命名空间——同一台机器上所有用户、所有游客的
-# 生成结果都堆进同一个目录（见 CLAUDE.md 第 9 节风险）。这里选择"懒惰的按年龄清理"而
-# 不是"每次生成前清空整个目录"：后者会把其他并发请求（另一个标签页、另一个用户，
-# 只要恰好落在同一台 GAE 实例上）当前正在展示、还没来得及下载的图片文件一并删掉——
-# 图片结果不落库，浏览器里 <img>/下载按钮引用的本地文件是唯一副本，一旦被提前删除
-# 就无法恢复。按年龄清理只删"足够旧、不太可能还有人在看"的文件，不影响近期生成的批次。
-GENERATED_MEDIA_MAX_AGE_SECONDS = 3600
-
-
-# ==================================================
-# 辅助函数：清理 get_media_dir() 下过期的历史生成文件
-# 惰性触发（在 generate_images() 请求开始时调用一次），不依赖额外的 cron/定时任务。
-# 任何清理失败（目录不存在、单个文件删除权限错误等）都只记录日志，不向上抛出——
-# 清理失败不应该阻塞本次图片生成请求。
-# ==================================================
-def cleanup_old_generated_media(max_age_seconds=GENERATED_MEDIA_MAX_AGE_SECONDS):
-    media_dir = get_media_dir()
-    try:
-        entries = os.listdir(media_dir)
-    except OSError:
-        return
-
-    cutoff = time.time() - max_age_seconds
-    for name in entries:
-        path = os.path.join(media_dir, name)
-        try:
-            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
-                os.remove(path)
-        except OSError as e:
-            logger.warning(f"Failed to clean up stale media file {path}: {e}")
-
-
 # ==================================================
 # 测试单个文生图 Provider
 # 与 test_g4f_provider() 是两套完全独立的调用链路：
@@ -716,19 +697,31 @@ def call_claude_model(prompt, model_key, user_api_key=None):
 # 用它构造客户端，完全不消耗开发者账户额度，调用方（/api/gemini-image 路由）据此决定
 # 是否需要检查/递增免费额度计数器——本函数自身不知道、也不关心计数器。
 #
-# 错误分类：与 Claude 不同，这里的分类**没有**用真实账户端到端验证过（本地开发环境
-# 未配置 GEMINI_API_KEY，见 CLAUDE.md 第 11 节"引导配置"）。判断依据来自两个可查证的
-# 来源：(1) Gemini API 官方 troubleshooting 文档（https://ai.google.dev/gemini-api/docs/troubleshooting，
-# 2026-07-04 查证）里发布的 HTTP 状态码表——429/RESOURCE_EXHAUSTED 对应"超出速率限制/
-# 配额"，403/PERMISSION_DENIED 对应"API Key 权限不足"；(2) 直接读取本项目锁定版本
-# （google-genai==2.10.0）的 SDK 源码确认：client.interactions.create() 抛出的异常
-# 实例都带有 .status_code/.code/.status/.message 属性（无论是走公开的
-# google.genai.errors.APIError 分支还是 interactions 资源专属的内部错误类），因此用
-# getattr() 鸭子类型读取这些属性做分类，而不是 import 任何具体异常类——这些具体异常类
+# 错误分类：判断依据的 429/403 分支**已用真实账户实测验证过**（2026-07-05，一个真实
+# 但零配额的 GEMINI_API_KEY，直接跑通 call_gemini_image_model() → 三个 Nano Banana
+# 模型全部）。实测确认：(1) 三个 model ID（gemini-3.1-flash-image/gemini-3-pro-image/
+# gemini-3.1-flash-lite-image）都是官方承认的合法模型名——如果 ID 拼写有误，API 会返回
+# 404/400 之类的"模型不存在"错误，而不是配额错误，三次请求全部命中同一种 429 错误说明
+# 三个 ID 都先通过了模型校验，本项目 GEMINI_IMAGE_MODELS 里的 ID 映射因此得到交叉验证；
+# (2) 真实的"零配额"错误形状是 429 + 异常类型名 RateLimitError（google-genai 内部私有
+# 兼容错误层的类，见下）+ .status_code == 429（.status 属性不存在/为 None，与官方
+# troubleshooting 文档字面暗示的 "429/RESOURCE_EXHAUSTED 状态字符串" 组合不完全一致——
+# 实测只有 .status_code 是可靠信号，.status 检查是防御性兜底，可能对应另一条尚未实测
+# 到的错误路径）+ message 形如 "Error code: 429 - {'error': {'message': 'You do not
+# have enough quota to make this request.', 'code': 'too_many_requests'}}"。403
+# PERMISSION_DENIED（"API Key 权限不足"）来自 Gemini API 官方 troubleshooting 文档
+# （https://ai.google.dev/gemini-api/docs/troubleshooting，2026-07-04 查证）发布的
+# HTTP 状态码表，尚未用真实的、权限不足的 Key 实测验证（用户提供的这个 Key 本身是合法
+# Key，只是零配额，触发的是 429 而非 403）。直接读取本项目锁定版本（google-genai==2.10.0）
+# 的 SDK 源码确认：client.interactions.create() 抛出的异常实例带有 .status_code/.code/
+# .status/.message 属性（无论是走公开的 google.genai.errors.APIError 分支还是
+# interactions 资源专属的内部兼容错误类），因此用 getattr() 鸭子类型读取这些属性做
+# 分类，而不是 import 任何具体异常类——这些具体异常类（如实测命中的 RateLimitError）
 # 目前只存在于 google-genai 包内部一个带下划线前缀的私有子模块里，没有稳定的公开导入
-# 路径，直接 import 会是比 CLAUDE_MODELS 硬编码映射更脆弱的耦合。真正等开发者配置了
-# 真实的 GEMINI_API_KEY 后，应该比照 Claude 当初"用真实余额为 0 的账户实测验证"的方式
-# 补一轮真实验证，并把这里的注释更新为实测结论（若有出入）。
+# 路径，直接 import 会是比 CLAUDE_MODELS 硬编码映射更脆弱的耦合，鸭子类型不依赖这条
+# 私有路径也能拿到同样的判断依据。测试见 tests/test_gemini_integration.py 的
+# test_real_world_quota_exhausted_error_maps_to_server_quota_exhausted（默认参数
+# 即实测捕获的真实错误形状）。
 #
 # 另一处与 Claude 的行为差异（已实测确认，见本函数下方 google_genai.Client() 调用）：
 # anthropic.Anthropic() 零参构造不检查 Key，缺 Key 只在真正调用 messages.create() 时
@@ -805,6 +798,147 @@ def _get_authenticated_user_id():
 
 
 # ==================================================
+# "Stop Generating"按钮的额度退款账本（2026-07-05 新增）
+#
+# 本项目的 Flask 部署是同步的：客户端 abort 一个 fetch 只断开它自己这端的连接，
+# 不会中断服务器里正在阻塞执行的 anthropic.messages.create()/genai
+# interactions.create() 调用——免费额度计数器可能在客户端已经放弃等待之后才递增。
+# 因此"点击 Stop 立刻退还额度"不能靠前端本地猜测，而是靠这本账：claude_chat()/
+# gemini_image_chat() 每次真的成功递增免费额度时，把这次调用的 request_id（前端生成
+# 的一次性 UUID）连同 user_id/provider 记进账本；前端 abort 之后带着同一个
+# request_id 调用 /api/claude-chat/refund 或 /api/gemini-image/refund，账本命中
+# 才退 1 次，退完立刻从账本摘掉——不存在"认证用户反复调用退款接口就能无限刷回额度"
+# 这个滥用面，因为退款只能核销一次真实发生过的递增，不能主动创造。
+#
+# 只保存在单进程内存里，不落库、不跨实例共享——与本项目已接受的"GAE 多实例下本地
+# 磁盘各自独立"简化同一个精神：最坏情况是请求恰好分配到另一个实例、账本没命中，
+# 退款失败，用户损失这一次额度，是已知的边界情况，不是这次要解决的问题。
+# ==================================================
+_PENDING_FRONTIER_REFUNDS = {}
+_PENDING_FRONTIER_REFUND_TTL_SECONDS = 600
+
+
+def _record_pending_frontier_refund(request_id, user_id, provider):
+    if not request_id:
+        return
+    now = time.time()
+    stale_ids = [
+        rid for rid, entry in _PENDING_FRONTIER_REFUNDS.items()
+        if now - entry['recorded_at'] > _PENDING_FRONTIER_REFUND_TTL_SECONDS
+    ]
+    for rid in stale_ids:
+        _PENDING_FRONTIER_REFUNDS.pop(rid, None)
+    _PENDING_FRONTIER_REFUNDS[request_id] = {
+        'user_id': user_id,
+        'provider': provider,
+        'recorded_at': now,
+    }
+
+
+def _consume_pending_frontier_refund(request_id, user_id, provider):
+    if not request_id:
+        return False
+    entry = _PENDING_FRONTIER_REFUNDS.get(request_id)
+    if not entry or entry['user_id'] != user_id or entry['provider'] != provider:
+        return False
+    _PENDING_FRONTIER_REFUNDS.pop(request_id, None)
+    return True
+
+
+# ==================================================
+# 辅助函数：把 Claude/Gemini 的结果追加进一条已存在的历史记录（2026-07-05 新增）
+#
+# 背景（修复的 bug）：/api/compare、/api/generate-images 各自在拿到 g4f 结果后立即
+# 调用 save_chat_history()/save_image_history() 落库并返回 history_id；此时前端才
+# 刚开始额外发起 POST /api/claude-chat / POST /api/gemini-image。因此 Claude/Gemini
+# 的结果一定是在那条历史记录已经落库之后才计算出来的——旧实现只把它追加进浏览器
+# 内存里的 data.results 数组用于当次页面渲染，从未回写 Firestore，导致用户重新打开
+# /history/<id> 或 /image-history/<id> 时，刚才明明看到、还能下载的 Claude/Gemini
+# 结果卡片凭空消失。修复方式：claude_chat()/gemini_image_chat() 现在都接受一个可选
+# 的请求体字段 history_id（前端把 /api/compare 或 /api/generate-images 返回的
+# history_id 原样转发过来），调用成功/失败后都把这次的 result 追加进该历史记录。
+#
+# 关键设计取舍：
+# 1. 追加的是**后端自己刚计算出的** result 字典，不是客户端提交的任意 JSON——history_id
+#    只是"写到哪条记录"的定位符，结果内容本身完全由服务器决定，避免了信任客户端
+#    自行拼造的 result 数据这一攻击面。
+# 2. 这不是"把 Claude/Gemini 结果混入 save_chat_history()/save_image_history()"
+#    （历史上明确禁止的做法——那意味着让 Claude/Gemini 参与创建新的历史记录）：
+#    这两个 append_* 函数只能追加进一条**已经存在**的记录，创建新记录的入口依然
+#    只有 save_chat_history()/save_image_history()，且依然只由 g4f 调用链路触发。
+# 3. history_id 缺失（如游客——Claude/Gemini 对游客本就完全锁定，不会走到这里；
+#    或 g4f 侧持久化本身失败导致没有 history_id）时，两个函数直接跳过、不报错——
+#    与"持久化失败不影响主结果返回"这一既有原则一致，缺失 history_id 不应该让
+#    Claude/Gemini 本次请求本身失败。
+# 4. append_chat_history_result()/append_image_history_result() 内部已经做了归属
+#    校验；这里只需处理"未找到/不属于该用户/Firebase 不可用"（返回 False）与
+#    抛异常两种失败情况，两者都只记录日志，不向调用方传播。
+# ==================================================
+def _append_claude_result_to_history(user_id, history_id, result):
+    if not history_id:
+        return
+    try:
+        appended = append_chat_history_result(user_id, history_id, result)
+        if not appended:
+            logger.warning(
+                f"Could not append Claude result to chat history {history_id} for user {user_id} "
+                "(entry not found, not owned by this user, or Firebase unavailable)"
+            )
+    except Exception as e:
+        logger.error(
+            f"Failed to append Claude result to chat history {history_id}: {e}",
+            exc_info=True
+        )
+
+
+def _append_gemini_result_to_image_history(user_id, history_id, result):
+    if not history_id:
+        return
+    try:
+        appended = append_image_history_result(user_id, history_id, result)
+        if not appended:
+            logger.warning(
+                f"Could not append Gemini result to image history {history_id} for user {user_id} "
+                "(entry not found, not owned by this user, or Firebase unavailable)"
+            )
+    except Exception as e:
+        logger.error(
+            f"Failed to append Gemini result to image history {history_id}: {e}",
+            exc_info=True
+        )
+
+
+# ==================================================
+# 辅助函数：为 index() 的模板渲染准备 Trial Quota 徽章所需的上下文（2026-07-05 新增）
+#
+# 只在已登录时才查询 Firestore 实际计数——游客/匿名对 Claude/Gemini 完全锁定（见
+# CLAUDE.md 第 6 节），没有额度可展示，两个 quota 值就是 None，模板据此不渲染徽章
+# （与 Claude/Gemini Provider 卡片本身的登录态锁定判断保持一致的"游客/匿名=完全不可用"
+# 语义，不是"降级展示 0/10"）。CLAUDE_FREE_TIER_LIMIT/GEMINI_FREE_TIER_LIMIT 两个常量
+# 无论是否登录都注入，供前端"额度已用完"弹窗动态拼出正确的次数文案，避免把这个数字
+# 硬编码在 JS 里、未来改动限额时忘记同步。
+# ==================================================
+def _get_frontier_quota_context():
+    claude_quota = None
+    gemini_quota = None
+    if session.get('user_id'):
+        claude_quota = {
+            'used': get_claude_free_tier_usage(session['user_id']),
+            'limit': CLAUDE_FREE_TIER_LIMIT,
+        }
+        gemini_quota = {
+            'used': get_gemini_free_tier_usage(session['user_id']),
+            'limit': GEMINI_FREE_TIER_LIMIT,
+        }
+    return {
+        'claude_quota': claude_quota,
+        'gemini_quota': gemini_quota,
+        'claude_free_tier_limit': CLAUDE_FREE_TIER_LIMIT,
+        'gemini_free_tier_limit': GEMINI_FREE_TIER_LIMIT,
+    }
+
+
+# ==================================================
 # 首页（通过 Jinja2 传递严谨的联动数据映射）
 # ==================================================
 @app.route('/')
@@ -812,13 +946,16 @@ def index():
     if not session.get('user_id') and not session.get('is_guest'):
         return render_template('home.html')
 
+    quota_context = _get_frontier_quota_context()
+
     if not G4F_AVAILABLE:
         return render_template(
             'index.html',
             providers=[],
             provider_models_json={},
             image_providers=[],
-            image_provider_models_json={}
+            image_provider_models_json={},
+            **quota_context
         )
 
     provider_list = []
@@ -857,7 +994,8 @@ def index():
         providers=provider_list,
         provider_models_json=provider_models_json,
         image_providers=image_provider_list,
-        image_provider_models_json=image_provider_models_json
+        image_provider_models_json=image_provider_models_json,
+        **quota_context
     )
 
 
@@ -1234,11 +1372,15 @@ def test_single_provider():
 # 2. Header 里携带非空 X-User-Claude-Key 时，优先使用该 Key 实例化客户端，完全不
 #    检查/消耗免费额度计数器。
 # 3. 未携带自带 Key 时，检查该用户的 claude_free_tier_usage 是否已达到
-#    CLAUDE_FREE_TIER_LIMIT（当前为 1）；达到则直接拦截、不调用开发者 API，返回
+#    CLAUDE_FREE_TIER_LIMIT（当前为 10）；达到则直接拦截、不调用开发者 API，返回
 #    {"error": "FREE_TIER_EXHAUSTED"}；调用成功后才递增计数器（失败的调用不消耗额度）。
 # 4. call_claude_model() 内部把余额耗尽（实测 400 + invalid_request_error + message
 #    含 "credit balance"，billing_error 仅作兼容兜底）翻译成
 #    error_code == 'SERVER_CREDITS_EXHAUSTED'，这里据此转换为统一的 JSON 错误体。
+# 5. 可选的请求体字段 history_id（2026-07-05 新增，见 _append_claude_result_to_history()
+#    上方注释）：非空时，本次调用实际发生（即越过了 FREE_TIER_EXHAUSTED 拦截）后，
+#    无论成功/失败都把这次的 Claude Result 追加进该 history_id 对应的对话历史记录，
+#    修复此前"Claude 结果在页面上看得见，重新打开 /history/<id> 却不见了"的问题。
 # ==================================================
 @app.route('/api/claude-chat', methods=['POST'])
 def claude_chat():
@@ -1256,6 +1398,8 @@ def claude_chat():
         data = request.get_json() or {}
         prompt = data.get('prompt', '').strip()
         model_key = data.get('model')
+        history_id = data.get('history_id')
+        request_id = data.get('request_id')
 
         if not prompt or model_key not in CLAUDE_MODELS:
             return jsonify({
@@ -1274,19 +1418,43 @@ def claude_chat():
         result = call_claude_model(prompt, model_key, user_api_key if using_own_key else None)
 
         if result.get('error_code') == 'SERVER_CREDITS_EXHAUSTED':
+            # using_own_key 分支下"余额耗尽"指的是用户自己的 Key，跟开发者账户无关；
+            # 走开发者账户这条路径时，能到这里说明前面的免费额度检查已经放行
+            # （usage < CLAUDE_FREE_TIER_LIMIT），即用户的试用额度还有剩余——问题出在
+            # 供给侧（开发者账户没钱了），不是用户的额度用完了，所以文案指向联系
+            # 开发者，而不是重复"配置个人 Key"这条对试用额度耗尽场景才对症的建议。
+            if using_own_key:
+                friendly_message = 'Your personal Claude API key has run out of credits. Please check your Anthropic account balance.'
+            else:
+                friendly_message = (
+                    "Your free trial quota still has uses left, but the developer's Claude "
+                    "API account has run out of credits. Please contact the developer to restore access."
+                )
+            # 追加进历史的版本要和用户在页面上实际看到的卡片一致——result['error'] 此时
+            # 仍是内部的原始标记字符串 'SERVER_CREDITS_EXHAUSTED'（不是这条友好文案），
+            # error_code 字段本身也不属于 Claude Result 的 6-key 契约，两者都不应该
+            # 原样存进 Firestore。
+            history_result = {k: v for k, v in result.items() if k != 'error_code'}
+            history_result['error'] = friendly_message
+            _append_claude_result_to_history(user_id, history_id, history_result)
             return jsonify({
                 'error': 'SERVER_CREDITS_EXHAUSTED',
-                'message': 'Developer account balance is insufficient. Please configure your personal API key to continue.'
+                'message': friendly_message
             }), 503
 
         if result['success'] and not using_own_key:
             try:
                 increment_claude_free_tier_usage(user_id)
+                # 只在真正递增成功之后才记账，供"Stop Generating"退款接口核销
+                # （见 _record_pending_frontier_refund() 上方注释）。
+                _record_pending_frontier_refund(request_id, user_id, 'claude')
             except Exception as e:
                 logger.error(
                     f"Failed to increment claude_free_tier_usage for {user_id}: {e}",
                     exc_info=True
                 )
+
+        _append_claude_result_to_history(user_id, history_id, result)
 
         return jsonify(result)
 
@@ -1295,6 +1463,44 @@ def claude_chat():
         return jsonify({
             'error': 'Service temporarily unavailable. Please try again later.'
         }), 500
+
+
+# ==================================================
+# POST /api/claude-chat/refund（2026-07-05 新增，"Stop Generating"按钮配套接口）
+#
+# 前端在用户点击 Stop Generating 时，如果本次 Claude 调用已经发起（走到了
+# fetchClaudeResult()），会在 abort 之后带着同一个 request_id 调用这个接口。只有
+# claude_chat() 真的成功递增过免费额度、且账本里 request_id 还没被核销过时才会真的
+# 退 1 次——账本没有命中（比如额度检查阶段就被 abort、自带 Key 调用、或者已经退过一次）
+# 时是无副作用的空操作，不会返回错误，前端不需要特殊处理。见
+# _consume_pending_frontier_refund() 上方注释：这个设计不给"反复调用本接口刷回额度"
+# 留任何空间。
+# ==================================================
+@app.route('/api/claude-chat/refund', methods=['POST'])
+def claude_chat_refund():
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        request_id = data.get('request_id')
+
+        refunded = False
+        if _consume_pending_frontier_refund(request_id, user_id, 'claude'):
+            try:
+                refunded = bool(decrement_claude_free_tier_usage(user_id))
+            except Exception as e:
+                logger.error(
+                    f"Failed to decrement claude_free_tier_usage for {user_id}: {e}",
+                    exc_info=True
+                )
+
+        return jsonify({'refunded': refunded})
+
+    except Exception as e:
+        logger.error(f"Error in claude_chat_refund: {str(e)}", exc_info=True)
+        return jsonify({'refunded': False}), 500
 
 
 # ==================================================
@@ -1309,6 +1515,14 @@ def claude_chat():
 # 混入 8-key 图片 DTO 需要引入判别字段；游客与匿名用户的图片生成结果依然不落库，
 # 且刻意不提供 sessionStorage 级别的临时记录（与文本对话历史对游客的处理不同）——
 # 图片版 Recents 侧边栏专门限定只对已登录用户开放。
+#
+# 本路由**不再**做任何 get_media_dir() 本地文件清理（2026-07-05 移除，此前是
+# cleanup_old_generated_media()/GENERATED_MEDIA_MAX_AGE_SECONDS 这套按年龄惰性清理
+# 机制，见 CLAUDE.md 第 9 节该事故的完整记录）——图片版 Recents 历史需要"永久可查看"，
+# 而历史详情页 <img> 标签引用的正是这些本地文件，按年龄自动删除会让超过 1 小时的
+# 历史记录里的图片变成 404。刻意不做任何清理，接受"本地磁盘随请求量持续增长"这一
+# 已知代价（见 CLAUDE.md 第 9 节风险，需要真正的长期解决方案时应迁移到 Cloud Storage
+# 等持久化存储，而不是重新引入按年龄删除）。
 # ==================================================
 @app.route('/api/generate-images', methods=['POST'])
 def generate_images():
@@ -1324,10 +1538,6 @@ def generate_images():
             return jsonify({
                 'error': 'g4f is not available'
             }), 503
-
-        # 惰性清理：每次生成前顺手扫一遍 get_media_dir()，删掉过期的历史文件，
-        # 防止本地磁盘随请求量无限增长（见 GENERATED_MEDIA_MAX_AGE_SECONDS 注释）。
-        cleanup_old_generated_media()
 
         prompt = data['prompt']
 
@@ -1455,16 +1665,20 @@ def generate_images():
 # 2. Header 里携带非空 X-User-Gemini-Key 时，优先使用该 Key 实例化客户端，完全不
 #    检查/消耗免费额度计数器。
 # 3. 未携带自带 Key 时，检查该用户的 gemini_free_tier_usage 是否已达到
-#    GEMINI_FREE_TIER_LIMIT（当前为 1）；达到则直接拦截、不调用开发者 API，返回
+#    GEMINI_FREE_TIER_LIMIT（当前为 10）；达到则直接拦截、不调用开发者 API，返回
 #    {"error": "FREE_TIER_EXHAUSTED"}；调用成功后才递增计数器（失败的调用不消耗额度）。
 # 4. call_gemini_image_model() 内部把配额耗尽（429/RESOURCE_EXHAUSTED）翻译成
 #    error_code == 'SERVER_QUOTA_EXHAUSTED'，这里据此转换为统一的 JSON 错误体。
+# 5. 可选的请求体字段 history_id（2026-07-05 新增，与 claude_chat() 的 history_id
+#    同构，见 _append_gemini_result_to_image_history() 上方注释）：非空时，本次调用
+#    实际发生（即越过了 FREE_TIER_EXHAUSTED 拦截）后，无论成功/失败都把这次的
+#    Gemini Image Result 追加进该 history_id 对应的图片生成历史记录，修复此前
+#    "Gemini 结果在页面上看得见、能下载，重新打开 /image-history/<id> 却不见了"
+#    的问题。
 #
-# 与 generate_images() 的关键不同：这里生成的图片结果**不会**被持久化到 image_history
-# 集合——与 Claude 的 type='anthropic' 结果不落入 save_chat_history() 同一个道理（见
-# CLAUDE.md 危险区），前端把这次调用的结果合并进 /api/generate-images 已经返回的
-# results 数组时，图片历史的持久化早已在那次请求里完成，Gemini 结果是之后才追加的，
-# 天然不会被写入 Firestore。
+# 与 generate_images() 的关键不同：这里**不会**调用 save_image_history() 创建新的
+# image_history 文档——Gemini 依旧不能像 g4f 图片 Provider 那样自己发起一条新的历史
+# 记录，只能通过上面第 5 点追加进一条已经由 /api/generate-images 创建好的记录。
 # ==================================================
 @app.route('/api/gemini-image', methods=['POST'])
 def gemini_image_chat():
@@ -1482,6 +1696,8 @@ def gemini_image_chat():
         data = request.get_json() or {}
         prompt = data.get('prompt', '').strip()
         model_key = data.get('model')
+        history_id = data.get('history_id')
+        request_id = data.get('request_id')
 
         if not prompt or model_key not in GEMINI_IMAGE_MODELS:
             return jsonify({
@@ -1500,19 +1716,40 @@ def gemini_image_chat():
         result = call_gemini_image_model(prompt, model_key, user_api_key if using_own_key else None)
 
         if result.get('error_code') == 'SERVER_QUOTA_EXHAUSTED':
+            # 与 claude_chat() 的 SERVER_CREDITS_EXHAUSTED 分支同理：using_own_key 时
+            # 耗尽的是用户自己的 Key，跟开发者账户无关；走开发者账户这条路径时，能到
+            # 这里说明免费额度检查已经放行（试用额度还有剩余），问题出在供给侧，文案
+            # 指向联系开发者。
+            if using_own_key:
+                friendly_message = 'Your personal Gemini API key has run out of quota. Please check your Google AI account.'
+            else:
+                friendly_message = (
+                    "Your free trial quota still has uses left, but the developer's Gemini "
+                    "API account has run out of quota. Please contact the developer to restore access."
+                )
+            # 追加进历史的版本要和用户实际看到的卡片一致，剥掉 error_code（不属于
+            # Gemini Image Result 契约）并把 error 换成友好文案，而不是内部标记字符串。
+            history_result = {k: v for k, v in result.items() if k != 'error_code'}
+            history_result['error'] = friendly_message
+            _append_gemini_result_to_image_history(user_id, history_id, history_result)
             return jsonify({
                 'error': 'SERVER_QUOTA_EXHAUSTED',
-                'message': 'Developer account quota is exhausted. Please configure your personal API key to continue.'
+                'message': friendly_message
             }), 503
 
         if result['success'] and not using_own_key:
             try:
                 increment_gemini_free_tier_usage(user_id)
+                # 只在真正递增成功之后才记账，供"Stop Generating"退款接口核销
+                # （见 _record_pending_frontier_refund() 上方注释）。
+                _record_pending_frontier_refund(request_id, user_id, 'gemini')
             except Exception as e:
                 logger.error(
                     f"Failed to increment gemini_free_tier_usage for {user_id}: {e}",
                     exc_info=True
                 )
+
+        _append_gemini_result_to_image_history(user_id, history_id, result)
 
         return jsonify(result)
 
@@ -1521,6 +1758,37 @@ def gemini_image_chat():
         return jsonify({
             'error': 'Service temporarily unavailable. Please try again later.'
         }), 500
+
+
+# ==================================================
+# POST /api/gemini-image/refund（2026-07-05 新增），与 /api/claude-chat/refund 同构，
+# 见其上方注释。
+# ==================================================
+@app.route('/api/gemini-image/refund', methods=['POST'])
+def gemini_image_refund():
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        request_id = data.get('request_id')
+
+        refunded = False
+        if _consume_pending_frontier_refund(request_id, user_id, 'gemini'):
+            try:
+                refunded = bool(decrement_gemini_free_tier_usage(user_id))
+            except Exception as e:
+                logger.error(
+                    f"Failed to decrement gemini_free_tier_usage for {user_id}: {e}",
+                    exc_info=True
+                )
+
+        return jsonify({'refunded': refunded})
+
+    except Exception as e:
+        logger.error(f"Error in gemini_image_refund: {str(e)}", exc_info=True)
+        return jsonify({'refunded': False}), 500
 
 
 # ==================================================
@@ -1756,6 +2024,43 @@ def toggle_image_history_pin_route(history_id):
 
     except Exception as e:
         logger.error(f"Error in toggle_image_history_pin_route: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
+# 前沿模型（Claude/Gemini）试用额度查询
+# GET /api/quota-status
+#
+# 供前端导航栏 "Trial Quota" 徽章使用（2026-07-05 新增）：页面加载后已经通过
+# index() 注入了初始值（见该路由），这个接口用于每次调用 /api/claude-chat 或
+# /api/gemini-image 之后刷新徽章数字，避免前端自行猜测"这次调用是否消耗了额度"
+# （自带 Key/失败调用都不消耗额度，直接问后端真实计数比在前端复刻这套判断逻辑更可靠）。
+# 复用 _get_authenticated_user_id() 守卫——游客/匿名一律 401，因为 Claude/Gemini
+# 本来就不对游客开放，没有额度可查（与 Claude/Gemini/对话/图片历史路由同一套守卫）。
+# 两个计数器完全独立返回，互不共享额度，与 CLAUDE.md 第 6/7 节记录的语义一致。
+# ==================================================
+@app.route('/api/quota-status', methods=['GET'])
+def quota_status():
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        return jsonify({
+            'claude': {
+                'used': get_claude_free_tier_usage(user_id),
+                'limit': CLAUDE_FREE_TIER_LIMIT,
+            },
+            'gemini': {
+                'used': get_gemini_free_tier_usage(user_id),
+                'limit': GEMINI_FREE_TIER_LIMIT,
+            },
+        })
+
+    except Exception as e:
+        logger.error(f"Error in quota_status: {str(e)}", exc_info=True)
         return jsonify({
             'error': 'Service temporarily unavailable. Please try again later.'
         }), 500

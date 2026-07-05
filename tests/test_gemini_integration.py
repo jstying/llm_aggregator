@@ -11,16 +11,21 @@ black-box/integration) since the two features are architecturally identical --
 "a paid frontier provider gated by a 1-use free tier, with a user-supplied-key
 bypass" -- just applied to image generation instead of chat.
 
-One documented difference from the Claude suite: `test_claude_integration.py`'s error-
-classification tests were validated against a *real* Anthropic account (see its
-`test_real_world_credit_balance_error_maps_to_server_credits_exhausted`). No Gemini API
-key/credits were available in this environment (see CLAUDE.md section 9), so the
-quota/permission-denied classification below is verified only against the officially
-published Gemini API HTTP status table (429/RESOURCE_EXHAUSTED, 403/PERMISSION_DENIED --
-https://ai.google.dev/gemini-api/docs/troubleshooting) and against the actual attributes
-exposed by the installed `google-genai` SDK's exception hierarchy (confirmed via direct
-source inspection), not against a live depleted-quota/invalid-key account. This should
-be upgraded to a real end-to-end check once a `GEMINI_API_KEY` with real quota exists.
+Mirrors `test_claude_integration.py`'s own real-world verification pattern: on
+2026-07-05 a real (but zero-quota/free-tier) `GEMINI_API_KEY` was used to call
+`call_gemini_image_model()` against all three Nano Banana model IDs
+(gemini-3.1-flash-image / gemini-3-pro-image / gemini-3.1-flash-lite-image). All three
+returned the identical real error shape: 429 + exception type name `RateLimitError` +
+`.status_code == 429` (`.status` unset) + message
+`"Error code: 429 - {'error': {'message': 'You do not have enough quota to make this
+request.', 'code': 'too_many_requests'}}"`. This both confirms the three model IDs are
+valid (an unknown model name would 404/400 instead of 429) and gives a real captured
+shape for `test_real_world_quota_exhausted_error_maps_to_server_quota_exhausted` below
+(mirroring Claude's `_make_credits_exhausted_error` default parameters). The
+403/PERMISSION_DENIED ("invalid/missing key") branch is still verified only against the
+officially published Gemini API HTTP status table
+(https://ai.google.dev/gemini-api/docs/troubleshooting) -- the available key is a valid
+key with zero quota, not an invalid one, so that branch has not been hit for real.
 """
 import sys
 import os
@@ -69,6 +74,20 @@ def _fake_gemini_client(interaction=None, side_effect=None):
     else:
         client.interactions.create.return_value = interaction or _fake_gemini_interaction()
     return client
+
+
+def _make_real_quota_exhausted_error():
+    """Reconstructs the *actual* error observed on 2026-07-05 calling all three Nano
+    Banana models with a real, valid-but-zero-quota GEMINI_API_KEY (see this module's
+    docstring). `type(e).__name__` was really `RateLimitError` in that run; since the
+    real class lives in a private google-genai submodule with no stable import path
+    (see the long comment above `call_gemini_image_model()` in main.py), this
+    reconstructs an equivalent-shaped plain exception instead of importing it."""
+    return _FakeGeminiError(
+        status_code=429,
+        message="Error code: 429 - {'error': {'message': 'You do not have enough quota "
+                 "to make this request.', 'code': 'too_many_requests'}}",
+    )
 
 
 # ==========================================================================
@@ -123,6 +142,29 @@ class TestCallGeminiImageModelKeyRouting(unittest.TestCase):
             self.assertEqual(kwargs['model'], 'gemini-3-pro-image')
             self.assertEqual(kwargs['input'], 'a cat')
 
+    def test_nano_banana_2_and_lite_map_to_their_own_model_ids(self):
+        """2026-07-05: Nano Banana 2/Lite were added alongside the already-wired Pro
+        tier (see GEMINI_IMAGE_MODELS in main.py -- all three IDs were already verified
+        legitimate via a real zero-quota API key before this test was written, but only
+        Pro was actually reachable through call_gemini_image_model()/the UI dropdown).
+        Confirms both new UI keys route to their own distinct official model IDs rather
+        than accidentally falling through to Pro's."""
+        for model_key, expected_model_id in (
+            ('nano-banana-2', 'gemini-3.1-flash-image'),
+            ('nano-banana-lite', 'gemini-3.1-flash-lite-image'),
+        ):
+            with self.subTest(model_key=model_key):
+                with patch.object(main, 'google_genai') as mock_genai:
+                    mock_client = _fake_gemini_client(_fake_gemini_interaction('YWJj'))
+                    mock_genai.Client.return_value = mock_client
+
+                    result = main.call_gemini_image_model('a cat', model_key)
+
+                    _, kwargs = mock_client.interactions.create.call_args
+                    self.assertEqual(kwargs['model'], expected_model_id)
+                    self.assertTrue(result['success'])
+                    self.assertEqual(result['model'], model_key)
+
     def test_unknown_model_key_returns_error_without_calling_api(self):
         with patch.object(main, 'google_genai') as mock_genai:
             result = main.call_gemini_image_model('a cat', 'not-a-real-model')
@@ -148,6 +190,25 @@ class TestCallGeminiImageModelKeyRouting(unittest.TestCase):
             mock_client = _fake_gemini_client(side_effect=_FakeGeminiError(
                 status_code=429, message='Quota exceeded'
             ))
+            mock_genai.Client.return_value = mock_client
+
+            result = main.call_gemini_image_model('a cat', 'nano-banana-pro')
+
+        self.assertFalse(result['success'])
+        self.assertEqual(result['error'], 'SERVER_QUOTA_EXHAUSTED')
+        self.assertEqual(result['error_code'], 'SERVER_QUOTA_EXHAUSTED')
+
+    def test_real_world_quota_exhausted_error_maps_to_server_quota_exhausted(self):
+        """实测形状（2026-07-05，用一个真实但零配额的 GEMINI_API_KEY 直接调用三个
+        Nano Banana 模型观察到，三个模型返回完全相同的错误）：429 + 异常类型名
+        RateLimitError + .status_code == 429（.status 属性不存在）+ message 形如
+        "Error code: 429 - {'error': {'message': 'You do not have enough quota to
+        make this request.', 'code': 'too_many_requests'}}"。这与官方 troubleshooting
+        文档字面暗示的 "RESOURCE_EXHAUSTED 状态字符串" 不完全一致——真正稳定的信号是
+        .status_code == 429，不是 .status 字符串（call_gemini_image_model() 对
+        .status 的检查是防御性兜底，见其上方注释）。"""
+        with patch.object(main, 'google_genai') as mock_genai:
+            mock_client = _fake_gemini_client(side_effect=_make_real_quota_exhausted_error())
             mock_genai.Client.return_value = mock_client
 
             result = main.call_gemini_image_model('a cat', 'nano-banana-pro')
@@ -329,6 +390,31 @@ class TestGeminiImageRouteKeyRoutingAndCounter(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         mock_incr.assert_called_once_with('uid1')
 
+    def test_single_request_increments_counter_exactly_once_regardless_of_model_tier(self):
+        """One generate click == one quota use, no matter which Nano Banana tier the
+        request selected (2026-07-05 product requirement, alongside raising
+        GEMINI_FREE_TIER_LIMIT to 10). There is only ever one /api/gemini-image call per
+        click regardless of how many tiers GEMINI_IMAGE_MODELS lists -- the model picker
+        is a single-select <select>, not a checkbox per model -- so this is really a
+        regression guard against ever accidentally calling increment more than once."""
+        for model_key in ('nano-banana-pro', 'nano-banana-2', 'nano-banana-lite'):
+            with self.subTest(model_key=model_key):
+                with main.app.test_client() as client:
+                    self._login(client)
+                    with patch.object(main, 'get_gemini_free_tier_usage', return_value=0), \
+                         patch.object(main, 'increment_gemini_free_tier_usage') as mock_incr, \
+                         patch.object(main, 'call_gemini_image_model', return_value={
+                             'provider': 'Gemini', 'success': True, 'url': None, 'b64_json': 'abc',
+                             'error': '', 'response_time': 1.0, 'model': model_key,
+                             'type': 'google_genai',
+                         }):
+                        resp = client.post('/api/gemini-image', json={
+                            'prompt': 'a cat', 'model': model_key
+                        })
+
+                self.assertEqual(resp.status_code, 200)
+                mock_incr.assert_called_once_with('uid1')
+
     def test_failed_call_does_not_increment_counter(self):
         with main.app.test_client() as client:
             self._login(client)
@@ -383,10 +469,13 @@ class TestGeminiImageRouteKeyRoutingAndCounter(unittest.TestCase):
 
         mock_call.assert_called_once_with('a cat', 'nano-banana-pro', None)
 
-    def test_successful_call_does_not_persist_to_image_history(self):
-        """Danger-zone regression guard (CLAUDE.md): Gemini results, like Claude's,
-        must never be written into image_history -- /api/gemini-image is a standalone
-        route that never touches save_image_history at all."""
+    def test_successful_call_does_not_create_a_new_image_history_entry(self):
+        """Danger-zone regression guard (CLAUDE.md): /api/gemini-image must never call
+        save_image_history() -- it cannot create a brand-new image_history document on
+        its own, unlike /api/generate-images. Since 2026-07-05 it *can* append its
+        result into an *already-existing* entry when a history_id is supplied (see
+        tests/test_frontier_history_persistence.py for that behavior) -- this test only
+        pins down that save_image_history specifically is never touched."""
         with main.app.test_client() as client:
             self._login(client)
             with patch.object(main, 'get_gemini_free_tier_usage', return_value=0), \
@@ -459,10 +548,15 @@ class TestGeminiImageFreeTierFlow(unittest.TestCase):
         self.assertTrue(data['success'])
         self.assertEqual(data['b64_json'], 'abc123')
 
-    def test_second_request_without_own_key_returns_free_tier_exhausted(self):
+    def test_request_at_limit_without_own_key_returns_free_tier_exhausted(self):
+        """usage already == GEMINI_FREE_TIER_LIMIT (10, 2026-07-05 raised from 1) --
+        the (limit+1)th request without an own key must be rejected before ever calling
+        call_gemini_image_model(). Reads the limit off main.GEMINI_FREE_TIER_LIMIT rather
+        than hardcoding a number so this test doesn't silently stop testing "at the limit"
+        if the constant changes again."""
         with main.app.test_client() as client:
             self._login(client)
-            with patch.object(main, 'get_gemini_free_tier_usage', return_value=1), \
+            with patch.object(main, 'get_gemini_free_tier_usage', return_value=main.GEMINI_FREE_TIER_LIMIT), \
                  patch.object(main, 'call_gemini_image_model') as mock_call:
                 resp = client.post('/api/gemini-image', json={
                     'prompt': 'another cat', 'model': 'nano-banana-pro'
@@ -544,7 +638,7 @@ class TestGeminiImageValidation(unittest.TestCase):
         with main.app.test_client() as client:
             self._login(client)
             resp = client.post('/api/gemini-image', json={
-                'prompt': 'a cat', 'model': 'nano-banana-2'
+                'prompt': 'a cat', 'model': 'nano-banana-does-not-exist'
             })
         self.assertEqual(resp.status_code, 400)
 

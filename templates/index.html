@@ -79,10 +79,13 @@
            对不上，logo 的水平位置和 260px 深色侧边栏毫无关系，纯粹取决于视口宽度。
            改为让 .nav-container 边到边铺满 .navbar（与 .app-layout 同宽），只在右侧保留
            呼吸间距；左侧留白交给 .nav-left 自己的定宽居中处理（见下）。 */
+        /* justify-content:space-between 曾经把 .nav-left/.nav-links 两个 flex item 分别
+           顶到两端；2026-07-05 引入 .trial-quota-badges 作为第三个 item 后改用
+           .nav-links{margin-left:auto} 顶右（见下），这里改回默认的 flex-start，让
+           .trial-quota-badges 紧跟在 .nav-left 右侧而不是被 space-between 拉到正中间。 */
         .nav-container {
             padding: 0 2rem 0 0;
             display: flex;
-            justify-content: space-between;
             align-items: center;
         }
 
@@ -135,6 +138,33 @@
             gap: 0.4rem;
             list-style: none;
             align-items: center;
+            /* 见上方 .nav-container 的注释：space-between 移除后由这里自己顶到最右侧。 */
+            margin-left: auto;
+        }
+
+        /* Trial Quota 徽章（2026-07-05 新增）：紧跟在 .nav-left（260px 定宽 logo 列）
+           右侧、偏向导航栏左半部分，而不是被居中或推到最右——呼应"LLM Aggregator 右侧
+           一点，偏左"的产品要求。只在已登录时由 Jinja 渲染（游客/匿名对 Claude/Gemini
+           完全锁定，没有额度可展示，见 index() 里的 _get_frontier_quota_context()）。
+           #textQuotaBadge/#imageQuotaBadge 二选一显示，由 switchToImageMode()/
+           switchToCompareMode() 联动切换（与 .header-full/.header-short 那对元素同一种
+           "共享位置、互斥显示"模式）。 */
+        .trial-quota-badges {
+            display: flex;
+            align-items: center;
+            margin-left: 1.25rem;
+        }
+
+        .trial-quota-badge {
+            background: rgba(6, 193, 103, 0.08);
+            border: 1px solid rgba(6, 193, 103, 0.3);
+            color: #06c167;
+            padding: 0.3rem 0.85rem;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            white-space: nowrap;
         }
 
         .nav-links a {
@@ -1684,6 +1714,12 @@
                 font-size: 0.82rem;
             }
 
+            /* 移动端窄屏navbar 必须保持单行（见本断点顶部注释），Trial Quota 徽章
+               与 .nav-welcome 一样属于"可以牺牲"的次要信息，直接隐藏而不是挤压/换行。 */
+            .trial-quota-badges {
+                display: none;
+            }
+
             .guest-badge {
                 padding: 0.2rem 0.45rem;
                 font-size: 0.72rem;
@@ -1735,6 +1771,22 @@
                     <span class="logo-full">LLM Aggregator</span><span class="logo-short">LLM Aggregator</span>
                 </a>
             </div>
+            {% if session.user_id and claude_quota and gemini_quota %}
+            <!-- Trial Quota badge (2026-07-05 新增): only rendered for logged-in users --
+                 Claude/Gemini are completely locked for guests/anonymous (see
+                 _get_frontier_quota_context() in main.py), so there is no quota to show
+                 them. #textQuotaBadge/#imageQuotaBadge are mutually exclusive, toggled by
+                 switchToImageMode()/switchToCompareMode() alongside .header-full/
+                 .header-short. Initial numbers come from the server-rendered value here;
+                 refreshTrialQuotaBadge() (inline script below) re-fetches
+                 GET /api/quota-status after every Claude/Gemini call to stay accurate
+                 without the frontend having to guess whether that call consumed a use
+                 (own-key calls and failed calls don't). -->
+            <div class="trial-quota-badges" id="trialQuotaBadges">
+                <span class="trial-quota-badge" id="textQuotaBadge">Trial Quota: <span id="textQuotaValue">{{ claude_quota.limit - claude_quota.used }}</span>/<span id="textQuotaLimit">{{ claude_quota.limit }}</span></span>
+                <span class="trial-quota-badge" id="imageQuotaBadge" style="display: none;">Trial Quota: <span id="imageQuotaValue">{{ gemini_quota.limit - gemini_quota.used }}</span>/<span id="imageQuotaLimit">{{ gemini_quota.limit }}</span></span>
+            </div>
+            {% endif %}
             <ul class="nav-links">
                 {% if session.user_id %}
                     <li><span class="nav-welcome">Welcome, {{ session.username }}</span></li>
@@ -1902,6 +1954,9 @@
                     <button type="button" class="btn btn-secondary" id="clearBtn">
                         Clear Results
                     </button>
+                    <button type="button" class="btn btn-secondary" id="stopBtn" style="display: none;">
+                        Stop Generating
+                    </button>
                 </div>
             </form>
         </div>
@@ -1944,10 +1999,11 @@
                 <div class="form-group">
                     <!-- Frontier image providers (2026-07-04 新增): paid/official-API image
                          providers, mirroring #frontierProviderSelection in the compare form
-                         above but scoped to the image-generation form. Gemini (Nano Banana Pro)
-                         is the only one wired up today; this container is where future
-                         ChatGPT/ other frontier image provider cards should be appended once
-                         those integrations exist, not into #imageProviderSelection. -->
+                         above but scoped to the image-generation form. Gemini (all three Nano
+                         Banana tiers -- Pro/2/Lite, 2026-07-05) is the only frontier provider
+                         wired up today; this container is where future ChatGPT/other frontier
+                         image provider cards should be appended once those integrations exist,
+                         not into #imageProviderSelection. -->
                     <label>Select frontier image providers:</label>
                     <div class="provider-selection" id="frontierImageProviderSelection">
                         <!-- Gemini（Google 官方 google-genai API，2026-07-04 新增）：不使用
@@ -1973,6 +2029,8 @@
                     <label for="geminiModelSelect">Gemini Model:</label>
                     <select id="geminiModelSelect" disabled>
                         <option value="nano-banana-pro">Nano Banana Pro</option>
+                        <option value="nano-banana-2">Nano Banana 2</option>
+                        <option value="nano-banana-lite">Nano Banana Lite</option>
                     </select>
                 </div>
 
@@ -2014,6 +2072,9 @@
                     </button>
                     <button type="button" class="btn btn-secondary" id="clearImagesBtn">
                         Clear Results
+                    </button>
+                    <button type="button" class="btn btn-secondary" id="stopImageBtn" style="display: none;">
+                        Stop Generating
                     </button>
                 </div>
             </form>
@@ -2066,6 +2127,59 @@
         const providerModelsMap = {{ provider_models_json | default({}) | tojson | safe }};
         const imageProviderModelsMap = {{ image_provider_models_json | default({}) | tojson | safe }};
         const isLoggedIn = {{ 'true' if session.user_id else 'false' }};
+
+        // Trial Quota badge state (2026-07-05 新增). claudeQuota/geminiQuota start out as
+        // whatever index() computed at render time ({used, limit} or null for
+        // guests/anonymous); refreshTrialQuotaBadge() below re-fetches these from
+        // GET /api/quota-status after every Claude/Gemini call so the badge stays accurate
+        // without the frontend having to guess whether that particular call consumed a
+        // free-tier use (own-key calls and failed calls don't). The two *_FREE_TIER_LIMIT
+        // constants are injected unconditionally (even for guests) purely so the upgrade
+        // modals below can phrase their "N free uses" copy from the real server-side
+        // constant instead of a number hardcoded twice in this file.
+        let claudeQuota = {{ claude_quota | tojson }};
+        let geminiQuota = {{ gemini_quota | tojson }};
+        const CLAUDE_FREE_TIER_LIMIT = {{ claude_free_tier_limit | tojson }};
+        const GEMINI_FREE_TIER_LIMIT = {{ gemini_free_tier_limit | tojson }};
+
+        function pluralUses(n) {
+            return n === 1 ? 'use' : 'uses';
+        }
+
+        function updateTrialQuotaBadgeDisplay() {
+            if (!isLoggedIn) return;
+            if (claudeQuota) {
+                const textQuotaValue = document.getElementById('textQuotaValue');
+                const textQuotaLimit = document.getElementById('textQuotaLimit');
+                if (textQuotaValue) textQuotaValue.textContent = Math.max(0, claudeQuota.limit - claudeQuota.used);
+                if (textQuotaLimit) textQuotaLimit.textContent = claudeQuota.limit;
+            }
+            if (geminiQuota) {
+                const imageQuotaValue = document.getElementById('imageQuotaValue');
+                const imageQuotaLimit = document.getElementById('imageQuotaLimit');
+                if (imageQuotaValue) imageQuotaValue.textContent = Math.max(0, geminiQuota.limit - geminiQuota.used);
+                if (imageQuotaLimit) imageQuotaLimit.textContent = geminiQuota.limit;
+            }
+        }
+
+        // Re-fetches the authoritative used/limit counts from the backend and re-renders
+        // the badge. Called after every Claude/Gemini frontier call (success, failure, or
+        // own-key) rather than trying to locally increment/decrement -- the backend is the
+        // only place that actually knows whether a given call consumed a free-tier use.
+        async function refreshTrialQuotaBadge() {
+            if (!isLoggedIn) return;
+            try {
+                const response = await fetch('/api/quota-status');
+                if (!response.ok) return;
+                const data = await response.json();
+                claudeQuota = data.claude;
+                geminiQuota = data.gemini;
+                updateTrialQuotaBadgeDisplay();
+            } catch (error) {
+                // Non-fatal -- the badge just won't refresh this time; the next successful
+                // call (or a page reload, which re-renders it server-side) will retry.
+            }
+        }
 
         // Guest identity: history is never persisted server-side. It used to live purely in
         // an in-memory array, which was fine while everything happened on this one page — but
@@ -2158,6 +2272,12 @@
             modeToggleBtnIcon.textContent = '✍️';
             modeToggleBtnLabel.textContent = 'Generate Text';
             loadSidebarImageHistoryList();
+            // Trial Quota badge is mutually exclusive per mode, same pattern as
+            // .header-full/.header-short above -- see #trialQuotaBadges' HTML comment.
+            const textQuotaBadge = document.getElementById('textQuotaBadge');
+            const imageQuotaBadge = document.getElementById('imageQuotaBadge');
+            if (textQuotaBadge) textQuotaBadge.style.display = 'none';
+            if (imageQuotaBadge) imageQuotaBadge.style.display = 'inline';
         }
 
         function switchToCompareMode() {
@@ -2167,6 +2287,10 @@
             modeToggleBtnIcon.textContent = '🎨';
             modeToggleBtnLabel.textContent = 'Generate Image';
             loadSidebarHistory();
+            const textQuotaBadge = document.getElementById('textQuotaBadge');
+            const imageQuotaBadge = document.getElementById('imageQuotaBadge');
+            if (textQuotaBadge) textQuotaBadge.style.display = 'inline';
+            if (imageQuotaBadge) imageQuotaBadge.style.display = 'none';
         }
 
         document.getElementById('generateImageBtn').addEventListener('click', () => {
@@ -2614,7 +2738,7 @@
                 overlay.innerHTML = `
                     <div class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="claudeUpgradeModalTitle">
                         <div class="confirm-modal-title" id="claudeUpgradeModalTitle">Frontier Model Trial Quota Used Up</div>
-                        <div class="confirm-modal-body">Your free frontier model trial quota (1 use) has been used up. Please configure your personal API key to keep using premium models.</div>
+                        <div class="confirm-modal-body">Your free frontier model trial quota (${CLAUDE_FREE_TIER_LIMIT} ${pluralUses(CLAUDE_FREE_TIER_LIMIT)}) has been used up. Please configure your personal API key to keep using premium models.</div>
                         <div class="confirm-modal-actions">
                             <button type="button" class="confirm-modal-btn confirm-modal-btn-cancel" id="claudeUpgradeModalCancelBtn">Maybe Later</button>
                             <button type="button" class="confirm-modal-btn confirm-modal-btn-delete" id="claudeUpgradeModalGoBtn">Configure API Key</button>
@@ -2639,7 +2763,24 @@
         // peer_reviews 时补一个空数组，保证 renderPeerReviews() 不需要额外判空）。
         // 返回 null 表示"这次不应该渲染任何卡片"（目前仅 FREE_TIER_EXHAUSTED 命中，
         // 因为超限弹窗已经完整传达了信息，不需要再额外堆一张失败卡片）。
-        async function fetchClaudeResult(prompt, model) {
+        //
+        // historyId（2026-07-05 新增）：/api/compare 已经返回的 history_id，原样转发
+        // 给后端。后端据此把这次 Claude 调用的结果追加进那条已经落库的对话历史记录里
+        // （见 main.py 的 _append_claude_result_to_history()）——这是本函数存在
+        // history_id 参数的唯一原因：修复"Claude 结果这次能在页面上看见，重新打开
+        // /history/<id> 却不见了"的问题（此前这里只把结果 push 进本地内存的
+        // data.results 用于当次渲染，从来没有回写 Firestore）。游客/匿名不会走到这里
+        // （Claude 勾选框对他们是 disabled 的），因此不需要特殊处理 historyId 为空
+        // 的情况——直接转发即可，后端会在 history_id 缺失时自行跳过追加。
+        // requestId/signal (2026-07-05 新增): requestId is a fresh client-generated UUID
+        // for this one call, forwarded to the backend so that -- if this call ends up
+        // consuming a free-tier use -- claude_chat() can record it in its refund ledger
+        // (see main.py's _record_pending_frontier_refund()). signal is an AbortSignal from
+        // the "Stop Generating" button's AbortController; aborting must propagate as an
+        // AbortError rather than being swallowed into the generic "Network error" fallback
+        // below, so the submit handler can tell "user stopped" apart from "actually failed"
+        // and decide whether to call the matching /api/claude-chat/refund endpoint.
+        async function fetchClaudeResult(prompt, model, historyId, requestId, signal) {
             try {
                 const headers = { 'Content-Type': 'application/json' };
                 const userKey = localStorage.getItem('user_claude_key');
@@ -2648,7 +2789,8 @@
                 const response = await fetch('/api/claude-chat', {
                     method: 'POST',
                     headers,
-                    body: JSON.stringify({ prompt, model })
+                    body: JSON.stringify({ prompt, model, history_id: historyId, request_id: requestId }),
+                    signal
                 });
 
                 let payload = null;
@@ -2670,6 +2812,7 @@
 
                 return Object.assign({ peer_reviews: [] }, payload);
             } catch (error) {
+                if (error.name === 'AbortError') throw error;
                 console.error('Error calling Claude:', error);
                 return {
                     provider: 'Claude', success: false, response: '', error: 'Network error contacting Claude.',
@@ -2677,6 +2820,31 @@
                 };
             }
         }
+
+        // Reconciles the free-tier counter after the user hits "Stop Generating" while a
+        // Claude call was in flight (see the refund ledger comment in main.py). A no-op,
+        // side-effect-free call if the ledger has no matching entry (call never actually
+        // consumed a use, or already reconciled).
+        async function refundClaudeIfNeeded(requestId) {
+            if (!requestId) return;
+            try {
+                await fetch('/api/claude-chat/refund', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: requestId })
+                });
+            } catch (_) {
+                // Non-fatal -- worst case the badge is off by one until the next real call.
+            } finally {
+                refreshTrialQuotaBadge();
+            }
+        }
+
+        // AbortController for whichever /api/compare + /api/claude-chat request pair is
+        // currently in flight -- module-scoped (rather than local to the handler below) so
+        // that the "Stop Generating" button's click listener, which lives outside this
+        // handler, can reach in and abort it.
+        let compareAbortController = null;
 
         document.getElementById('compareForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -2692,6 +2860,13 @@
                 .map(cb => cb.value);
 
             const targetModel = modelSelect.value || null;
+
+            compareAbortController = new AbortController();
+            const { signal } = compareAbortController;
+            // Set only once the Claude call actually starts -- lets the catch block below
+            // tell "stopped before Claude ever started" (nothing to refund) apart from
+            // "stopped mid-Claude-call" (may need to reconcile the free-tier counter).
+            let claudeRequestId = null;
 
             showLoading();
 
@@ -2709,7 +2884,8 @@
                 const response = await fetch('/api/compare', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestBody)
+                    body: JSON.stringify(requestBody),
+                    signal
                 });
 
                 if (!response.ok) {
@@ -2730,7 +2906,8 @@
                 }
 
                 if (claudeProviderTrigger && claudeProviderTrigger.checked && !claudeProviderTrigger.disabled) {
-                    const claudeResult = await fetchClaudeResult(prompt, claudeModelSelect.value);
+                    claudeRequestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                    const claudeResult = await fetchClaudeResult(prompt, claudeModelSelect.value, data.history_id, claudeRequestId, signal);
                     if (claudeResult) {
                         data.results.push(claudeResult);
                         data.total_providers += 1;
@@ -2741,6 +2918,10 @@
                             return a.response_time - b.response_time;
                         });
                     }
+                    // Refresh the Trial Quota badge from the backend's real count -- own-key
+                    // calls and failed calls don't consume a use, so re-fetching is more
+                    // reliable than trying to locally guess whether this one did.
+                    refreshTrialQuotaBadge();
                 }
 
                 displayResults(data);
@@ -2762,11 +2943,30 @@
                     loadSidebarHistory();
                 }
             } catch (error) {
-                console.error('Error comparing providers:', error);
-                alert('Error comparing providers. Please try again.');
+                if (error.name === 'AbortError') {
+                    // User clicked "Stop Generating" -- deliberately leave the prompt and
+                    // provider checkboxes untouched (stopBtn's own click handler below only
+                    // calls .abort(), nothing else) and skip the generic error alert. If the
+                    // Claude call had already started, it may have consumed a free-tier use
+                    // before the abort reached the server (this sync/no-transaction backend
+                    // can't truly cancel an in-flight Anthropic call once it's started --
+                    // see the refund ledger comment in main.py), so reconcile that via the
+                    // request_id-scoped refund endpoint rather than assuming either outcome.
+                    if (claudeRequestId) {
+                        await refundClaudeIfNeeded(claudeRequestId);
+                    }
+                } else {
+                    console.error('Error comparing providers:', error);
+                    alert('Error comparing providers. Please try again.');
+                }
             } finally {
                 hideLoading();
+                compareAbortController = null;
             }
+        });
+
+        document.getElementById('stopBtn').addEventListener('click', () => {
+            if (compareAbortController) compareAbortController.abort();
         });
 
         document.getElementById('clearBtn').addEventListener('click', () => {
@@ -2787,11 +2987,13 @@
             document.getElementById('loading').style.display = 'block';
             document.getElementById('results').style.display = 'none';
             document.getElementById('compareBtn').disabled = true;
+            document.getElementById('stopBtn').style.display = 'inline-block';
         }
 
         function hideLoading() {
             document.getElementById('loading').style.display = 'none';
             document.getElementById('compareBtn').disabled = false;
+            document.getElementById('stopBtn').style.display = 'none';
         }
 
         function escapeHtml(str) {
@@ -2969,7 +3171,7 @@
                 overlay.innerHTML = `
                     <div class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="geminiUpgradeModalTitle">
                         <div class="confirm-modal-title" id="geminiUpgradeModalTitle">Frontier Model Trial Quota Used Up</div>
-                        <div class="confirm-modal-body">Your free frontier model trial quota (1 use) has been used up. Please configure your personal API key to keep using premium models.</div>
+                        <div class="confirm-modal-body">Your free frontier model trial quota (${GEMINI_FREE_TIER_LIMIT} ${pluralUses(GEMINI_FREE_TIER_LIMIT)}) has been used up. Please configure your personal API key to keep using premium models.</div>
                         <div class="confirm-modal-actions">
                             <button type="button" class="confirm-modal-btn confirm-modal-btn-cancel" id="geminiUpgradeModalCancelBtn">Maybe Later</button>
                             <button type="button" class="confirm-modal-btn confirm-modal-btn-delete" id="geminiUpgradeModalGoBtn">Configure API Key</button>
@@ -2995,7 +3197,16 @@
         // 无 peer_reviews 字段——图片结果本来就没有互评这个概念）。返回 null 表示"这次
         // 不应该渲染任何卡片"（目前仅 FREE_TIER_EXHAUSTED 命中，因为超限弹窗已经完整
         // 传达了信息，不需要再额外堆一张失败卡片）。
-        async function fetchGeminiImageResult(prompt, model) {
+        //
+        // historyId（2026-07-05 新增）：/api/generate-images 已经返回的 history_id，
+        // 原样转发给后端，与 fetchClaudeResult() 的 historyId 参数同一个道理——后端据此
+        // 把这次 Gemini 调用的结果追加进那条已经落库的图片生成历史记录里（见 main.py 的
+        // _append_gemini_result_to_image_history()），修复"Gemini 结果这次能在页面上
+        // 看见、能下载，重新打开 /image-history/<id> 却不见了"的问题。游客/匿名不会
+        // 走到这里（Gemini 勾选框对他们是 disabled 的），不需要特殊处理 historyId 为空。
+        // requestId/signal (2026-07-05 新增): mirrors fetchClaudeResult()'s parameters of
+        // the same name -- see that function's comment for the full rationale.
+        async function fetchGeminiImageResult(prompt, model, historyId, requestId, signal) {
             try {
                 const headers = { 'Content-Type': 'application/json' };
                 const userKey = localStorage.getItem('user_gemini_key');
@@ -3004,7 +3215,8 @@
                 const response = await fetch('/api/gemini-image', {
                     method: 'POST',
                     headers,
-                    body: JSON.stringify({ prompt, model })
+                    body: JSON.stringify({ prompt, model, history_id: historyId, request_id: requestId }),
+                    signal
                 });
 
                 let payload = null;
@@ -3026,6 +3238,7 @@
 
                 return payload;
             } catch (error) {
+                if (error.name === 'AbortError') throw error;
                 console.error('Error calling Gemini:', error);
                 return {
                     provider: 'Gemini', success: false, url: null, b64_json: null, error: 'Network error contacting Gemini.',
@@ -3033,6 +3246,26 @@
                 };
             }
         }
+
+        // Mirrors refundClaudeIfNeeded() -- see its comment for the full rationale.
+        async function refundGeminiIfNeeded(requestId) {
+            if (!requestId) return;
+            try {
+                await fetch('/api/gemini-image/refund', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: requestId })
+                });
+            } catch (_) {
+                // Non-fatal -- worst case the badge is off by one until the next real call.
+            } finally {
+                refreshTrialQuotaBadge();
+            }
+        }
+
+        // Mirrors compareAbortController above -- module-scoped so stopImageBtn's click
+        // listener (outside this handler) can reach in and abort it.
+        let imageAbortController = null;
 
         document.getElementById('imageForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -3048,6 +3281,10 @@
                 .map(cb => cb.value);
 
             const targetModel = imageModelSelect.value || null;
+
+            imageAbortController = new AbortController();
+            const { signal } = imageAbortController;
+            let geminiRequestId = null;
 
             showImageLoading();
 
@@ -3065,7 +3302,8 @@
                 const response = await fetch('/api/generate-images', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestBody)
+                    body: JSON.stringify(requestBody),
+                    signal
                 });
 
                 if (!response.ok) {
@@ -3086,7 +3324,8 @@
                 }
 
                 if (geminiProviderTrigger && geminiProviderTrigger.checked && !geminiProviderTrigger.disabled) {
-                    const geminiResult = await fetchGeminiImageResult(prompt, geminiModelSelect.value);
+                    geminiRequestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                    const geminiResult = await fetchGeminiImageResult(prompt, geminiModelSelect.value, data.history_id, geminiRequestId, signal);
                     if (geminiResult) {
                         data.results.push(geminiResult);
                         data.total_providers += 1;
@@ -3097,6 +3336,10 @@
                             return a.response_time - b.response_time;
                         });
                     }
+                    // Refresh the Trial Quota badge from the backend's real count -- own-key
+                    // calls and failed calls don't consume a use, so re-fetching is more
+                    // reliable than trying to locally guess whether this one did.
+                    refreshTrialQuotaBadge();
                 }
 
                 displayImageResults(data);
@@ -3105,17 +3348,36 @@
                 // main.py) -- image generation history is persisted exclusively for them,
                 // with no sessionStorage-based guest fallback (unlike the chat Recents list),
                 // since guests are not allowed to use the image Recents sidebar at all. Gemini
-                // results are appended client-side after that history save already happened,
-                // so (like Claude) they are never persisted into image_history either.
+                // results are fetched client-side after that history save already happened,
+                // but fetchGeminiImageResult() (above) forwards this same history_id back to
+                // /api/gemini-image, which appends its result into that already-saved entry
+                // server-side (see main.py's _append_gemini_result_to_image_history()) -- so
+                // the Gemini card that's visible here also survives a later visit to
+                // /image-history/<id>, not just this page load.
                 if (data.history_id) {
                     loadSidebarImageHistoryList();
                 }
             } catch (error) {
-                console.error('Error generating images:', error);
-                alert('Error generating images. Please try again.');
+                if (error.name === 'AbortError') {
+                    // Mirrors the compare form's AbortError branch above -- see its comment
+                    // for the full rationale. Leaves the image prompt and provider
+                    // checkboxes untouched, reconciles the Gemini free-tier counter if that
+                    // call had already started.
+                    if (geminiRequestId) {
+                        await refundGeminiIfNeeded(geminiRequestId);
+                    }
+                } else {
+                    console.error('Error generating images:', error);
+                    alert('Error generating images. Please try again.');
+                }
             } finally {
                 hideImageLoading();
+                imageAbortController = null;
             }
+        });
+
+        document.getElementById('stopImageBtn').addEventListener('click', () => {
+            if (imageAbortController) imageAbortController.abort();
         });
 
         document.getElementById('clearImagesBtn').addEventListener('click', () => {
@@ -3136,11 +3398,13 @@
             document.getElementById('imageLoading').style.display = 'block';
             document.getElementById('imageResults').style.display = 'none';
             document.getElementById('generateImagesBtn').disabled = true;
+            document.getElementById('stopImageBtn').style.display = 'inline-block';
         }
 
         function hideImageLoading() {
             document.getElementById('imageLoading').style.display = 'none';
             document.getElementById('generateImagesBtn').disabled = false;
+            document.getElementById('stopImageBtn').style.display = 'none';
         }
 
         // Downloads a generated image as a real .png file rather than just a link that
