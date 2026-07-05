@@ -133,5 +133,28 @@ class TestImageHistoryPageHtmlTagBalance(unittest.TestCase):
         assert_html_tag_balance(self, response.data.decode())
 
 
+class TestApikeyConfigPageHtmlTagBalance(unittest.TestCase):
+    """2026-07-04: apikey-config.html gained a page-scoped <style> block plus a new
+    .key-input-row wrapper div around each input+clear-button pair -- exactly the kind
+    of markup edit that could silently drop/misplace a tag while every assertIn-style
+    text check still passes (see the incident this file's docstring describes)."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def test_anonymous_apikey_config_page_tags_balance(self):
+        with main.app.test_client() as client:
+            response = client.get('/apikey-config')
+        assert_html_tag_balance(self, response.data.decode())
+
+    def test_logged_in_apikey_config_page_tags_balance(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+                sess['username'] = 'alice'
+            response = client.get('/apikey-config')
+        assert_html_tag_balance(self, response.data.decode())
+
+
 if __name__ == '__main__':
     unittest.main()

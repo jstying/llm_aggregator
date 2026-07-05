@@ -1,0 +1,154 @@
+{% extends "auth/base.html" %}
+
+{% block title %}API Key Configuration - LLM Aggregator{% endblock %}
+
+{% block content %}
+<style>
+    /* Row wrapper so every key field can carry its own "clear stored key" button next to
+       the input, instead of the button living only inside the shared submit/"Save" action.
+       Kept scoped to this page (base.html has no .key-input-row/.btn-clear-key of its own)
+       since apikey-config.html is the only template that needs a per-field clear affordance. */
+    .key-input-row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+    }
+
+    .key-input-row input {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .btn-clear-key {
+        flex-shrink: 0;
+        padding: 12px 18px;
+        background: transparent;
+        color: #09110e;
+        border: 1px solid #e8e8e8;
+        border-radius: 6px;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        letter-spacing: -0.01em;
+    }
+
+    .btn-clear-key:hover:not(:disabled) {
+        background: #fbeaea;
+        border-color: #d9534f;
+        color: #d9534f;
+    }
+
+    .btn-clear-key:disabled {
+        cursor: not-allowed;
+        opacity: 0.5;
+    }
+</style>
+
+<div class="text-center">
+    <h2 class="card-title">Personal API Key Configuration</h2>
+</div>
+
+<p style="color:#545e5a;font-size:0.9rem;margin-bottom:22px;line-height:1.5;">
+    Once you configure a personal API key for a provider, every subsequent request to that
+    provider will automatically include your key and will not consume any of the developer
+    account's quota. You can click "Clear" at any time to immediately remove a saved key --
+    future requests will go back to consuming the developer's free tier/account and will no
+    longer bill your personal key.
+</p>
+
+<form id="apikeyConfigForm">
+    <div class="form-group">
+        <label for="chatgptKeyInput">ChatGPT API Key <small style="font-weight:400;color:#a0a0a0;">(Not supported yet, coming soon)</small></label>
+        <div class="key-input-row">
+            <input type="password" id="chatgptKeyInput" placeholder="sk-..." autocomplete="off" disabled>
+            <button type="button" class="btn-clear-key" id="clearChatgptKeyBtn" disabled>Clear</button>
+        </div>
+    </div>
+
+    <div class="form-group">
+        <label for="geminiKeyInput">Gemini API Key <small style="font-weight:400;color:#a0a0a0;">(for image generation)</small></label>
+        <div class="key-input-row">
+            <input type="password" id="geminiKeyInput" placeholder="AIza..." autocomplete="off">
+            <button type="button" class="btn-clear-key" id="clearGeminiKeyBtn">Clear</button>
+        </div>
+    </div>
+
+    <div class="form-group">
+        <label for="claudeKeyInput">Claude API Key</label>
+        <div class="key-input-row">
+            <input type="password" id="claudeKeyInput" placeholder="sk-ant-..." autocomplete="off">
+            <button type="button" class="btn-clear-key" id="clearClaudeKeyBtn">Clear</button>
+        </div>
+    </div>
+
+    <button type="submit" class="btn">Save</button>
+    <div id="saveStatus" style="margin-top:14px;font-size:0.9rem;color:#06c167;display:none;text-align:center;"></div>
+</form>
+
+<div class="mt-3 text-center">
+    <a href="{{ url_for('index') }}" class="link-muted">← Back to App</a>
+</div>
+
+<script>
+    // Claude 与 Gemini 两个字段与业务逻辑真正绑定：分别与 localStorage.getItem('user_claude_key')/
+    // localStorage.getItem('user_gemini_key') 双向同步（各自独立的 key，互不共享）。
+    // ChatGPT 目前仍是纯占位符（第 3 节明确要求），故意不接入任何存储——它的输入框和
+    // "Clear"按钮渲染为 disabled，未来要接入时应新增独立的 localStorage key，不应该
+    // 复用 'user_claude_key'/'user_gemini_key'。
+    const claudeKeyInput = document.getElementById('claudeKeyInput');
+    const storedClaudeKey = localStorage.getItem('user_claude_key');
+    if (storedClaudeKey) {
+        claudeKeyInput.value = storedClaudeKey;
+    }
+
+    const geminiKeyInput = document.getElementById('geminiKeyInput');
+    const storedGeminiKey = localStorage.getItem('user_gemini_key');
+    if (storedGeminiKey) {
+        geminiKeyInput.value = storedGeminiKey;
+    }
+
+    function showSaveStatus(message) {
+        const status = document.getElementById('saveStatus');
+        status.textContent = message;
+        status.style.display = 'block';
+        setTimeout(() => { status.style.display = 'none'; }, 2500);
+    }
+
+    document.getElementById('apikeyConfigForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+
+        const claudeKey = claudeKeyInput.value.trim();
+        if (claudeKey) {
+            localStorage.setItem('user_claude_key', claudeKey);
+        } else {
+            localStorage.removeItem('user_claude_key');
+        }
+
+        const geminiKey = geminiKeyInput.value.trim();
+        if (geminiKey) {
+            localStorage.setItem('user_gemini_key', geminiKey);
+        } else {
+            localStorage.removeItem('user_gemini_key');
+        }
+
+        showSaveStatus('Saved');
+    });
+
+    // 清空按钮不等待表单提交，点击立刻同步清空输入框 + 移除 localStorage 里的 Key——
+    // 这样用户"不想再被继续扣自己 Key 的额度"时，效果立即生效，不需要先手动清空输入框
+    // 再点击"Save"才能生效（那样中途关闭标签页会让清空意图落空）。Claude/Gemini 各自
+    // 独立接线，互不影响。
+    document.getElementById('clearClaudeKeyBtn').addEventListener('click', function() {
+        claudeKeyInput.value = '';
+        localStorage.removeItem('user_claude_key');
+        showSaveStatus('Cleared. Future requests will no longer include this key.');
+    });
+
+    document.getElementById('clearGeminiKeyBtn').addEventListener('click', function() {
+        geminiKeyInput.value = '';
+        localStorage.removeItem('user_gemini_key');
+        showSaveStatus('Cleared. Future requests will no longer include this key.');
+    });
+</script>
+{% endblock %}

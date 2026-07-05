@@ -8,6 +8,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
+def _assert_where_called_with_field_filter(mock_where, field_path, op_string, value):
+    """auth/db.py builds queries with .where(filter=FieldFilter(...)) (the
+    firebase-admin-recommended form) instead of the deprecated positional
+    .where(field, op, value). FieldFilter has no __eq__, so assert_called_with
+    can't compare instances directly -- inspect the captured filter's attributes."""
+    mock_where.assert_called_once()
+    _, kwargs = mock_where.call_args
+    field_filter = kwargs['filter']
+    assert field_filter.field_path == field_path
+    assert field_filter.op_string == op_string
+    assert field_filter.value == value
+
+
 class TestPasswordHashing(unittest.TestCase):
 
     def test_hash_is_not_plaintext(self):
@@ -100,8 +113,8 @@ class TestGetUserByUsername(unittest.TestCase):
             auth_db.get_user_by_username('bob')
 
         mock_db.collection.assert_called_once_with('users')
-        mock_db.collection.return_value.where.assert_called_once_with(
-            'username', '==', 'bob'
+        _assert_where_called_with_field_filter(
+            mock_db.collection.return_value.where, 'username', '==', 'bob'
         )
 
     def test_query_applies_limit_of_one(self):
@@ -185,8 +198,8 @@ class TestGetUserByEmail(unittest.TestCase):
         with patch.object(auth_db, 'db', mock_db):
             auth_db.get_user_by_email('x@y.com')
 
-        mock_db.collection.return_value.where.assert_called_once_with(
-            'email', '==', 'x@y.com'
+        _assert_where_called_with_field_filter(
+            mock_db.collection.return_value.where, 'email', '==', 'x@y.com'
         )
 
     def test_query_applies_limit_of_one(self):
@@ -352,7 +365,9 @@ class TestGetChatHistoryList(unittest.TestCase):
         with patch.object(auth_db, 'db', mock_db):
             auth_db.get_chat_history_list('uid1')
 
-        mock_db.collection.return_value.where.assert_called_once_with('user_id', '==', 'uid1')
+        _assert_where_called_with_field_filter(
+            mock_db.collection.return_value.where, 'user_id', '==', 'uid1'
+        )
 
     def test_query_does_not_chain_order_by_avoiding_composite_index(self):
         from auth import db as auth_db

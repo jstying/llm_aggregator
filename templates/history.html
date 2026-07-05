@@ -1415,6 +1415,7 @@
                 {% if session.user_id %}
                     <li><span class="nav-welcome">Welcome, {{ session.username }}</span></li>
                     <li><a href="{{ url_for('auth.profile') }}">Profile</a></li>
+                    <li><a href="{{ url_for('apikey_config') }}">API Keys</a></li>
                     <li><a href="{{ url_for('auth.logout') }}">Logout</a></li>
                 {% elif session.is_guest %}
                     <li><span class="guest-badge">Guest Mode</span></li>
@@ -1845,7 +1846,7 @@
 
         function renderHistoryGroups(groups) {
             if (groups.length === 0) {
-                return '<div class="sidebar-empty-state">No conversations yet.</div>';
+                return '<div class="sidebar-empty-state">Empty.</div>';
             }
             return groups.map(g => `
                 <div class="history-group">

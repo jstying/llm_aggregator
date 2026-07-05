@@ -77,6 +77,100 @@ class TestIndexPageSidebarMarkup(unittest.TestCase):
         self.assertIn('const isLoggedIn = false;', response.data.decode())
 
 
+class TestProviderSelectionSectionMarkup(unittest.TestCase):
+    """GET / (2026-07-04 reorg): the compare form's provider/model pickers are split
+    into a "frontier providers" row (paid/official-API providers -- currently just
+    Claude, reserved for future ChatGPT/Gemini cards) rendered in its own
+    #frontierProviderSelection container, separate from the free g4f providers'
+    #providerSelection container and the free model dropdown. The Claude model
+    <select> sits between the two provider rows and is unchanged by the reorg.
+    Asserts both the renamed labels and that Claude did not leak back into
+    #providerSelection (the container g4f providers/JS provider-checkbox queries
+    assume is g4f-only, see CLAUDE.md's provider-namespace-isolation rule)."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def _get_index_html(self, logged_in=True):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                if logged_in:
+                    sess['user_id'] = 'uid1'
+                    sess['username'] = 'alice'
+                else:
+                    sess['is_guest'] = True
+            response = client.get('/')
+        return response.data.decode()
+
+    def _get_compare_form_html(self, logged_in=True):
+        """Scoped to #compareModeContainer only -- the image-generation form
+        (#imageModeContainer) has its own, independent "Select free models (single
+        selection):" label for picking an image model (renamed to match this same
+        frontier/free split when Gemini was added as the image form's own frontier
+        provider, see TestImageFormProviderSelectionSectionMarkup below), which must
+        not be confused with the compare form's own free-model dropdown renamed by
+        this reorg -- the two forms are fully independent namespaces."""
+        html = self._get_index_html(logged_in=logged_in)
+        start = html.index('id="compareModeContainer"')
+        end = html.index('id="imageModeContainer"')
+        return html[start:end]
+
+    def test_frontier_providers_label_and_container_present(self):
+        html = self._get_index_html()
+        self.assertIn('Select frontier providers:', html)
+        self.assertIn('id="frontierProviderSelection"', html)
+
+    def test_free_providers_label_renamed(self):
+        html = self._get_compare_form_html()
+        self.assertIn('Select free providers (leave all unchecked to test all):', html)
+        self.assertNotIn('>Select Providers (leave all unchecked to test all):<', html)
+
+    def test_free_models_label_renamed(self):
+        html = self._get_compare_form_html()
+        self.assertIn('Select free models (single selection):', html)
+        self.assertNotIn('>Select Model (Single Selection):<', html)
+
+    def test_claude_card_lives_in_frontier_container_not_free_providers(self):
+        html = self._get_index_html()
+        frontier_start = html.index('id="frontierProviderSelection"')
+        free_start = html.index('id="providerSelection"')
+        claude_card_pos = html.index('id="claudeProviderCard"')
+        self.assertTrue(
+            frontier_start < claude_card_pos < free_start,
+            'Claude card must be inside #frontierProviderSelection, before #providerSelection',
+        )
+        free_providers_section = html[free_start:html.index('id="customSelectWrapper"')]
+        self.assertNotIn('claudeProviderCard', free_providers_section)
+        self.assertNotIn('claude-provider-checkbox', free_providers_section)
+
+    def test_section_order_frontier_then_claude_model_then_free_providers_then_free_models(self):
+        html = self._get_index_html()
+        frontier_pos = html.index('Select frontier providers:')
+        claude_model_pos = html.index('id="claudeModelSelect"')
+        free_providers_pos = html.index('Select free providers (leave all unchecked to test all):')
+        free_models_pos = html.index('Select free models (single selection):')
+        self.assertTrue(frontier_pos < claude_model_pos < free_providers_pos < free_models_pos)
+
+    def test_claude_model_select_unchanged(self):
+        html = self._get_index_html()
+        self.assertIn('<label for="claudeModelSelect">Claude Model:</label>', html)
+        self.assertIn('<option value="claude-sonnet-5">Claude Sonnet 5</option>', html)
+        self.assertIn('<option value="claude-haiku-4-5">Claude Haiku 4.5</option>', html)
+
+    def test_free_providers_container_still_lists_g4f_providers(self):
+        html = self._get_index_html()
+        free_start = html.index('id="providerSelection"')
+        free_providers_section = html[free_start:html.index('id="customSelectWrapper"')]
+        self.assertIn('provider-checkbox', free_providers_section)
+        self.assertIn('name="providers"', free_providers_section)
+
+    def test_reorg_holds_for_guest_session_too(self):
+        html = self._get_index_html(logged_in=False)
+        self.assertIn('Select frontier providers:', html)
+        self.assertIn('Select free providers (leave all unchecked to test all):', html)
+        self.assertIn('Select free models (single selection):', html)
+
+
 class TestViewHistoryPage(unittest.TestCase):
     """GET /history/<history_id> (2026-07-03): the read-only history.html detail page.
     Logged-in visitors get the entry fetched from Firestore by id (with the usual ownership

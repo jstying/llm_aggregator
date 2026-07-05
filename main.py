@@ -45,6 +45,10 @@ from auth.db import (  # noqa: E402
     delete_image_history,
     update_image_history_title,
     toggle_pin_image_history,
+    get_claude_free_tier_usage,
+    increment_claude_free_tier_usage,
+    get_gemini_free_tier_usage,
+    increment_gemini_free_tier_usage,
 )
 
 
@@ -140,6 +144,81 @@ except Exception as e:
     G4FImageClient = None
     get_media_dir = lambda: './generated_media'
     logger.warning(f"g4f initialization failed: {e}")
+
+
+# =========================
+# 初始化官方 Anthropic (Claude) SDK
+# 与上面 g4f 的初始化完全独立的第三条调用链路——既不是 g4f.ChatCompletion.create()
+# 也不是 g4f 的 images.generate()，而是直接用官方 `anthropic` 库调用 Anthropic 自己的
+# API 端点。CLAUDE_AVAILABLE 是独立于 G4F_AVAILABLE 的全局布尔标志，任一方缺失/初始化
+# 失败都只降级各自的功能，互不影响；Claude 也有自己独立的 Provider/模型命名空间
+# （CLAUDE_MODELS），不与 PROVIDER_MODELS_MAP/IMAGE_PROVIDER_MODELS_MAP 混用。
+# =========================
+try:
+    import anthropic
+
+    CLAUDE_AVAILABLE = True
+    logger.info("anthropic SDK imported successfully")
+except ImportError as e:
+    CLAUDE_AVAILABLE = False
+    anthropic = None
+    logger.warning(f"anthropic SDK not available: {e}")
+
+# 模型 key（前端 <select> 的 value，同时也是展示名/请求体里的 model 字段）→ 官方
+# API model ID 的映射。key 与 ID 目前一一对应，但保留一层映射是为了不让前端/请求体
+# 直接暴露官方精确的模型 ID 字符串（未来 ID 变化时只需改这一处）。
+CLAUDE_MODELS = {
+    'claude-sonnet-5': 'claude-sonnet-5',
+    'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
+}
+
+# 非流式请求，max_tokens 刻意保持较小（远低于官方 SDK 对非流式请求约 16000 token 的
+# 超时保护阈值），足够支撑本项目"多 Provider 对比"场景下的一次简短回答，不需要流式。
+CLAUDE_MAX_TOKENS = 2048
+
+# 单个注册用户在未自带 Key 时，可免费消耗开发者账户额度调用 Claude 的次数上限。
+CLAUDE_FREE_TIER_LIMIT = 1
+
+
+# =========================
+# 初始化官方 Google Gemini（"Nano Banana"系列）图片生成 SDK
+# 与 Claude 同构的第四条完全独立的调用链路，但作用于文生图场景而不是对话场景：不经过
+# g4f 的 images.generate()（IMAGE_PROVIDERS 名字空间），而是直接用官方 google-genai
+# SDK 调用 Gemini 的图片生成 API。这是本项目在"文生图"场景下第一个"付费/有配额"的
+# Provider，配套与 Claude 完全同构的免费额度/自带 Key 防滥用机制（见 call_gemini_image_model()
+# 与 /api/gemini-image 路由）。GEMINI_AVAILABLE 独立于 G4F_AVAILABLE/CLAUDE_AVAILABLE，
+# 任一方缺失/初始化失败都只降级各自的功能。
+#
+# 包名是 google-genai（PyPI），导入路径是 `from google import genai`——不要与 Google
+# 早期/其他项目里出现过的 `google-generativeai` 包（导入路径 `google.generativeai`）
+# 混淆，那是已废弃的旧 SDK，本项目不使用。
+# =========================
+try:
+    from google import genai as google_genai
+
+    GEMINI_AVAILABLE = True
+    logger.info("google-genai SDK imported successfully")
+except ImportError as e:
+    GEMINI_AVAILABLE = False
+    google_genai = None
+    logger.warning(f"google-genai SDK not available: {e}")
+
+# 模型 key（前端 <select> 的 value）→ 官方 API model ID 的映射，与 CLAUDE_MODELS 同构。
+# 当前只接入 Nano Banana Pro（官方 model ID: gemini-3-pro-image）——Google 官方文档
+# （https://ai.google.dev/gemini-api/docs/models，2026-07-04 查证）里"Nano Banana"是
+# 三档同系列图片生成模型的社区/文档昵称，Pro 档定位为"Professional design engine with
+# a reasoning core for studio-quality 4K visuals, complex layouts, and precise text
+# rendering"，是三档里的旗舰档位，与 Claude Sonnet 5（CLAUDE_MODELS 里的旗舰模型）同属
+# "frontier"定位这一叙事对齐。Nano Banana 2（gemini-3.1-flash-image）与 Nano Banana
+# Lite（gemini-3.1-flash-lite-image）是同系列里更轻量/低延迟的档位，留作未来按同一模式
+# （追加一条映射 + 前端加一个 <option>）追加的可选项，不在本次范围内。
+GEMINI_IMAGE_MODELS = {
+    'nano-banana-pro': 'gemini-3-pro-image',
+}
+
+# 单个注册用户在未自带 Key 时，可免费消耗开发者账户额度调用 Gemini 图片生成的次数上限。
+# 与 CLAUDE_FREE_TIER_LIMIT 同构，各自独立计数（互不共享额度）。
+GEMINI_FREE_TIER_LIMIT = 1
 
 
 # ==================================================
@@ -545,6 +624,176 @@ def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
 
 
 # ==================================================
+# 调用官方 Anthropic API 获取 Claude 的回答
+# 与 test_g4f_provider()/test_g4f_image_provider() 是第三条完全独立的调用链路：不经过
+# g4f，不参与 ROUTE_PROMPTS_MAP 隐形路由，也不参与互评（run_peer_review 只在
+# providers_to_test/G4F_PROVIDERS 名字空间内调度，Claude 从不出现在那里）。
+#
+# Key 路由规则（防薅羊毛核心）：user_api_key 非空时优先使用它实例化客户端，完全不
+# 消耗开发者账户额度，调用方（claude_chat 路由）据此决定是否需要检查/递增免费额度
+# 计数器——本函数自身不知道、也不关心计数器，只负责"用哪个 Key 发起这次请求"。
+#
+# 错误分类：账户余额不足在真实环境下实测返回的是 400 + error.type ==
+# "invalid_request_error" + message 含 "credit balance is too low"（而不是最初
+# 设想的 429 + "insufficient_funds"——Anthropic 的错误体系里没有这个组合；也不是
+# 通用文档字面暗示的 403 + "billing_error"，实测该账号返回的就是 400。真正稳定的
+# 判断依据是 message 里的 "credit balance" 关键词，而不是某个具体 status_code 或
+# error.type 值——429 仍然专指限流 rate_limit_error，是可重试的瞬时错误，与余额
+# 耗尽是两回事，不应该混淆。同时兼容性地保留 error.type == 'billing_error' 分支，
+# 以防某些账户/未来 API 版本确实走那个更"文档化"的错误形状。
+# ==================================================
+def call_claude_model(prompt, model_key, user_api_key=None):
+    model_id = CLAUDE_MODELS.get(model_key)
+    start_time = time.time()
+    result = {
+        'provider': 'Claude',
+        'success': False,
+        'response': '',
+        'error': '',
+        'response_time': 0,
+        'model': model_key,
+        'type': 'anthropic',
+    }
+
+    if not model_id:
+        result['error'] = f'Unknown Claude model "{model_key}".'
+        result['response_time'] = round(time.time() - start_time, 2)
+        return result
+
+    try:
+        client = anthropic.Anthropic(api_key=user_api_key) if user_api_key else anthropic.Anthropic()
+        response = client.messages.create(
+            model=model_id,
+            max_tokens=CLAUDE_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        text = next((block.text for block in response.content if block.type == 'text'), '')
+        result['response'] = detect_and_truncate(text)
+        result['success'] = True
+
+    except anthropic.APIStatusError as e:
+        error_message = getattr(e, 'message', str(e))
+        is_credits_exhausted = (
+            getattr(e, 'type', None) == 'billing_error'
+            or 'credit balance' in error_message.lower()
+        )
+        if is_credits_exhausted:
+            result['error'] = 'SERVER_CREDITS_EXHAUSTED'
+            result['error_code'] = 'SERVER_CREDITS_EXHAUSTED'
+        elif e.status_code == 401:
+            result['error'] = 'Invalid or missing Claude API key.'
+        else:
+            result['error'] = f'Error {e.status_code}: {error_message}'
+
+    except anthropic.APIConnectionError:
+        result['error'] = 'The system is busy and trying to reconnect. Please try again shortly.'
+
+    except Exception as e:
+        result['error'] = str(e)
+
+    finally:
+        result['response_time'] = round(time.time() - start_time, 2)
+
+    return result
+
+
+# ==================================================
+# 调用官方 Google Gemini（"Nano Banana"）API 生成图片
+# 与 test_g4f_image_provider()（g4f 的 IMAGE_PROVIDERS 名字空间）和 call_claude_model()
+# 都是完全独立的调用链路：不经过 g4f，不参与 GPU_QUOTA_ERROR_KEYWORDS/
+# PEER_REVIEW_NETWORK_ERROR_KEYWORDS 判定与 429/queue 重试逻辑（那套是 g4f 图片 Provider
+# 专属的），也不参与互评（图片生成本身就没有互评这个概念）。返回值形状是"图片 8-key
+# 契约"的第二种独立实现——与 g4f 的 init_image_result_object() 字段名/含义相同
+# （provider/success/url/b64_json/error/response_time/model/type），但 type 用
+# 'google_genai' 而不是 'g4f_image'，与 Claude Result 的 type='anthropic' 之于
+# LLM Result 的 type='g4f' 是同一种"字段结构相似但类型标记独立"的关系（见 CLAUDE.md
+# 第 7 节 Data Models）。官方 API 直接返回图片字节的 base64 编码（Interaction.output_image.data），
+# 因此这里恒定走 b64_json 分支，从不设置 url——不像 g4f 图片 Provider 那样需要落地到
+# get_media_dir() 本地文件再通过 /media/<filename> 提供，省去一整套本地存储/清理的复杂度。
+#
+# Key 路由规则（防薅羊毛核心，与 call_claude_model 完全同构）：user_api_key 非空时优先
+# 用它构造客户端，完全不消耗开发者账户额度，调用方（/api/gemini-image 路由）据此决定
+# 是否需要检查/递增免费额度计数器——本函数自身不知道、也不关心计数器。
+#
+# 错误分类：与 Claude 不同，这里的分类**没有**用真实账户端到端验证过（本地开发环境
+# 未配置 GEMINI_API_KEY，见 CLAUDE.md 第 11 节"引导配置"）。判断依据来自两个可查证的
+# 来源：(1) Gemini API 官方 troubleshooting 文档（https://ai.google.dev/gemini-api/docs/troubleshooting，
+# 2026-07-04 查证）里发布的 HTTP 状态码表——429/RESOURCE_EXHAUSTED 对应"超出速率限制/
+# 配额"，403/PERMISSION_DENIED 对应"API Key 权限不足"；(2) 直接读取本项目锁定版本
+# （google-genai==2.10.0）的 SDK 源码确认：client.interactions.create() 抛出的异常
+# 实例都带有 .status_code/.code/.status/.message 属性（无论是走公开的
+# google.genai.errors.APIError 分支还是 interactions 资源专属的内部错误类），因此用
+# getattr() 鸭子类型读取这些属性做分类，而不是 import 任何具体异常类——这些具体异常类
+# 目前只存在于 google-genai 包内部一个带下划线前缀的私有子模块里，没有稳定的公开导入
+# 路径，直接 import 会是比 CLAUDE_MODELS 硬编码映射更脆弱的耦合。真正等开发者配置了
+# 真实的 GEMINI_API_KEY 后，应该比照 Claude 当初"用真实余额为 0 的账户实测验证"的方式
+# 补一轮真实验证，并把这里的注释更新为实测结论（若有出入）。
+#
+# 另一处与 Claude 的行为差异（已实测确认，见本函数下方 google_genai.Client() 调用）：
+# anthropic.Anthropic() 零参构造不检查 Key，缺 Key 只在真正调用 messages.create() 时
+# 才报错；而 google_genai.Client() 零参构造会**立即**检查 GOOGLE_API_KEY/GEMINI_API_KEY
+# 环境变量，缺失时直接在构造阶段抛 ValueError（不是调用阶段）。这里的 except Exception
+# 兜底分支同样能捕获这个 ValueError 并把其消息透传给前端、不会导致 500，用户体感上与
+# Claude 一致（"没配置就业务失败，不影响进程启动"），只是失败发生的具体调用点不同。
+# ==================================================
+def call_gemini_image_model(prompt, model_key, user_api_key=None):
+    model_id = GEMINI_IMAGE_MODELS.get(model_key)
+    start_time = time.time()
+    result = {
+        'provider': 'Gemini',
+        'success': False,
+        'url': None,
+        'b64_json': None,
+        'error': '',
+        'response_time': 0,
+        'model': model_key,
+        'type': 'google_genai',
+    }
+
+    if not model_id:
+        result['error'] = f'Unknown Gemini model "{model_key}".'
+        result['response_time'] = round(time.time() - start_time, 2)
+        return result
+
+    try:
+        client = google_genai.Client(api_key=user_api_key) if user_api_key else google_genai.Client()
+        interaction = client.interactions.create(model=model_id, input=prompt)
+
+        image_content = getattr(interaction, 'output_image', None)
+        image_b64 = getattr(image_content, 'data', None) if image_content else None
+
+        if image_b64:
+            result['b64_json'] = image_b64
+            result['success'] = True
+        else:
+            result['error'] = 'Gemini did not return an image for this prompt.'
+
+    except Exception as e:
+        status_code = getattr(e, 'status_code', None) or getattr(e, 'code', None)
+        status_str = (getattr(e, 'status', None) or '').upper()
+        message = getattr(e, 'message', None) or str(e)
+
+        is_quota_exhausted = status_code == 429 or status_str == 'RESOURCE_EXHAUSTED'
+        is_permission_denied = status_code == 403
+
+        if is_quota_exhausted:
+            result['error'] = 'SERVER_QUOTA_EXHAUSTED'
+            result['error_code'] = 'SERVER_QUOTA_EXHAUSTED'
+        elif is_permission_denied:
+            result['error'] = 'Invalid or missing Gemini API key.'
+        elif status_code is not None:
+            result['error'] = f'Error {status_code}: {message}'
+        else:
+            result['error'] = message
+
+    finally:
+        result['response_time'] = round(time.time() - start_time, 2)
+
+    return result
+
+
+# ==================================================
 # 辅助函数：校验对话历史路由的登录状态
 # 未登录（含游客）一律拒绝，返回 (None, 401 响应)；已登录返回 (user_id, None)
 # ==================================================
@@ -678,6 +927,19 @@ def view_image_history(history_id):
         history_id=history_id,
         history_entry=entry
     )
+
+
+# ==================================================
+# 个人 API Key 配置页（第 3 节新增）
+# GET /apikey-config
+#
+# 纯静态展示 + 客户端 localStorage 绑定，不需要登录态守卫——它本身不发起任何需要
+# 权限的请求，只是把 Claude API Key 存到浏览器本地；真正的权限/额度校验发生在
+# /api/claude-chat 路由里。ChatGPT/Gemini 两个输入框目前只是占位符，不落任何存储。
+# ==================================================
+@app.route('/apikey-config')
+def apikey_config():
+    return render_template('apikey-config.html')
 
 
 # ==================================================
@@ -962,6 +1224,80 @@ def test_single_provider():
 
 
 # ==================================================
+# 官方 Claude (Anthropic) 对话接口
+# POST /api/claude-chat
+#
+# 与 /api/compare 完全独立的第三条路由——不经过 ThreadPoolExecutor 并发调度、不参与
+# 互评，单次请求只调用一个 Claude 模型。权限与成本控制（防薅羊毛）核心：
+# 1. 游客/匿名一律 401（复用 _get_authenticated_user_id，与对话/图片历史路由同一套
+#    守卫）——前端会把 Claude 勾选框置灰，这里是后端侧的第二层防御。
+# 2. Header 里携带非空 X-User-Claude-Key 时，优先使用该 Key 实例化客户端，完全不
+#    检查/消耗免费额度计数器。
+# 3. 未携带自带 Key 时，检查该用户的 claude_free_tier_usage 是否已达到
+#    CLAUDE_FREE_TIER_LIMIT（当前为 1）；达到则直接拦截、不调用开发者 API，返回
+#    {"error": "FREE_TIER_EXHAUSTED"}；调用成功后才递增计数器（失败的调用不消耗额度）。
+# 4. call_claude_model() 内部把余额耗尽（实测 400 + invalid_request_error + message
+#    含 "credit balance"，billing_error 仅作兼容兜底）翻译成
+#    error_code == 'SERVER_CREDITS_EXHAUSTED'，这里据此转换为统一的 JSON 错误体。
+# ==================================================
+@app.route('/api/claude-chat', methods=['POST'])
+def claude_chat():
+    try:
+        if not CLAUDE_AVAILABLE:
+            return jsonify({
+                'error': 'CLAUDE_UNAVAILABLE',
+                'message': 'Claude integration is not available on this server.'
+            }), 503
+
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        prompt = data.get('prompt', '').strip()
+        model_key = data.get('model')
+
+        if not prompt or model_key not in CLAUDE_MODELS:
+            return jsonify({
+                'error': 'INVALID_REQUEST',
+                'message': 'A non-empty prompt and a valid Claude model are required.'
+            }), 400
+
+        user_api_key = request.headers.get('X-User-Claude-Key', '').strip()
+        using_own_key = bool(user_api_key)
+
+        if not using_own_key:
+            usage = get_claude_free_tier_usage(user_id)
+            if usage >= CLAUDE_FREE_TIER_LIMIT:
+                return jsonify({'error': 'FREE_TIER_EXHAUSTED'}), 403
+
+        result = call_claude_model(prompt, model_key, user_api_key if using_own_key else None)
+
+        if result.get('error_code') == 'SERVER_CREDITS_EXHAUSTED':
+            return jsonify({
+                'error': 'SERVER_CREDITS_EXHAUSTED',
+                'message': 'Developer account balance is insufficient. Please configure your personal API key to continue.'
+            }), 503
+
+        if result['success'] and not using_own_key:
+            try:
+                increment_claude_free_tier_usage(user_id)
+            except Exception as e:
+                logger.error(
+                    f"Failed to increment claude_free_tier_usage for {user_id}: {e}",
+                    exc_info=True
+                )
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error in claude_chat: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
 # 核心接口：并发调用多个文生图 Provider 生成图片
 # POST /api/generate-images
 #
@@ -1102,6 +1438,86 @@ def generate_images():
 
     except Exception as e:
         logger.error(f"Error in generate_images: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
+
+
+# ==================================================
+# 官方 Google Gemini（"Nano Banana"）文生图接口
+# POST /api/gemini-image
+#
+# 与 /api/generate-images 完全独立的第四条路由——不经过 ThreadPoolExecutor 并发调度、
+# 不参与 g4f 图片 Provider 的重试/超时预算逻辑，单次请求只调用一个 Gemini 模型。权限
+# 与成本控制（防薅羊毛）核心与 /api/claude-chat 逐一同构：
+# 1. 游客/匿名一律 401（复用 _get_authenticated_user_id，与 Claude/对话/图片历史路由
+#    同一套守卫）——前端会把 Gemini 勾选框置灰，这里是后端侧的第二层防御。
+# 2. Header 里携带非空 X-User-Gemini-Key 时，优先使用该 Key 实例化客户端，完全不
+#    检查/消耗免费额度计数器。
+# 3. 未携带自带 Key 时，检查该用户的 gemini_free_tier_usage 是否已达到
+#    GEMINI_FREE_TIER_LIMIT（当前为 1）；达到则直接拦截、不调用开发者 API，返回
+#    {"error": "FREE_TIER_EXHAUSTED"}；调用成功后才递增计数器（失败的调用不消耗额度）。
+# 4. call_gemini_image_model() 内部把配额耗尽（429/RESOURCE_EXHAUSTED）翻译成
+#    error_code == 'SERVER_QUOTA_EXHAUSTED'，这里据此转换为统一的 JSON 错误体。
+#
+# 与 generate_images() 的关键不同：这里生成的图片结果**不会**被持久化到 image_history
+# 集合——与 Claude 的 type='anthropic' 结果不落入 save_chat_history() 同一个道理（见
+# CLAUDE.md 危险区），前端把这次调用的结果合并进 /api/generate-images 已经返回的
+# results 数组时，图片历史的持久化早已在那次请求里完成，Gemini 结果是之后才追加的，
+# 天然不会被写入 Firestore。
+# ==================================================
+@app.route('/api/gemini-image', methods=['POST'])
+def gemini_image_chat():
+    try:
+        if not GEMINI_AVAILABLE:
+            return jsonify({
+                'error': 'GEMINI_UNAVAILABLE',
+                'message': 'Gemini integration is not available on this server.'
+            }), 503
+
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        prompt = data.get('prompt', '').strip()
+        model_key = data.get('model')
+
+        if not prompt or model_key not in GEMINI_IMAGE_MODELS:
+            return jsonify({
+                'error': 'INVALID_REQUEST',
+                'message': 'A non-empty prompt and a valid Gemini model are required.'
+            }), 400
+
+        user_api_key = request.headers.get('X-User-Gemini-Key', '').strip()
+        using_own_key = bool(user_api_key)
+
+        if not using_own_key:
+            usage = get_gemini_free_tier_usage(user_id)
+            if usage >= GEMINI_FREE_TIER_LIMIT:
+                return jsonify({'error': 'FREE_TIER_EXHAUSTED'}), 403
+
+        result = call_gemini_image_model(prompt, model_key, user_api_key if using_own_key else None)
+
+        if result.get('error_code') == 'SERVER_QUOTA_EXHAUSTED':
+            return jsonify({
+                'error': 'SERVER_QUOTA_EXHAUSTED',
+                'message': 'Developer account quota is exhausted. Please configure your personal API key to continue.'
+            }), 503
+
+        if result['success'] and not using_own_key:
+            try:
+                increment_gemini_free_tier_usage(user_id)
+            except Exception as e:
+                logger.error(
+                    f"Failed to increment gemini_free_tier_usage for {user_id}: {e}",
+                    exc_info=True
+                )
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error in gemini_image_chat: {str(e)}", exc_info=True)
         return jsonify({
             'error': 'Service temporarily unavailable. Please try again later.'
         }), 500
@@ -1357,6 +1773,10 @@ def health_check():
         'image_providers': [p.__name__ for p in IMAGE_PROVIDERS],
         'routing_rules_loaded': bool(ROUTE_PROMPTS_MAP),
         'peer_review_rules_loaded': bool(PEER_REVIEW_PROMPTS_MAP),
+        'claude_available': CLAUDE_AVAILABLE,
+        'claude_models': list(CLAUDE_MODELS.keys()),
+        'gemini_available': GEMINI_AVAILABLE,
+        'gemini_models': list(GEMINI_IMAGE_MODELS.keys()),
         'timestamp': time.time()
     })
 

@@ -212,5 +212,62 @@ class TestHeaderRenames(unittest.TestCase):
         self.assertNotIn('Image Gen<', html)
 
 
+class TestCompareButtonRenamed(unittest.TestCase):
+    """2026-07-04: the primary submit button on the chat-comparison form was renamed
+    from "Compare Providers" to "Compare Responses" -- the button submits a prompt and
+    compares the *responses* returned by each provider, not the providers themselves,
+    and the new label was requested to make that clearer."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def _get_index_html(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            response = client.get('/')
+        return response.data.decode()
+
+    def test_compare_button_reads_compare_responses(self):
+        html = self._get_index_html()
+        button_start = html.index('id="compareBtn"')
+        button_snippet = html[button_start:button_start + 120]
+        self.assertIn('Compare Responses', button_snippet)
+
+    def test_old_compare_providers_label_is_gone(self):
+        html = self._get_index_html()
+        self.assertNotIn('Compare Providers', html)
+
+
+class TestSidebarRecentsEmptyStateText(unittest.TestCase):
+    """2026-07-04: the chat-mode Recents sidebar's empty-state copy was shortened from
+    "No conversations yet." to "Empty." in both index.html (live sidebar) and
+    history.html (read-only detail page's sidebar). This is a markup/inline-JS string
+    assertion, not an interactive-behavior test, per this file's established pattern --
+    renderHistoryGroups() only returns this string when groups.length === 0, which is
+    not exercised by the Flask test client (no JS runtime here)."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+
+    def test_index_page_chat_sidebar_empty_state_is_empty(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['user_id'] = 'uid1'
+            response = client.get('/')
+        html = response.data.decode()
+        self.assertIn('<div class="sidebar-empty-state">Empty.</div>', html)
+        self.assertNotIn('No conversations yet.', html)
+
+    def test_history_page_chat_sidebar_empty_state_is_empty(self):
+        with main.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['is_guest'] = True
+            response = client.get('/history/some-id')
+        html = response.data.decode()
+        self.assertIn('<div class="sidebar-empty-state">Empty.</div>', html)
+        self.assertNotIn('No conversations yet.', html)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -16,6 +16,19 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
+def _assert_where_called_with_field_filter(mock_where, field_path, op_string, value):
+    """auth/db.py builds queries with .where(filter=FieldFilter(...)) (the
+    firebase-admin-recommended form) instead of the deprecated positional
+    .where(field, op, value). FieldFilter has no __eq__, so assert_called_with
+    can't compare instances directly -- inspect the captured filter's attributes."""
+    mock_where.assert_called_once()
+    _, kwargs = mock_where.call_args
+    field_filter = kwargs['filter']
+    assert field_filter.field_path == field_path
+    assert field_filter.op_string == op_string
+    assert field_filter.value == value
+
+
 class TestSaveImageHistory(unittest.TestCase):
 
     def _build_mock_db(self, doc_id='imghist123'):
@@ -153,7 +166,9 @@ class TestGetImageHistoryList(unittest.TestCase):
             auth_db.get_image_history_list('uid1')
 
         mock_db.collection.assert_called_once_with('image_history')
-        mock_db.collection.return_value.where.assert_called_once_with('user_id', '==', 'uid1')
+        _assert_where_called_with_field_filter(
+            mock_db.collection.return_value.where, 'user_id', '==', 'uid1'
+        )
 
     def test_query_does_not_chain_order_by_avoiding_composite_index(self):
         from auth import db as auth_db

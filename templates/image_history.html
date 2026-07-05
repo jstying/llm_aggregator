@@ -927,6 +927,7 @@
             <ul class="nav-links">
                 <li><span class="nav-welcome">Welcome, {{ session.username }}</span></li>
                 <li><a href="{{ url_for('auth.profile') }}">Profile</a></li>
+                <li><a href="{{ url_for('apikey_config') }}">API Keys</a></li>
                 <li><a href="{{ url_for('auth.logout') }}">Logout</a></li>
             </ul>
         </div>

@@ -289,6 +289,7 @@
             <ul class="nav-links">
                 {% if session.user_id %}
                     <li><a href="{{ url_for('auth.profile') }}">Profile</a></li>
+                    <li><a href="{{ url_for('apikey_config') }}">API Keys</a></li>
                     <li><a href="{{ url_for('auth.logout') }}">Logout</a></li>
                 {% elif session.is_guest %}
                     <li><span class="guest-badge">Guest Mode</span></li>

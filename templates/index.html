@@ -804,6 +804,40 @@
             transform: translateY(-50%) rotate(180deg);
         }
 
+        /* max-height/overflow while closed are pinned to 0/hidden (2026-07-04 fix) rather
+           than relying on opacity:0 + visibility:hidden alone to "hide" this panel. Both
+           #customOptions and #imageCustomOptions (this class is shared by both) are
+           position:absolute and were staying display:block at their full (up to 250px)
+           box size even while closed -- invisible to the eye, but still counted toward
+           the nearest scrolling ancestor's scrollable overflow (ultimately
+           document.documentElement.scrollHeight, since nothing between here and <body>
+           clips it). That size tracks how many <option> children updateModelDropdown()/
+           updateImageModelDropdown() currently populate it with, which is the union of
+           every *selected* provider's models (the full union of every provider when none
+           are checked, which is the default/initial state) -- so simply loading the page,
+           before checking anything, pooled the largest possible model set into this
+           still-taking-up-space-but-invisible panel and inflated the page's true
+           scrollable height beyond what was visually needed. #pageScrollThumb's
+           size/position (see updatePageScrollIndicator()) is computed straight from that
+           scrollHeight, so this "phantom" extra height was reflected in the thumb too --
+           and it only stopped moving once the pooled model count (and therefore this
+           panel's hidden height) stopped changing, which happened to coincide with
+           checking a provider box (narrows the pooled set) or submitting Compare (adds
+           enough real, visible #results content to make the leftover phantom height
+           negligible by comparison). That's the reported "why do I have to click Compare
+           or check a provider box before the right-hand scrollbar locks and stops
+           shifting" bug -- root cause was never about the thumb's own math, it was this
+           panel silently resizing while "closed". Pinning max-height:0/overflow:hidden in
+           the closed state makes its contribution exactly 0 regardless of pooled model
+           count, at every point in time, including before any interaction.
+           transition-delay on max-height (0s duration, 0.15s delay) mirrors the native
+           behavior of the `visibility` transition already used here: closing this panel
+           keeps its prior (open) box size for the full 0.15s fade-out -- so the collapse
+           to 0 happens only once it's already fully invisible, not visibly mid-fade --
+           then snaps to 0 at the very end. The `.open` rule below doesn't repeat that
+           delay in its own transition list, so opening snaps max-height/overflow back to
+           their usable values instantly, in sync with the immediate `visibility:visible`
+           flip, while opacity/transform still ease in over 0.15s as before. */
         .custom-options {
             position: absolute;
             display: block;
@@ -819,15 +853,19 @@
             opacity: 0;
             visibility: hidden;
             transform: translateY(-10px);
-            transition: all 0.15s ease;
-            max-height: 250px;
-            overflow-y: auto;
+            transition: opacity 0.15s ease, transform 0.15s ease,
+                        visibility 0s linear 0.15s, max-height 0s linear 0.15s;
+            max-height: 0;
+            overflow: hidden;
         }
 
         .custom-select-wrapper.open .custom-options {
+            transition: opacity 0.15s ease, transform 0.15s ease;
             opacity: 1;
             visibility: visible;
             transform: translateY(0);
+            max-height: 250px;
+            overflow-y: auto;
         }
 
         .custom-option {
@@ -1005,6 +1043,167 @@
 
         .image-provider-trigger:checked + .checkbox-box::after {
             opacity: 1;
+        }
+
+        /* Claude（Anthropic 官方 API）Provider 卡片：视觉上与 .provider-checkbox/
+           .image-provider-checkbox 一致，但 class 名称必须独立（同上方注释的原则）——
+           不能复用 .provider-checkbox/.provider-trigger，否则会被
+           document.querySelectorAll('.provider-trigger') 一并纳入提交给 /api/compare
+           的 providers 数组，而 Claude 根本不在后端 g4f Provider 名字空间里；也不能复用
+           .image-provider-checkbox/.image-provider-trigger，同理。Claude 是第三条完全
+           独立的调用链路，走自己的 /api/claude-chat，结果只在前端渲染时并入同一份
+           results 数组，调度上互不相干。 */
+        .claude-provider-checkbox {
+            display: flex;
+            align-items: center;
+            padding: 14px;
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            cursor: pointer;
+            height: 66px;
+            box-sizing: border-box;
+            overflow: hidden;
+            transition: background-color 0.1s ease, border-color 0.1s ease;
+        }
+
+        .claude-provider-checkbox:hover {
+            background: rgba(6, 193, 103, 0.03);
+            border-color: #06c167;
+        }
+
+        .claude-provider-checkbox.is-checked {
+            border-color: #06c167;
+        }
+
+        .claude-provider-checkbox input {
+            position: absolute;
+            width: 0;
+            height: 0;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .claude-provider-trigger:checked + .checkbox-box {
+            background: #06c167;
+            border-color: #06c167;
+        }
+
+        .claude-provider-trigger:checked + .checkbox-box::after {
+            opacity: 1;
+        }
+
+        /* 游客/匿名访客锁定态（第 3 节"Guest 模式拦截"）：整卡置灰 + not-allowed 光标，
+           配合 <label title="..."> 的浏览器原生 tooltip 与卡片内 <small> 文案双重提示
+           "请登录以解锁前沿模型"。真正的拦截由 <input disabled> 完成，这里只是视觉呈现。 */
+        .claude-provider-checkbox.is-locked {
+            cursor: not-allowed;
+            opacity: 0.5;
+            background: #f5f5f5;
+        }
+
+        .claude-provider-checkbox.is-locked:hover {
+            background: #f5f5f5;
+            border-color: #e8e8e8;
+        }
+
+        .claude-model-select-group select {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            background: #ffffff;
+            color: #09110e;
+        }
+
+        .claude-model-select-group select:disabled {
+            background: #f5f5f5;
+            color: #a0a0a0;
+            cursor: not-allowed;
+        }
+
+        /* Gemini（"Nano Banana"官方 API）Provider 卡片，2026-07-04 新增：与
+           .claude-provider-checkbox 视觉上完全一致（同一套样式规则,只是换了 class
+           名字），但这张卡片出现在图片生成表单里而不是对话表单里——Claude 是对话场景
+           的 frontier provider,Gemini 是文生图场景的 frontier provider,两者是并列
+           但完全独立的第三/第四条调用链路。class 名称必须独立，不能复用
+           .image-provider-checkbox/.image-provider-trigger（同上方注释的隔离原则）——
+           否则会被 document.querySelectorAll('.image-provider-trigger') 一并纳入提交
+           给 /api/generate-images 的 providers 数组，而 Gemini 根本不在后端
+           IMAGE_PROVIDERS 名字空间里。Gemini 走自己的 /api/gemini-image，结果只在
+           前端渲染时并入同一份 image 结果数组，调度上互不相干。 */
+        .gemini-provider-checkbox {
+            display: flex;
+            align-items: center;
+            padding: 14px;
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            cursor: pointer;
+            height: 66px;
+            box-sizing: border-box;
+            overflow: hidden;
+            transition: background-color 0.1s ease, border-color 0.1s ease;
+        }
+
+        .gemini-provider-checkbox:hover {
+            background: rgba(6, 193, 103, 0.03);
+            border-color: #06c167;
+        }
+
+        .gemini-provider-checkbox.is-checked {
+            border-color: #06c167;
+        }
+
+        .gemini-provider-checkbox input {
+            position: absolute;
+            width: 0;
+            height: 0;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .gemini-provider-trigger:checked + .checkbox-box {
+            background: #06c167;
+            border-color: #06c167;
+        }
+
+        .gemini-provider-trigger:checked + .checkbox-box::after {
+            opacity: 1;
+        }
+
+        .gemini-provider-checkbox.is-locked {
+            cursor: not-allowed;
+            opacity: 0.5;
+            background: #f5f5f5;
+        }
+
+        .gemini-provider-checkbox.is-locked:hover {
+            background: #f5f5f5;
+            border-color: #e8e8e8;
+        }
+
+        .gemini-model-select-group select {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            background: #ffffff;
+            color: #09110e;
+        }
+
+        .gemini-model-select-group select:disabled {
+            background: #f5f5f5;
+            color: #a0a0a0;
+            cursor: not-allowed;
         }
 
         /* ---- Image generation mode: sidebar entry point + results grid ---- */
@@ -1540,6 +1739,7 @@
                 {% if session.user_id %}
                     <li><span class="nav-welcome">Welcome, {{ session.username }}</span></li>
                     <li><a href="{{ url_for('auth.profile') }}">Profile</a></li>
+                    <li><a href="{{ url_for('apikey_config') }}">API Keys</a></li>
                     <li><a href="{{ url_for('auth.logout') }}">Logout</a></li>
                 {% elif session.is_guest %}
                     <li><span class="guest-badge">Guest Mode</span></li>
@@ -1628,7 +1828,43 @@
                 </div>
 
                 <div class="form-group">
-                    <label>Select Providers (leave all unchecked to test all):</label>
+                    <!-- Frontier providers (2026-07-04 新增): paid/official-API providers,
+                         kept in their own row and their own container -- deliberately
+                         separate from the free g4f providers below (#providerSelection).
+                         Claude is the only one wired up today; this container is where
+                         future ChatGPT/Gemini frontier provider cards should be appended
+                         once those integrations exist, not into #providerSelection. -->
+                    <label>Select frontier providers:</label>
+                    <div class="provider-selection" id="frontierProviderSelection">
+                        <!-- Claude（Anthropic 官方 API，2026-07-04 新增）：不使用 g4f
+                             providers 循环里的 .provider-checkbox/.provider-trigger class
+                             （见 CSS 注释）。游客/匿名访客整卡置灰 + 输入框 disabled，
+                             双重提示"请登录以解锁前沿模型"。 -->
+                        <label class="claude-provider-checkbox{{ ' is-locked' if not session.user_id else '' }}"
+                               id="claudeProviderCard"
+                               title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
+                            <input type="checkbox" id="claudeProviderTrigger" class="claude-provider-trigger"
+                                   {{ 'disabled' if not session.user_id else '' }}>
+                            <span class="checkbox-box"></span>
+                            <div class="provider-meta">
+                                <span>Claude ✨</span>
+                                <small>{{ 'Anthropic official API' if session.user_id else 'Log in to unlock frontier models' }}</small>
+                            </div>
+                        </label>
+                        <!-- Reserved for future ChatGPT/Gemini frontier provider cards. -->
+                    </div>
+                </div>
+
+                <div class="form-group claude-model-select-group">
+                    <label for="claudeModelSelect">Claude Model:</label>
+                    <select id="claudeModelSelect" disabled>
+                        <option value="claude-sonnet-5">Claude Sonnet 5</option>
+                        <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Select free providers (leave all unchecked to test all):</label>
                     <div class="provider-selection" id="providerSelection">
                         {% if providers %}
                             {% for p in providers %}
@@ -1648,7 +1884,7 @@
                 </div>
 
                 <div class="form-group">
-                    <label>Select Model (Single Selection):</label>
+                    <label>Select free models (single selection):</label>
                     <div class="custom-select-wrapper" id="customSelectWrapper">
                         <div class="custom-select-trigger" id="customSelectTrigger">-- Use Provider's Default Model --</div>
                         <div class="custom-options" id="customOptions">
@@ -1661,7 +1897,7 @@
 
                 <div class="button-group">
                     <button type="submit" class="btn btn-primary" id="compareBtn">
-                        Compare Providers
+                        Compare Responses
                     </button>
                     <button type="button" class="btn btn-secondary" id="clearBtn">
                         Clear Results
@@ -1706,7 +1942,42 @@
                 </div>
 
                 <div class="form-group">
-                    <label>Select Image Providers (leave all unchecked to test all):</label>
+                    <!-- Frontier image providers (2026-07-04 新增): paid/official-API image
+                         providers, mirroring #frontierProviderSelection in the compare form
+                         above but scoped to the image-generation form. Gemini (Nano Banana Pro)
+                         is the only one wired up today; this container is where future
+                         ChatGPT/ other frontier image provider cards should be appended once
+                         those integrations exist, not into #imageProviderSelection. -->
+                    <label>Select frontier image providers:</label>
+                    <div class="provider-selection" id="frontierImageProviderSelection">
+                        <!-- Gemini（Google 官方 google-genai API，2026-07-04 新增）：不使用
+                             g4f image providers 循环里的 .image-provider-checkbox/
+                             .image-provider-trigger class（见 CSS 注释）。游客/匿名访客整卡
+                             置灰 + 输入框 disabled，双重提示"Log in to unlock frontier models"。 -->
+                        <label class="gemini-provider-checkbox{{ ' is-locked' if not session.user_id else '' }}"
+                               id="geminiProviderCard"
+                               title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
+                            <input type="checkbox" id="geminiProviderTrigger" class="gemini-provider-trigger"
+                                   {{ 'disabled' if not session.user_id else '' }}>
+                            <span class="checkbox-box"></span>
+                            <div class="provider-meta">
+                                <span>Gemini ✨</span>
+                                <small>{{ 'Google official API' if session.user_id else 'Log in to unlock frontier models' }}</small>
+                            </div>
+                        </label>
+                        <!-- Reserved for future frontier image provider cards. -->
+                    </div>
+                </div>
+
+                <div class="form-group gemini-model-select-group">
+                    <label for="geminiModelSelect">Gemini Model:</label>
+                    <select id="geminiModelSelect" disabled>
+                        <option value="nano-banana-pro">Nano Banana Pro</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Select free image providers (leave all unchecked to test all):</label>
                     <div class="provider-selection" id="imageProviderSelection">
                         {% if image_providers %}
                             {% for p in image_providers %}
@@ -1726,7 +1997,7 @@
                 </div>
 
                 <div class="form-group">
-                    <label>Select Model (Single Selection):</label>
+                    <label>Select free models (single selection):</label>
                     <div class="custom-select-wrapper" id="imageCustomSelectWrapper">
                         <div class="custom-select-trigger" id="imageCustomSelectTrigger">-- Use Provider's Default Model --</div>
                         <div class="custom-options" id="imageCustomOptions">
@@ -2306,6 +2577,107 @@
 
         updateModelDropdown();
 
+        // ==================================================
+        // Claude（Anthropic 官方 API）：与上面的 g4f Provider 复选框完全独立（见
+        // .claude-provider-checkbox/.claude-provider-trigger 的 CSS 注释）——不参与
+        // providerTriggers/providerCards 的批量查询，不写入 /api/compare 的 providers
+        // 数组，而是单独提交到 /api/claude-chat，再把结果并入同一份 displayResults()
+        // 渲染的 results 数组，实现"同一个结果网格里视觉对比"，但后端调度链路
+        // （超时/重试/互评）完全隔离，互不影响。
+        // ==================================================
+        const claudeProviderCard = document.getElementById('claudeProviderCard');
+        const claudeProviderTrigger = document.getElementById('claudeProviderTrigger');
+        const claudeModelSelect = document.getElementById('claudeModelSelect');
+
+        function syncClaudeModelSelectEnabled() {
+            claudeModelSelect.disabled = !(claudeProviderTrigger && claudeProviderTrigger.checked && !claudeProviderTrigger.disabled);
+        }
+
+        if (claudeProviderTrigger) {
+            claudeProviderTrigger.addEventListener('change', () => {
+                claudeProviderCard.classList.toggle('is-checked', claudeProviderTrigger.checked);
+                syncClaudeModelSelectEnabled();
+            });
+        }
+        syncClaudeModelSelectEnabled();
+
+        // 超限弹窗（第 3 节）：免费前沿模型试用额度（1 次）用完后，后端返回
+        // {"error": "FREE_TIER_EXHAUSTED"}，前端立刻弹出这个模态弹窗，引导用户去配置
+        // 个人 API Key。复用 .confirm-modal-overlay/.confirm-modal 的既有视觉样式
+        // （见 showDeleteConfirmModal），但这是一个独立的、懒创建的 overlay 节点。
+        function showClaudeUpgradeModal() {
+            let overlay = document.getElementById('claudeUpgradeModalOverlay');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'claudeUpgradeModalOverlay';
+                overlay.className = 'confirm-modal-overlay';
+                overlay.innerHTML = `
+                    <div class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="claudeUpgradeModalTitle">
+                        <div class="confirm-modal-title" id="claudeUpgradeModalTitle">Frontier Model Trial Quota Used Up</div>
+                        <div class="confirm-modal-body">Your free frontier model trial quota (1 use) has been used up. Please configure your personal API key to keep using premium models.</div>
+                        <div class="confirm-modal-actions">
+                            <button type="button" class="confirm-modal-btn confirm-modal-btn-cancel" id="claudeUpgradeModalCancelBtn">Maybe Later</button>
+                            <button type="button" class="confirm-modal-btn confirm-modal-btn-delete" id="claudeUpgradeModalGoBtn">Configure API Key</button>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(overlay);
+                overlay.querySelector('#claudeUpgradeModalCancelBtn').addEventListener('click', () => {
+                    overlay.classList.remove('visible');
+                });
+                overlay.querySelector('#claudeUpgradeModalGoBtn').addEventListener('click', () => {
+                    window.location.href = '/apikey-config';
+                });
+                overlay.addEventListener('click', (e) => {
+                    if (e.target === overlay) overlay.classList.remove('visible');
+                });
+            }
+            overlay.classList.add('visible');
+        }
+
+        // 请求 Claude，返回一个与 displayResults() 期待的 result 形状兼容的对象（不含
+        // peer_reviews 时补一个空数组，保证 renderPeerReviews() 不需要额外判空）。
+        // 返回 null 表示"这次不应该渲染任何卡片"（目前仅 FREE_TIER_EXHAUSTED 命中，
+        // 因为超限弹窗已经完整传达了信息，不需要再额外堆一张失败卡片）。
+        async function fetchClaudeResult(prompt, model) {
+            try {
+                const headers = { 'Content-Type': 'application/json' };
+                const userKey = localStorage.getItem('user_claude_key');
+                if (userKey) headers['X-User-Claude-Key'] = userKey;
+
+                const response = await fetch('/api/claude-chat', {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ prompt, model })
+                });
+
+                let payload = null;
+                try {
+                    payload = await response.json();
+                } catch (_) {}
+
+                if (!response.ok) {
+                    if (payload && payload.error === 'FREE_TIER_EXHAUSTED') {
+                        showClaudeUpgradeModal();
+                        return null;
+                    }
+                    const message = (payload && (payload.message || payload.error)) || `Server error: ${response.status}`;
+                    return {
+                        provider: 'Claude', success: false, response: '', error: message,
+                        response_time: 0, model, type: 'anthropic', peer_reviews: []
+                    };
+                }
+
+                return Object.assign({ peer_reviews: [] }, payload);
+            } catch (error) {
+                console.error('Error calling Claude:', error);
+                return {
+                    provider: 'Claude', success: false, response: '', error: 'Network error contacting Claude.',
+                    response_time: 0, model, type: 'anthropic', peer_reviews: []
+                };
+            }
+        }
+
         document.getElementById('compareForm').addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -2357,6 +2729,20 @@
                     return;
                 }
 
+                if (claudeProviderTrigger && claudeProviderTrigger.checked && !claudeProviderTrigger.disabled) {
+                    const claudeResult = await fetchClaudeResult(prompt, claudeModelSelect.value);
+                    if (claudeResult) {
+                        data.results.push(claudeResult);
+                        data.total_providers += 1;
+                        if (claudeResult.success) data.successful_providers += 1;
+                        // 与 compare_providers() 排序规则保持一致：成功优先，耗时短优先。
+                        data.results.sort((a, b) => {
+                            if (a.success !== b.success) return a.success ? -1 : 1;
+                            return a.response_time - b.response_time;
+                        });
+                    }
+                }
+
                 displayResults(data);
 
                 if (data.history_id) {
@@ -2390,6 +2776,11 @@
             providerCards.forEach(syncCardChecked);
             modelSelect.value = '';
             updateModelDropdown();
+            if (claudeProviderTrigger) {
+                claudeProviderTrigger.checked = false;
+                claudeProviderCard.classList.remove('is-checked');
+                syncClaudeModelSelectEnabled();
+            }
         });
 
         function showLoading() {
@@ -2539,6 +2930,110 @@
 
         updateImageModelDropdown();
 
+        // ==================================================
+        // Gemini（Google 官方 google-genai API，"Nano Banana"，2026-07-04 新增）：与上面
+        // 的 g4f 图片 Provider 复选框完全独立（见 .gemini-provider-checkbox/
+        // .gemini-provider-trigger 的 CSS 注释）——不参与 imageProviderTriggers/
+        // imageProviderCards 的批量查询，不写入 /api/generate-images 的 providers 数组，
+        // 而是单独提交到 /api/gemini-image，再把结果并入同一份 displayImageResults()
+        // 渲染的 results 数组，实现"同一个结果网格里视觉对比"，但后端调度链路完全隔离。
+        // 这套逻辑是 Claude 那套（fetchClaudeResult/showClaudeUpgradeModal 等）的镜像，
+        // 只是作用域从对话表单换成图片表单，因此各自独立维护一份而不是共享函数——与
+        // 项目里 image_history/history 两套 CRUD 逐一同构但不共享代码的既有惯例一致。
+        // ==================================================
+        const geminiProviderCard = document.getElementById('geminiProviderCard');
+        const geminiProviderTrigger = document.getElementById('geminiProviderTrigger');
+        const geminiModelSelect = document.getElementById('geminiModelSelect');
+
+        function syncGeminiModelSelectEnabled() {
+            geminiModelSelect.disabled = !(geminiProviderTrigger && geminiProviderTrigger.checked && !geminiProviderTrigger.disabled);
+        }
+
+        if (geminiProviderTrigger) {
+            geminiProviderTrigger.addEventListener('change', () => {
+                geminiProviderCard.classList.toggle('is-checked', geminiProviderTrigger.checked);
+                syncGeminiModelSelectEnabled();
+            });
+        }
+        syncGeminiModelSelectEnabled();
+
+        // 超限弹窗：与 showClaudeUpgradeModal() 同构（同样的通用"前沿模型试用额度已用完"
+        // 文案，独立的懒创建 overlay 节点），免费前沿模型试用额度（1 次）用完后，后端
+        // 返回 {"error": "FREE_TIER_EXHAUSTED"}，前端立刻弹出这个模态弹窗。
+        function showGeminiUpgradeModal() {
+            let overlay = document.getElementById('geminiUpgradeModalOverlay');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'geminiUpgradeModalOverlay';
+                overlay.className = 'confirm-modal-overlay';
+                overlay.innerHTML = `
+                    <div class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="geminiUpgradeModalTitle">
+                        <div class="confirm-modal-title" id="geminiUpgradeModalTitle">Frontier Model Trial Quota Used Up</div>
+                        <div class="confirm-modal-body">Your free frontier model trial quota (1 use) has been used up. Please configure your personal API key to keep using premium models.</div>
+                        <div class="confirm-modal-actions">
+                            <button type="button" class="confirm-modal-btn confirm-modal-btn-cancel" id="geminiUpgradeModalCancelBtn">Maybe Later</button>
+                            <button type="button" class="confirm-modal-btn confirm-modal-btn-delete" id="geminiUpgradeModalGoBtn">Configure API Key</button>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(overlay);
+                overlay.querySelector('#geminiUpgradeModalCancelBtn').addEventListener('click', () => {
+                    overlay.classList.remove('visible');
+                });
+                overlay.querySelector('#geminiUpgradeModalGoBtn').addEventListener('click', () => {
+                    window.location.href = '/apikey-config';
+                });
+                overlay.addEventListener('click', (e) => {
+                    if (e.target === overlay) overlay.classList.remove('visible');
+                });
+            }
+            overlay.classList.add('visible');
+        }
+
+        // 请求 Gemini，返回一个与 displayImageResults() 期待的 result 形状兼容的对象
+        // （image 8-key 契约：provider/success/url/b64_json/error/response_time/model/type，
+        // 无 peer_reviews 字段——图片结果本来就没有互评这个概念）。返回 null 表示"这次
+        // 不应该渲染任何卡片"（目前仅 FREE_TIER_EXHAUSTED 命中，因为超限弹窗已经完整
+        // 传达了信息，不需要再额外堆一张失败卡片）。
+        async function fetchGeminiImageResult(prompt, model) {
+            try {
+                const headers = { 'Content-Type': 'application/json' };
+                const userKey = localStorage.getItem('user_gemini_key');
+                if (userKey) headers['X-User-Gemini-Key'] = userKey;
+
+                const response = await fetch('/api/gemini-image', {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ prompt, model })
+                });
+
+                let payload = null;
+                try {
+                    payload = await response.json();
+                } catch (_) {}
+
+                if (!response.ok) {
+                    if (payload && payload.error === 'FREE_TIER_EXHAUSTED') {
+                        showGeminiUpgradeModal();
+                        return null;
+                    }
+                    const message = (payload && (payload.message || payload.error)) || `Server error: ${response.status}`;
+                    return {
+                        provider: 'Gemini', success: false, url: null, b64_json: null, error: message,
+                        response_time: 0, model, type: 'google_genai'
+                    };
+                }
+
+                return payload;
+            } catch (error) {
+                console.error('Error calling Gemini:', error);
+                return {
+                    provider: 'Gemini', success: false, url: null, b64_json: null, error: 'Network error contacting Gemini.',
+                    response_time: 0, model, type: 'google_genai'
+                };
+            }
+        }
+
         document.getElementById('imageForm').addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -2590,12 +3085,28 @@
                     return;
                 }
 
+                if (geminiProviderTrigger && geminiProviderTrigger.checked && !geminiProviderTrigger.disabled) {
+                    const geminiResult = await fetchGeminiImageResult(prompt, geminiModelSelect.value);
+                    if (geminiResult) {
+                        data.results.push(geminiResult);
+                        data.total_providers += 1;
+                        if (geminiResult.success) data.successful_providers += 1;
+                        // 与 generate_images() 排序规则保持一致：成功优先，耗时短优先。
+                        data.results.sort((a, b) => {
+                            if (a.success !== b.success) return a.success ? -1 : 1;
+                            return a.response_time - b.response_time;
+                        });
+                    }
+                }
+
                 displayImageResults(data);
 
                 // Only logged-in users get a history_id back (see generate_images() in
                 // main.py) -- image generation history is persisted exclusively for them,
                 // with no sessionStorage-based guest fallback (unlike the chat Recents list),
-                // since guests are not allowed to use the image Recents sidebar at all.
+                // since guests are not allowed to use the image Recents sidebar at all. Gemini
+                // results are appended client-side after that history save already happened,
+                // so (like Claude) they are never persisted into image_history either.
                 if (data.history_id) {
                     loadSidebarImageHistoryList();
                 }
@@ -2614,6 +3125,11 @@
             imageProviderCards.forEach(syncImageCardChecked);
             imageModelSelect.value = '';
             updateImageModelDropdown();
+            if (geminiProviderTrigger) {
+                geminiProviderTrigger.checked = false;
+                geminiProviderCard.classList.remove('is-checked');
+                syncGeminiModelSelectEnabled();
+            }
         });
 
         function showImageLoading() {
@@ -2811,7 +3327,7 @@
 
         function renderHistoryGroups(groups) {
             if (groups.length === 0) {
-                return '<div class="sidebar-empty-state">No conversations yet.</div>';
+                return '<div class="sidebar-empty-state">Empty.</div>';
             }
             return groups.map(g => `
                 <div class="history-group">

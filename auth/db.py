@@ -11,6 +11,7 @@ db = None
 try:
     import firebase_admin
     from firebase_admin import credentials, firestore
+    from google.cloud.firestore_v1.base_query import FieldFilter
 
     if not firebase_admin._apps:
         # Prefer key file locally; ApplicationDefault() resolves lazily and fails at firestore.client()
@@ -30,7 +31,7 @@ except Exception as e:
 
 
 def get_user_by_username(username):
-    query = db.collection('users').where('username', '==', username).limit(1).stream()
+    query = db.collection('users').where(filter=FieldFilter('username', '==', username)).limit(1).stream()
     for doc in query:
         user_data = doc.to_dict()
         user_data['id'] = doc.id
@@ -39,7 +40,7 @@ def get_user_by_username(username):
 
 
 def get_user_by_email(email):
-    query = db.collection('users').where('email', '==', email).limit(1).stream()
+    query = db.collection('users').where(filter=FieldFilter('email', '==', email)).limit(1).stream()
     for doc in query:
         user_data = doc.to_dict()
         user_data['id'] = doc.id
@@ -98,7 +99,7 @@ def get_chat_history_list(user_id, limit=20, offset=0):
     # 都需要单独在控制台创建，新环境下若忘记创建会直接抛 FAILED_PRECONDITION 500。
     # 为了不依赖这一外部手动步骤，排序和分页改为取回该用户的全部历史后在应用层完成；
     # 单个用户的对话历史量级很小，这里的开销可以忽略。
-    query = db.collection('history').where('user_id', '==', user_id)
+    query = db.collection('history').where(filter=FieldFilter('user_id', '==', user_id))
     history_list = []
     for doc in query.stream():
         item = doc.to_dict()
@@ -232,7 +233,7 @@ def get_image_history_list(user_id, limit=20, offset=0):
 
     # 与 get_chat_history_list 同理：只做单字段等值查询，排序/分页留在 Python 层，
     # 避免依赖需要在 Firebase 控制台手动创建的复合索引。
-    query = db.collection('image_history').where('user_id', '==', user_id)
+    query = db.collection('image_history').where(filter=FieldFilter('user_id', '==', user_id))
     history_list = []
     for doc in query.stream():
         item = doc.to_dict()
@@ -319,3 +320,65 @@ def toggle_pin_image_history(user_id, history_id):
     doc_ref.update(update_data)
     logger.info(f"Toggled pin for image history {history_id} to {new_pinned}")
     return new_pinned
+
+
+# ==================================================
+# Claude 免费额度计数器（2026-07-04 新增）：为每个注册用户在 'users' 集合文档上维护一个
+# 整型字段 claude_free_tier_usage，记录"已用掉开发者账户额度调用 Claude 的次数"。字段
+# 初始值隐式为 0——不需要在 create_user() 里预先写入，读取时用
+# doc.to_dict().get('claude_free_tier_usage', 0) 兜底即可，与 is_pinned 等字段的
+# 处理方式一致。仅在用户未自带 Key、且调用成功时才由 main.py 的 claude_chat() 路由
+# 调用 increment_claude_free_tier_usage()——本模块的两个函数只负责读/写这一个字段，
+# 不关心调用方是否携带了自带 Key（那部分路由逻辑见 main.py）。
+# ==================================================
+def get_claude_free_tier_usage(user_id):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("get_claude_free_tier_usage called but Firebase unavailable")
+        return 0
+
+    doc = db.collection('users').document(user_id).get()
+    if not doc.exists:
+        return 0
+    return doc.to_dict().get('claude_free_tier_usage', 0)
+
+
+def increment_claude_free_tier_usage(user_id):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("increment_claude_free_tier_usage called but Firebase unavailable")
+        return None
+
+    doc_ref = db.collection('users').document(user_id)
+    doc_ref.update({'claude_free_tier_usage': firestore.Increment(1)})
+    logger.info(f"Incremented claude_free_tier_usage for user {user_id}")
+    return True
+
+
+# ==================================================
+# Gemini（Nano Banana）免费额度计数器（2026-07-04 新增）：与 Claude 的两个计数器函数
+# 逐一同构，但读写 users 集合文档上一个独立的整型字段 gemini_free_tier_usage，与
+# claude_free_tier_usage 互不共享额度——一个用户可以分别免费试用 1 次 Claude 和 1 次
+# Gemini，两边互不影响。字段同样不需要在 create_user() 里预先写入，读取时用
+# doc.to_dict().get('gemini_free_tier_usage', 0) 兜底默认 0 即可。同样没有归属校验
+# 的概念（user_id 直接来自 session['user_id']），也存在与 Claude 计数器一致的、
+# 刻意接受的非原子性（检查与递增是两次独立的 Firestore 读写）。
+# ==================================================
+def get_gemini_free_tier_usage(user_id):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("get_gemini_free_tier_usage called but Firebase unavailable")
+        return 0
+
+    doc = db.collection('users').document(user_id).get()
+    if not doc.exists:
+        return 0
+    return doc.to_dict().get('gemini_free_tier_usage', 0)
+
+
+def increment_gemini_free_tier_usage(user_id):
+    if not FIREBASE_AVAILABLE:
+        logger.warning("increment_gemini_free_tier_usage called but Firebase unavailable")
+        return None
+
+    doc_ref = db.collection('users').document(user_id)
+    doc_ref.update({'gemini_free_tier_usage': firestore.Increment(1)})
+    logger.info(f"Incremented gemini_free_tier_usage for user {user_id}")
+    return True
