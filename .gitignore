@@ -38,5 +38,8 @@ available_free_image_providers.txt
 # Firebase private key file
 firebase-key.json
 
+# App Engine 部署配置：含真实 SECRET_KEY / API Key，严禁提交，用 app.yaml.example 做模板
+app.yaml
+
 # 忽略 generated media 文件夹下所有生成的图片
 generated_media/

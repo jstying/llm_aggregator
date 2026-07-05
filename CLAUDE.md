@@ -84,7 +84,9 @@ llm_aggregator/
 ├── availability_g4f/          # provider 可用性探测脚本，开发辅助用，不部署
 ├── firebase-key.json           # 本地 Firebase 密钥，严禁提交
 ├── .env                        # 本地环境变量，严禁提交
-├── requirements.txt / app.yaml
+├── app.yaml                    # GAE 部署配置，含真实密钥，严禁提交
+├── app.yaml.example            # app.yaml 占位符模板，仓库里唯一保留的版本
+├── requirements.txt
 └── env/                         # 虚拟环境，不提交
 ```
 
@@ -459,7 +461,7 @@ gcloud app deploy app.yaml
 gcloud app logs tail -s default
 ```
 
-`entrypoint` 用 `gunicorn -b :$PORT main:app`，runtime 是 python312，自动缩放 1 到 10 个实例。`SECRET_KEY` 必须在 `app.yaml` 里设置。`firebase-key.json` 不部署，GAE 用 ADC。`ANTHROPIC_API_KEY` 和 `GEMINI_API_KEY` 也应该在 `app.yaml` 里设置，但现在还没配上，部署前需要手动补,而且真实 Key 不应该明文提交到仓库。
+`entrypoint` 用 `gunicorn -b :$PORT main:app`，runtime 是 python312，自动缩放 1 到 10 个实例。`SECRET_KEY`/`ANTHROPIC_API_KEY`/`GEMINI_API_KEY` 都在 `app.yaml` 里设置。`app.yaml` 本身已加入 `.gitignore`,不提交真实密钥;仓库里只保留占位符模板 `app.yaml.example`,本地部署前复制一份改名成 `app.yaml` 并填入真实值。`firebase-key.json` 不部署，GAE 用 ADC。
 
 ## 12. 代码规范
 
@@ -512,3 +514,5 @@ Gemini 核心链路：跟 Claude 完全对称，只是把聊天场景换成图�
 `[前沿模型人设 + 跨 g4f/前沿互评] 更新原因：三个前沿文本 provider（Claude/ChatGPT/Gemini）此前既没有隐形人设，也完全不参与互评（互评只覆盖 g4f 名字空间）；现在要求接入真实公司理念的人设，并让前沿模型与免费 g4f provider 双向互评。调整内容：1. 新增 FRONTIER_STYLE_PROMPTS_MAP（6 个前沿 model_key，答题人设，立足 Anthropic/OpenAI/Google 各自真实理念）和 FRONTIER_JUDGE_PROMPTS_MAP（对应裁判人设，.update() 合并进 PEER_REVIEW_PROMPTS_MAP，与 g4f 是否可用无关）；call_claude_model()/call_chatgpt_model()/call_gemini_text_model() 新增 apply_persona 参数（默认 True 套用人设，答题用；互评时传 False，跟 g4f 的 run_peer_review() 从不套用 ROUTE_PROMPTS_MAP 同理）。同时微调 4 个免费人设措辞，与新增的前沿人设放在一起读起来仍各自分明。2. compare_providers() 不再自己跑互评，只保留 peer_reviews:[] 字段初始化；新增 run_frontier_peer_review()/run_cross_peer_review() 和 POST /api/peer-review（新增 auth/db.py 的 update_chat_history_peer_reviews()，用于把最终互评结果回写进已有历史记录，只更新不创建）——前端在 g4f + 三个前沿 provider 的结果都拿到之后统一调这个新接口，触发所有成功结果之间的双向互评。3. /api/peer-review 有安全上限：最多接受 MAX_PEER_REVIEW_ENTRIES(10) 条结果，且逐条校验 provider/model/type 组合与对应 *_AVAILABLE 标志，无效条目静默丢弃；只要有效结果里出现前沿 reviewer 就必须登录，纯 g4f 列表保持游客可用；审校复用答题时的同一把 Key（X-User-*-Key 请求头），不检查也不消耗额外免费额度。测试见 tests/test_peer_review_cross_frontier.py，tests/test_main_blackbox.py 与 tests/test_main_graybox.py 的既有互评用例已同步改为断言新架构。`
 
 `[UI 一致性/文案打磨] 更新原因：/profile、/apikey-config 等 auth 页跳转时导航栏明显跳动，guest 黑色横幅滚动时消失，几处文案/配色不统一。调整内容：1. auth/base.html 补上与 index.html 同源的 --page-zoom:0.88 缩放 + 隐藏原生滚动条 + 边到边 nav-container/.nav-left(260px) 布局，消除跳转跳动。2. index.html/history.html 把 .navbar 与 .guest-banner 一起包进新增的 .page-header-sticky（position:sticky;top:0）容器，横幅不再随滚动消失；history.html/image_history.html 的 .nav-container 移除过时的 justify-content:space-between，改为 .nav-links{margin-left:auto} 与 index.html 对齐。3. .confirm-modal max-width 360px→440px（配额用尽弹窗等共享此类）；新增 .btn-stop（琥珀色）替换 Stop Generating 按钮原来的黑白配色；index.html "Download PNG"→"Download Image"，与 image_history.html 统一；"Continue as guest"→"Continue as Guest"，"Testing providers.../Generating images..."→ Title Case。4. auth/routes.py、main.py 的 flash() 文案补齐结尾句号（含 "You have been logged out."）。测试见 tests/test_ui_consistency_polish_blackbox.py。`
+
+`[SECRET_KEY 泄露修复] 更新原因：app.yaml 里的真实 SECRET_KEY 被明文提交进了 git（此前已经因为同样问题轮换过一次，这次是重犯）。Flask session 只签名不加密，这个 key 泄露等于任何人都能伪造任意 user_id 的 session,完全绕过 Firebase 登录。调整内容：1. 轮换了新的 SECRET_KEY。2. app.yaml 加入 .gitignore,不再提交真实密钥;新增 app.yaml.example 作为仓库里唯一保留的占位符模板（同时把 ANTHROPIC_API_KEY/GEMINI_API_KEY 两个字段也一并放进模板）。3. 用 git rm --cached 把 app.yaml 从 git 索引移除（本地文件不变），后续部署前需要本地手动复制 app.yaml.example 改名成 app.yaml 并填真实值。历史提交里的旧 key 还没清理,如果仓库曾经 public 过需要额外评估要不要重写 git 历史。`
