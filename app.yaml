@@ -4,9 +4,9 @@ entrypoint: gunicorn -b :$PORT main:app
 
 env_variables:
   FLASK_ENV: production
-  SECRET_KEY: "REPLACE_WITH_A_LONG_RANDOM_SECRET"
-  ANTHROPIC_API_KEY: "REPLACE_WITH_YOUR_ANTHROPIC_API_KEY"
-  GEMINI_API_KEY: "REPLACE_WITH_YOUR_GEMINI_API_KEY"
+  SECRET_KEY: "${SECRET_KEY}"
+  ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+  GEMINI_API_KEY: "${GEMINI_API_KEY}"
 
 automatic_scaling:
   min_instances: 1

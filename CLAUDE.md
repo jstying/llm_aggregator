@@ -84,8 +84,7 @@ llm_aggregator/
 ├── availability_g4f/          # provider 可用性探测脚本，开发辅助用，不部署
 ├── firebase-key.json           # 本地 Firebase 密钥，严禁提交
 ├── .env                        # 本地环境变量，严禁提交
-├── app.yaml                    # GAE 部署配置，含真实密钥，严禁提交
-├── app.yaml.example            # app.yaml 占位符模板，仓库里唯一保留的版本
+├── app.yaml                    # GAE 部署配置，已提交，env_variables 用 ${VAR} 占位符,不含真实密钥
 ├── requirements.txt
 └── env/                         # 虚拟环境，不提交
 ```
@@ -461,7 +460,7 @@ gcloud app deploy app.yaml
 gcloud app logs tail -s default
 ```
 
-`entrypoint` 用 `gunicorn -b :$PORT main:app`，runtime 是 python312，自动缩放 1 到 10 个实例。`SECRET_KEY`/`ANTHROPIC_API_KEY`/`GEMINI_API_KEY` 都在 `app.yaml` 里设置。`app.yaml` 本身已加入 `.gitignore`,不提交真实密钥;仓库里只保留占位符模板 `app.yaml.example`,本地部署前复制一份改名成 `app.yaml` 并填入真实值。`firebase-key.json` 不部署，GAE 用 ADC。
+`entrypoint` 用 `gunicorn -b :$PORT main:app`，runtime 是 python312，自动缩放 1 到 10 个实例。`app.yaml` 本身正常提交进仓库,但 `env_variables` 里的 `SECRET_KEY`/`ANTHROPIC_API_KEY`/`GEMINI_API_KEY` 只写 `"${VAR_NAME}"` 占位符,不写真实值;部署前手动在本地把这三个占位符替换成真实值再跑 `gcloud app deploy`，替换后的版本不要 commit。`firebase-key.json` 不部署，GAE 用 ADC。
 
 ## 12. 代码规范
 
@@ -515,4 +514,6 @@ Gemini 核心链路：跟 Claude 完全对称，只是把聊天场景换成图�
 
 `[UI 一致性/文案打磨] 更新原因：/profile、/apikey-config 等 auth 页跳转时导航栏明显跳动，guest 黑色横幅滚动时消失，几处文案/配色不统一。调整内容：1. auth/base.html 补上与 index.html 同源的 --page-zoom:0.88 缩放 + 隐藏原生滚动条 + 边到边 nav-container/.nav-left(260px) 布局，消除跳转跳动。2. index.html/history.html 把 .navbar 与 .guest-banner 一起包进新增的 .page-header-sticky（position:sticky;top:0）容器，横幅不再随滚动消失；history.html/image_history.html 的 .nav-container 移除过时的 justify-content:space-between，改为 .nav-links{margin-left:auto} 与 index.html 对齐。3. .confirm-modal max-width 360px→440px（配额用尽弹窗等共享此类）；新增 .btn-stop（琥珀色）替换 Stop Generating 按钮原来的黑白配色；index.html "Download PNG"→"Download Image"，与 image_history.html 统一；"Continue as guest"→"Continue as Guest"，"Testing providers.../Generating images..."→ Title Case。4. auth/routes.py、main.py 的 flash() 文案补齐结尾句号（含 "You have been logged out."）。测试见 tests/test_ui_consistency_polish_blackbox.py。`
 
-`[SECRET_KEY 泄露修复] 更新原因：app.yaml 里的真实 SECRET_KEY 被明文提交进了 git（此前已经因为同样问题轮换过一次，这次是重犯）。Flask session 只签名不加密，这个 key 泄露等于任何人都能伪造任意 user_id 的 session,完全绕过 Firebase 登录。调整内容：1. 轮换了新的 SECRET_KEY。2. app.yaml 加入 .gitignore,不再提交真实密钥;新增 app.yaml.example 作为仓库里唯一保留的占位符模板（同时把 ANTHROPIC_API_KEY/GEMINI_API_KEY 两个字段也一并放进模板）。3. 用 git rm --cached 把 app.yaml 从 git 索引移除（本地文件不变），后续部署前需要本地手动复制 app.yaml.example 改名成 app.yaml 并填真实值。历史提交里的旧 key 还没清理,如果仓库曾经 public 过需要额外评估要不要重写 git 历史。`
+`[SECRET_KEY 泄露修复] 更新原因：app.yaml 里的真实 SECRET_KEY 被明文提交进了 git（此前已经因为同样问题轮换过一次）。调整内容：1. 轮换了新的 SECRET_KEY。2. 一度把 app.yaml 整个移出 git 用 app.yaml.example 做模板,后续应用户要求改回更简单的方案（见下一条记录）。历史提交里的旧 key 还没清理,如果仓库曾经 public 过需要额外评估要不要重写 git 历史。`
+
+`[恢复简单部署结构] 更新原因：用户要求个人项目保持最简单的部署方式,不要 secret manager/CI流水线/多环境配置/独立部署脚本,只要 app.yaml 加 gcloud app deploy app.yaml。调整内容：1. 删除 app.yaml.example,app.yaml 重新正常提交进 git,从 .gitignore 移除。2. app.yaml 的 env_variables 只保留 `"${SECRET_KEY}"`/`"${ANTHROPIC_API_KEY}"`/`"${GEMINI_API_KEY}"` 占位符字符串,不写真实值;这几个占位符不会被 gcloud 自动展开,部署前需要本地手动替换成真实值,替换后不要 commit。3. 不引入任何 secret manager/CI/CD/多环境 yaml/部署脚本。`
