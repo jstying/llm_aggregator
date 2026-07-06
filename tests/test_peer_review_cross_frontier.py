@@ -79,7 +79,9 @@ class TestRunFrontierPeerReview(unittest.TestCase):
 
         mock_call.assert_called_once_with('review this', 'gpt-5.5', 'sk-own-key', apply_persona=False)
 
-    def test_gemini_reviewer_quota_exhausted_maps_to_friendly_comment(self):
+    def test_gemini_reviewer_quota_exhausted_returns_none(self):
+        # 失败的互评现在整条隐藏（返回 None），不再展示带假分数的"reviewer 暂时不可用"
+        # 文案，见 run_frontier_peer_review() 顶部注释。
         with patch.object(main, 'call_gemini_text_model', return_value={
             'provider': 'Gemini', 'success': False, 'response': '',
             'error': 'SERVER_GEMINI_TEXT_QUOTA_EXHAUSTED',
@@ -88,11 +90,9 @@ class TestRunFrontierPeerReview(unittest.TestCase):
         }):
             result = main.run_frontier_peer_review('Gemini', 'gemini-3.5-flash', 'review this')
 
-        self.assertEqual(result['score'], 80)
-        self.assertIn('temporarily unavailable', result['comment'])
-        self.assertNotIn('SERVER_GEMINI_TEXT_QUOTA_EXHAUSTED', result['comment'])
+        self.assertIsNone(result)
 
-    def test_generic_failure_included_verbatim_in_comment(self):
+    def test_generic_failure_returns_none(self):
         with patch.object(main, 'call_claude_model', return_value={
             'provider': 'Claude', 'success': False, 'response': '',
             'error': 'The system is busy and trying to reconnect. Please try again shortly.',
@@ -100,10 +100,7 @@ class TestRunFrontierPeerReview(unittest.TestCase):
         }):
             result = main.run_frontier_peer_review('Claude', 'claude-sonnet-5', 'review this')
 
-        self.assertEqual(
-            result['comment'],
-            'Review failed: The system is busy and trying to reconnect. Please try again shortly.'
-        )
+        self.assertIsNone(result)
 
     def test_malformed_json_response_falls_back_to_default_score(self):
         with patch.object(main, 'call_claude_model', return_value={

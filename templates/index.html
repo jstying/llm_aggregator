@@ -188,6 +188,14 @@
             white-space: nowrap;
         }
 
+        /* 额度耗尽（剩余数字 <= 0）灰化（2026-07-09 新增）：与绿色配色区分开,让用户
+           一眼看出这颗 pill 对应的 provider 这次点不动了。 */
+        .trial-quota-badge.is-exhausted {
+            background: rgba(9, 17, 14, 0.04);
+            border-color: #e0e0e0;
+            color: #a0a0a0;
+        }
+
         .nav-links a {
             color: #09110e;
             text-decoration: none;
@@ -891,16 +899,23 @@
            delay in its own transition list, so opening snaps max-height/overflow back to
            their usable values instantly, in sync with the immediate `visibility:visible`
            flip, while opacity/transform still ease in over 0.15s as before. */
+        /* 2026-07-13 修复：position:absolute + top:100% 让面板脱离正常流但仍不被任何
+           祖先裁剪（跟上面 max-height/overflow 注释里"nothing between here and <body>
+           clips it"是同一个根因）。未勾选任何 free provider 时下拉框联合了所有 provider
+           的模型、列表最长，必定触顶 250px 上限需要内部滚动；这个下拉框本身又贴近
+           .app-layout 底部，展开时这 250px 会实打实撑高 document 的 scrollHeight，但
+           .app-layout 自身的盒子高度不受影响（absolute 定位元素不计入祖先的正常布局
+           尺寸）。.left-sidebar 的 sticky 高度只跟视口挂钩，不知道这段"幽灵"高度的
+           存在，滚动到文档真正底部时就会在锚定的侧边栏下方露出空白。改成
+           position:fixed 后，展开瞬间由 customTrigger/imageCustomTrigger 的 click
+           处理器用 getBoundingClientRect() 现算 top/left/width——fixed 元素完全不参与
+           非 fixed 祖先的布局尺寸计算，从根上不再撑高 scrollHeight。 */
         .custom-options {
-            position: absolute;
+            position: fixed;
             display: block;
-            top: 100%;
-            left: 0;
-            right: 0;
             border: 1px solid #e8e8e8;
             background: #ffffff;
             border-radius: 6px;
-            margin-top: 4px;
             box-shadow: 0 4px 20px rgba(9, 17, 14, 0.08);
             z-index: 999;
             opacity: 0;
@@ -919,6 +934,7 @@
             transform: translateY(0);
             max-height: 250px;
             overflow-y: auto;
+            overscroll-behavior: contain;
         }
 
         .custom-option {
@@ -937,6 +953,17 @@
         .custom-option.selected {
             background-color: #09110e;
             color: #ffffff;
+        }
+
+        /* Frontier-only mode 置灰联动（2026-07-09 新增）：免费 provider 区的自定义
+           下拉框（modelSelect/imageModelSelect 的可视层）与勾选框共用同一套 is-locked
+           灰化语言,禁用 hover/点击展开面板,直到 mode 关闭才恢复正常。真正阻止展开
+           面板的逻辑在 customTrigger/imageCustomTrigger 的点击处理器里判断这个 class。 */
+        .custom-select-wrapper.is-locked .custom-select-trigger {
+            cursor: not-allowed;
+            opacity: 0.5;
+            background-color: #f5f5f5;
+            border-color: #e8e8e8;
         }
 
         .provider-selection {
@@ -1098,6 +1125,54 @@
             opacity: 1;
         }
 
+        /* Frontier-only mode（2026-07-08 新增）：一键锁死免费 g4f provider 卡片，逼用户
+           只能从 Claude/ChatGPT/Gemini 里选。视觉上复用 .claude-provider-checkbox.is-locked
+           同一套灰化规则（同一个 class 名字，跨 provider 表现一致，与游客锁卡是不同的锁定
+           原因但视觉语言统一）。 */
+        .provider-checkbox.is-locked,
+        .image-provider-checkbox.is-locked {
+            cursor: not-allowed;
+            opacity: 0.5;
+            background: #f5f5f5;
+        }
+
+        .provider-checkbox.is-locked:hover,
+        .image-provider-checkbox.is-locked:hover {
+            background: #f5f5f5;
+            border-color: #e8e8e8;
+        }
+
+        .btn-frontier-toggle {
+            margin-top: 10px;
+            padding: 8px 16px;
+            background: #ffffff;
+            color: #09110e;
+            border: 1px solid #cfd8d4;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .btn-frontier-toggle:hover {
+            border-color: #06c167;
+        }
+
+        .btn-frontier-toggle.is-active {
+            background: #06c167;
+            color: #ffffff;
+            border-color: #06c167;
+        }
+
+        .btn-frontier-toggle:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            background: #f5f5f5;
+            color: #a0a0a0;
+            border-color: #e8e8e8;
+        }
+
         /* Claude（Anthropic 官方 API）Provider 卡片：视觉上与 .provider-checkbox/
            .image-provider-checkbox 一致，但 class 名称必须独立（同上方注释的原则）——
            不能复用 .provider-checkbox/.provider-trigger，否则会被
@@ -1163,22 +1238,6 @@
             border-color: #e8e8e8;
         }
 
-        .claude-model-select-group select {
-            width: 100%;
-            padding: 8px 10px;
-            border: 1px solid #e8e8e8;
-            border-radius: 6px;
-            font-size: 0.9rem;
-            background: #ffffff;
-            color: #09110e;
-        }
-
-        .claude-model-select-group select:disabled {
-            background: #f5f5f5;
-            color: #a0a0a0;
-            cursor: not-allowed;
-        }
-
         /* Gemini（"Nano Banana"官方 API）Provider 卡片，2026-07-04 新增：与
            .claude-provider-checkbox 视觉上完全一致（同一套样式规则,只是换了 class
            名字），但这张卡片出现在图片生成表单里而不是对话表单里——Claude 是对话场景
@@ -1241,22 +1300,6 @@
         .gemini-provider-checkbox.is-locked:hover {
             background: #f5f5f5;
             border-color: #e8e8e8;
-        }
-
-        .gemini-model-select-group select {
-            width: 100%;
-            padding: 8px 10px;
-            border: 1px solid #e8e8e8;
-            border-radius: 6px;
-            font-size: 0.9rem;
-            background: #ffffff;
-            color: #09110e;
-        }
-
-        .gemini-model-select-group select:disabled {
-            background: #f5f5f5;
-            color: #a0a0a0;
-            cursor: not-allowed;
         }
 
         /* ChatGPT (chat) / Gemini-text (chat) / ChatGPT-image (image form) frontier
@@ -1335,24 +1378,17 @@
             border-color: #e8e8e8;
         }
 
-        .chatgpt-model-select-group select,
-        .gemini-text-model-select-group select,
-        .chatgpt-image-model-select-group select {
-            width: 100%;
-            padding: 8px 10px;
-            border: 1px solid #e8e8e8;
-            border-radius: 6px;
-            font-size: 0.9rem;
-            background: #ffffff;
-            color: #09110e;
-        }
-
-        .chatgpt-model-select-group select:disabled,
-        .gemini-text-model-select-group select:disabled,
-        .chatgpt-image-model-select-group select:disabled {
-            background: #f5f5f5;
-            color: #a0a0a0;
-            cursor: not-allowed;
+        /* 前沿模型下拉框（2026-07-14 重构）：原生 <select>/<option> 的弹层由操作系统
+           合成渲染，:hover 规则和已选中态的背景色都无法被 CSS 完全覆盖（Chrome 等浏览器
+           展开态始终带系统蓝色选中/悬停高亮），appearance:none + option 背景色这类补丁
+           已在上一版验证过是原生 <select> 能做到的上限，仍达不到"已选中黑色、未选中白色、
+           hover 变绿、点击立即生效"的要求。现在改成与免费 provider 区完全同构的自定义
+           下拉组件（复用 .custom-select-wrapper/.custom-select-trigger/.custom-options/
+           .custom-option，样式和交互逻辑零差异）,底下保留的原生 <select> 变成
+           display:none 的纯状态存储，供既有的 .value/.disabled 读写逻辑继续工作，不需要
+           改动任何提交/校验代码。 */
+        .frontier-model-select {
+            margin-top: 4px;
         }
 
         /* ---- Image generation mode: sidebar entry point + results grid ---- */
@@ -1775,13 +1811,28 @@
 
         .review-score-badge {
             display: inline-block;
-            background: #06c167;
-            color: #ffffff;
             font-size: 0.75rem;
             font-weight: 700;
             padding: 2px 6px;
             border-radius: 4px;
             margin: 0 8px;
+        }
+
+        /* 互评分数三档配色（2026-07-09 新增）：0-33 浅绿、34-66 中绿、67-100 深绿,
+           分数越高颜色越深,一眼区分评价档位。浅绿底色配深绿文字保证可读性。 */
+        .review-score-badge.score-low {
+            background: #E8F5E9;
+            color: #1B5E20;
+        }
+
+        .review-score-badge.score-mid {
+            background: #66BB6A;
+            color: #ffffff;
+        }
+
+        .review-score-badge.score-high {
+            background: #1B5E20;
+            color: #ffffff;
         }
 
         .review-comment-text {
@@ -1917,13 +1968,13 @@
                  calls and failed calls don't). -->
             <div class="trial-quota-badges" id="trialQuotaBadges">
                 <span class="trial-quota-badge-group" id="textQuotaBadge">
-                    <span class="trial-quota-badge">Claude: <span id="claudeQuotaValue">{{ claude_quota.limit - claude_quota.used }}</span>/<span id="claudeQuotaLimit">{{ claude_quota.limit }}</span></span>
-                    <span class="trial-quota-badge">ChatGPT: <span id="chatgptQuotaValue">{{ chatgpt_quota.limit - chatgpt_quota.used }}</span>/<span id="chatgptQuotaLimit">{{ chatgpt_quota.limit }}</span></span>
-                    <span class="trial-quota-badge">Gemini: <span id="geminiTextQuotaValue">{{ gemini_text_quota.limit - gemini_text_quota.used }}</span>/<span id="geminiTextQuotaLimit">{{ gemini_text_quota.limit }}</span></span>
+                    <span class="trial-quota-badge{{ ' is-exhausted' if (claude_quota.limit - claude_quota.used) <= 0 else '' }}">Claude: <span id="claudeQuotaValue">{{ claude_quota.limit - claude_quota.used }}</span>/<span id="claudeQuotaLimit">{{ claude_quota.limit }}</span></span>
+                    <span class="trial-quota-badge{{ ' is-exhausted' if (chatgpt_quota.limit - chatgpt_quota.used) <= 0 else '' }}">ChatGPT: <span id="chatgptQuotaValue">{{ chatgpt_quota.limit - chatgpt_quota.used }}</span>/<span id="chatgptQuotaLimit">{{ chatgpt_quota.limit }}</span></span>
+                    <span class="trial-quota-badge{{ ' is-exhausted' if (gemini_text_quota.limit - gemini_text_quota.used) <= 0 else '' }}">Gemini: <span id="geminiTextQuotaValue">{{ gemini_text_quota.limit - gemini_text_quota.used }}</span>/<span id="geminiTextQuotaLimit">{{ gemini_text_quota.limit }}</span></span>
                 </span>
                 <span class="trial-quota-badge-group" id="imageQuotaBadge" style="display: none;">
-                    <span class="trial-quota-badge">Gemini: <span id="imageQuotaValue">{{ gemini_quota.limit - gemini_quota.used }}</span>/<span id="imageQuotaLimit">{{ gemini_quota.limit }}</span></span>
-                    <span class="trial-quota-badge">ChatGPT: <span id="chatgptImageQuotaValue">{{ chatgpt_image_quota.limit - chatgpt_image_quota.used }}</span>/<span id="chatgptImageQuotaLimit">{{ chatgpt_image_quota.limit }}</span></span>
+                    <span class="trial-quota-badge{{ ' is-exhausted' if (gemini_quota.limit - gemini_quota.used) <= 0 else '' }}">Gemini: <span id="imageQuotaValue">{{ gemini_quota.limit - gemini_quota.used }}</span>/<span id="imageQuotaLimit">{{ gemini_quota.limit }}</span></span>
+                    <span class="trial-quota-badge{{ ' is-exhausted' if (chatgpt_image_quota.limit - chatgpt_image_quota.used) <= 0 else '' }}">ChatGPT: <span id="chatgptImageQuotaValue">{{ chatgpt_image_quota.limit - chatgpt_image_quota.used }}</span>/<span id="chatgptImageQuotaLimit">{{ chatgpt_image_quota.limit }}</span></span>
                 </span>
             </div>
             {% endif %}
@@ -2070,27 +2121,57 @@
                             </div>
                         </label>
                     </div>
+                    <!-- Frontier-only mode（2026-07-08 新增）：一键锁死下面的免费 provider
+                         区，逼这次 Compare 只跑 Claude/ChatGPT/Gemini。锁给游客/匿名（本来
+                         就没有任何前沿卡片可选），与其它前沿元素同一套 disabled + tooltip
+                         模式。 -->
+                    <button type="button" class="btn-frontier-toggle" id="frontierOnlyToggle"
+                            {{ 'disabled' if not session.user_id else '' }}
+                            title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
+                        Frontier-only Mode: OFF
+                    </button>
                 </div>
 
                 <div class="form-group claude-model-select-group">
-                    <label for="claudeModelSelect">Claude Model:</label>
-                    <select id="claudeModelSelect" disabled>
+                    <label>Claude Model:</label>
+                    <div class="custom-select-wrapper frontier-model-select" id="claudeModelWrapper">
+                        <div class="custom-select-trigger" id="claudeModelTrigger">Claude Sonnet 5</div>
+                        <div class="custom-options" id="claudeModelOptions">
+                            <div class="custom-option selected" data-value="claude-sonnet-5">Claude Sonnet 5</div>
+                            <div class="custom-option" data-value="claude-haiku-4-5">Claude Haiku 4.5</div>
+                        </div>
+                    </div>
+                    <select id="claudeModelSelect" disabled style="display: none;">
                         <option value="claude-sonnet-5">Claude Sonnet 5</option>
                         <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
                     </select>
                 </div>
 
                 <div class="form-group chatgpt-model-select-group">
-                    <label for="chatgptModelSelect">ChatGPT Model:</label>
-                    <select id="chatgptModelSelect" disabled>
+                    <label>ChatGPT Model:</label>
+                    <div class="custom-select-wrapper frontier-model-select" id="chatgptModelWrapper">
+                        <div class="custom-select-trigger" id="chatgptModelTrigger">GPT-5.5</div>
+                        <div class="custom-options" id="chatgptModelOptions">
+                            <div class="custom-option selected" data-value="gpt-5.5">GPT-5.5</div>
+                            <div class="custom-option" data-value="gpt-5.4-mini">GPT-5.4 Mini</div>
+                        </div>
+                    </div>
+                    <select id="chatgptModelSelect" disabled style="display: none;">
                         <option value="gpt-5.5">GPT-5.5</option>
                         <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
                     </select>
                 </div>
 
                 <div class="form-group gemini-text-model-select-group">
-                    <label for="geminiTextModelSelect">Gemini Model:</label>
-                    <select id="geminiTextModelSelect" disabled>
+                    <label>Gemini Model:</label>
+                    <div class="custom-select-wrapper frontier-model-select" id="geminiTextModelWrapper">
+                        <div class="custom-select-trigger" id="geminiTextModelTrigger">Gemini 3.5 Flash</div>
+                        <div class="custom-options" id="geminiTextModelOptions">
+                            <div class="custom-option selected" data-value="gemini-3.5-flash">Gemini 3.5 Flash</div>
+                            <div class="custom-option" data-value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</div>
+                        </div>
+                    </div>
+                    <select id="geminiTextModelSelect" disabled style="display: none;">
                         <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
                         <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
                     </select>
@@ -2213,11 +2294,27 @@
                             </div>
                         </label>
                     </div>
+                    <!-- Frontier-only mode（2026-07-08 新增），image-form 对等实现——见
+                         compareForm 里 #frontierOnlyToggle 上方注释,同一套按钮/锁定逻辑，
+                         只是作用在图片表单的免费 provider 区。 -->
+                    <button type="button" class="btn-frontier-toggle" id="frontierOnlyToggleImage"
+                            {{ 'disabled' if not session.user_id else '' }}
+                            title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
+                        Frontier-only Mode: OFF
+                    </button>
                 </div>
 
                 <div class="form-group gemini-model-select-group">
-                    <label for="geminiModelSelect">Gemini Model:</label>
-                    <select id="geminiModelSelect" disabled>
+                    <label>Gemini Model:</label>
+                    <div class="custom-select-wrapper frontier-model-select" id="geminiModelWrapper">
+                        <div class="custom-select-trigger" id="geminiModelTrigger">Nano Banana Pro</div>
+                        <div class="custom-options" id="geminiModelOptions">
+                            <div class="custom-option selected" data-value="nano-banana-pro">Nano Banana Pro</div>
+                            <div class="custom-option" data-value="nano-banana-2">Nano Banana 2</div>
+                            <div class="custom-option" data-value="nano-banana-lite">Nano Banana Lite</div>
+                        </div>
+                    </div>
+                    <select id="geminiModelSelect" disabled style="display: none;">
                         <option value="nano-banana-pro">Nano Banana Pro</option>
                         <option value="nano-banana-2">Nano Banana 2</option>
                         <option value="nano-banana-lite">Nano Banana Lite</option>
@@ -2225,8 +2322,15 @@
                 </div>
 
                 <div class="form-group chatgpt-image-model-select-group">
-                    <label for="chatgptImageModelSelect">ChatGPT Model:</label>
-                    <select id="chatgptImageModelSelect" disabled>
+                    <label>ChatGPT Model:</label>
+                    <div class="custom-select-wrapper frontier-model-select" id="chatgptImageModelWrapper">
+                        <div class="custom-select-trigger" id="chatgptImageModelTrigger">GPT Image 2</div>
+                        <div class="custom-options" id="chatgptImageModelOptions">
+                            <div class="custom-option selected" data-value="gpt-image-2">GPT Image 2</div>
+                            <div class="custom-option" data-value="gpt-image-1.5">GPT Image 1.5</div>
+                        </div>
+                    </div>
+                    <select id="chatgptImageModelSelect" disabled style="display: none;">
                         <option value="gpt-image-2">GPT Image 2</option>
                         <option value="gpt-image-1.5">GPT Image 1.5</option>
                     </select>
@@ -2356,8 +2460,11 @@
             if (!quota) return;
             const valueEl = document.getElementById(valueElId);
             const limitEl = document.getElementById(limitElId);
-            if (valueEl) valueEl.textContent = Math.max(0, quota.limit - quota.used);
+            const remaining = Math.max(0, quota.limit - quota.used);
+            if (valueEl) valueEl.textContent = remaining;
             if (limitEl) limitEl.textContent = quota.limit;
+            const pillEl = valueEl && valueEl.closest('.trial-quota-badge');
+            if (pillEl) pillEl.classList.toggle('is-exhausted', remaining <= 0);
         }
 
         function updateTrialQuotaBadgeDisplay() {
@@ -2748,9 +2855,110 @@
         const customTrigger = document.getElementById('customSelectTrigger');
         const customOptionsContainer = document.getElementById('customOptions');
 
+        // 展开 .custom-options（现在是 position:fixed，见其 CSS 注释）前用 trigger 的
+        // getBoundingClientRect() 现算 top/left/width。共享给对话表单和图片表单两个
+        // 下拉框——纯函数、显式传参，不违反"两套表单不能共用同名 class/DOM 查询"的隔离
+        // 原则（那条规则针对的是无容器限定的 querySelectorAll，这里没有）。
+        // getBoundingClientRect() 返回的是已经过 --page-zoom 缩放的"屏幕"像素，而
+        // style.top/left/width 是身处被 zoom 缩放的 body 子树内部、会被 zoom 再缩放
+        // 一遍的"逻辑"像素——同 syncSidebarStickyMetrics() 里的换算，这里也要先除以
+        // zoom 换算回来，否则面板会渲染在错误的位置。
+        function positionCustomOptions(trigger, panel) {
+            const zoom = parseFloat(
+                getComputedStyle(document.documentElement).getPropertyValue('--page-zoom')
+            ) || 1;
+            const rect = trigger.getBoundingClientRect();
+            panel.style.top = ((rect.bottom + 4) / zoom) + 'px';
+            panel.style.left = (rect.left / zoom) + 'px';
+            panel.style.width = (rect.width / zoom) + 'px';
+        }
+
         // 与 .custom-options 收起动画的 CSS transition 时长（0.15s）保持一致，
-        // 黑色高亮的变更延后到这个时长之后才应用，此时下拉面板已经完全隐藏。
+        // 黑色高亮的变更延后到这个时长之后才应用，此时下拉面板已经完全隐藏。免费模型
+        // 下拉框和下面的 5 个前沿模型下拉框共用同一个常量,保持两边延迟时长同步。
         const MODEL_HIGHLIGHT_DELAY_MS = 150;
+
+        // 前沿模型（Claude/ChatGPT/Gemini 文本与图片）下拉框，2026-07-14 新增：与
+        // #customSelectWrapper/#imageCustomSelectWrapper 同一套 .custom-select-wrapper/
+        // .custom-select-trigger/.custom-options/.custom-option 组件，而不是给原生
+        // <select> 打 CSS 补丁——原生下拉列表由操作系统合成渲染，:hover 和已选中态背景色
+        // 都无法被 CSS 完全覆盖。隐藏的原生 <select>（selectId 对应的元素）只作为纯状态
+        // 存储保留，disabled/value 的读写方式和既有代码（syncClaudeModelSelectEnabled()、
+        // createFrontierProviderController() 等）完全不变；这里只负责把可见的自定义面板
+        // 跟这个隐藏 select 双向同步。每个 select 的候选项是固定的（不像免费模型下拉框
+        // 那样会随勾选的 provider 动态重建），所以 .custom-option 直接写死在模板里,不需要
+        // 运行时生成。
+        //
+        // 2026-07-15 修复：点击选项黑色高亮不再立即跳变到新选项——镜像下方
+        // #customOptions（Select free models）的处理，trigger 文案和 select.value 立即
+        // 更新，但 .selected 类（黑色高亮）延后到面板收起动画结束（MODEL_HIGHLIGHT_DELAY_MS）
+        // 后才应用；重新展开时立即同步一次，防止上次延迟高亮还没来得及应用。
+        function setupFrontierModelDropdown(selectId, wrapperId, triggerId, optionsId) {
+            const select = document.getElementById(selectId);
+            const wrapper = document.getElementById(wrapperId);
+            const trigger = document.getElementById(triggerId);
+            const optionsPanel = document.getElementById(optionsId);
+            const options = Array.from(optionsPanel.querySelectorAll('.custom-option'));
+            let highlightTimer = null;
+
+            function syncTriggerLabel() {
+                const match = options.find(opt => opt.getAttribute('data-value') === select.value);
+                trigger.textContent = match ? match.textContent : options[0].textContent;
+            }
+
+            function syncSelectedHighlight() {
+                options.forEach(opt => opt.classList.toggle('selected', opt.getAttribute('data-value') === select.value));
+            }
+
+            trigger.addEventListener('click', function(e) {
+                e.stopPropagation();
+                if (wrapper.classList.contains('is-locked')) return;
+                const opening = !wrapper.classList.contains('open');
+                document.querySelectorAll('.custom-select-wrapper.open').forEach(w => {
+                    if (w !== wrapper) w.classList.remove('open');
+                });
+                if (opening) {
+                    positionCustomOptions(trigger, optionsPanel);
+                    clearTimeout(highlightTimer);
+                    syncSelectedHighlight();
+                }
+                wrapper.classList.toggle('open', opening);
+            });
+
+            options.forEach(opt => {
+                opt.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    select.value = opt.getAttribute('data-value');
+                    syncTriggerLabel();
+                    wrapper.classList.remove('open');
+                    select.dispatchEvent(new Event('change'));
+
+                    clearTimeout(highlightTimer);
+                    highlightTimer = setTimeout(syncSelectedHighlight, MODEL_HIGHLIGHT_DELAY_MS);
+                });
+            });
+
+            document.addEventListener('click', () => wrapper.classList.remove('open'));
+            window.addEventListener('scroll', () => wrapper.classList.remove('open'), { passive: true });
+
+            // select.disabled 仍然由既有代码按 provider 勾选状态直接赋值,这里只用
+            // MutationObserver 把这个隐藏 select 的 disabled 属性镜像成可见面板的
+            // is-locked 灰化态,不需要改动任何既有的 enable/disable 调用点。
+            new MutationObserver(() => {
+                wrapper.classList.toggle('is-locked', select.disabled);
+            }).observe(select, { attributes: true, attributeFilter: ['disabled'] });
+
+            wrapper.classList.toggle('is-locked', select.disabled);
+            syncTriggerLabel();
+            syncSelectedHighlight();
+        }
+
+        setupFrontierModelDropdown('claudeModelSelect', 'claudeModelWrapper', 'claudeModelTrigger', 'claudeModelOptions');
+        setupFrontierModelDropdown('chatgptModelSelect', 'chatgptModelWrapper', 'chatgptModelTrigger', 'chatgptModelOptions');
+        setupFrontierModelDropdown('geminiTextModelSelect', 'geminiTextModelWrapper', 'geminiTextModelTrigger', 'geminiTextModelOptions');
+        setupFrontierModelDropdown('geminiModelSelect', 'geminiModelWrapper', 'geminiModelTrigger', 'geminiModelOptions');
+        setupFrontierModelDropdown('chatgptImageModelSelect', 'chatgptImageModelWrapper', 'chatgptImageModelTrigger', 'chatgptImageModelOptions');
+
         let modelHighlightTimer = null;
 
         // 将 .selected（黑色高亮）与 modelSelect.value 的当前值重新同步。
@@ -2763,13 +2971,20 @@
 
         // 统一控制自定义下拉列表点击切换的逻辑
         customTrigger.addEventListener('click', function(e) {
+            // Frontier-only mode 锁死时不允许展开面板（见 .custom-select-wrapper.is-locked
+            // CSS 注释),mode 关闭之前这个下拉框保持不可操作。
+            if (customWrapper.classList.contains('is-locked')) {
+                e.stopPropagation();
+                return;
+            }
             const opening = !customWrapper.classList.contains('open');
-            customWrapper.classList.toggle('open');
             if (opening) {
+                positionCustomOptions(customTrigger, customOptionsContainer);
                 // 重新打开时立即同步一次，防止上次延迟高亮还未来得及应用
                 clearTimeout(modelHighlightTimer);
                 syncSelectedOptionHighlight();
             }
+            customWrapper.classList.toggle('open');
             e.stopPropagation();
         });
 
@@ -2777,41 +2992,94 @@
             customWrapper.classList.remove('open');
         });
 
+        // .custom-options 现在是 position:fixed（见其 CSS 注释），不会随文档滚动自动
+        // 跟随 trigger 移动，真实页面滚动时直接收起，避免面板悬空错位。面板内部自己
+        // 的滚动（.custom-options 的 overflow-y:auto）不会触发这个监听器——'scroll'
+        // 事件本身不冒泡，只有 document/window 级别的滚动才会在 window 上触发。
+        window.addEventListener('scroll', function() {
+            customWrapper.classList.remove('open');
+        }, { passive: true });
+
+        // 每个免费 provider 各自独立记住的模型选择（2026-07-09 新增，替换原来"一个全局
+        // model 应用到所有勾选 provider"的设计）：{provider name: model name}，只有跟
+        // 该 provider 自己的默认模型（providerModelsMap[name][0]）不同的选择才会出现在
+        // 这里,键缺失就代表沿用默认模型。providerCheckOrder 记录 provider 被勾选的先后
+        // 顺序（最新勾选的排在末尾），数组末项就是这个共享下拉框当前绑定的 provider——
+        // 用户要求"不能仿照 frontier model 一个 provider 单独一个 dropdown"，所以用
+        // "下拉框跟随最近一次勾选的 provider 切换"这个单一控件替代逐 provider 的下拉框，
+        // 同时把每个 provider 已经选好的模型显示在它自己卡片下方的小字里。
+        const providerModelSelections = {};
+        let providerCheckOrder = [];
+
+        function activeModelProvider() {
+            return providerCheckOrder.length ? providerCheckOrder[providerCheckOrder.length - 1] : null;
+        }
+
+        // 勾选/取消勾选一个 provider 时同步 providerCheckOrder；勾选会把这个 provider
+        // 推到末尾（成为下拉框新的绑定目标），取消勾选只是从队列里摘掉,不影响其它
+        // 已勾选 provider 的先后顺序。
+        function setProviderCheckOrder(name, checked) {
+            const idx = providerCheckOrder.indexOf(name);
+            if (checked) {
+                if (idx !== -1) providerCheckOrder.splice(idx, 1);
+                providerCheckOrder.push(name);
+            } else if (idx !== -1) {
+                providerCheckOrder.splice(idx, 1);
+            }
+        }
+
+        function getProviderDefaultModel(name) {
+            const models = providerModelsMap[name];
+            return (Array.isArray(models) && models.length) ? models[0] : null;
+        }
+
+        // 把 providerModelSelections 里的当前选择同步回这个 provider 卡片下方的小字：
+        // 跟默认模型一样（或者压根没有覆盖）就显示 "Default: X"，不一样才显示
+        // "Selected: Y"（用户原话："如果选的还是和default一样那就不变动"）。
+        function refreshProviderModelLabel(name) {
+            const card = Array.from(providerCards).find(c => c.querySelector('.provider-trigger').value === name);
+            if (!card) return;
+            const small = card.querySelector('small');
+            if (!small) return;
+            const defaultModel = getProviderDefaultModel(name);
+            const selected = providerModelSelections[name];
+            small.textContent = (selected && selected !== defaultModel)
+                ? `Selected: ${selected}`
+                : `Default: ${defaultModel}`;
+        }
+
+        // Frontier-only 模式跟"一个 provider 都没勾选"共用同一个锁定态：没有绑定目标
+        // 的下拉框展开了也没有意义,直接灰化+禁止展开,复用已有的 .is-locked 视觉。
+        function updateModelSelectLockState() {
+            const locked = frontierOnlyActive || !activeModelProvider();
+            customWrapper.classList.toggle('is-locked', locked);
+            if (locked) customWrapper.classList.remove('open');
+        }
+
         function updateModelDropdown() {
             // 解决鬼畜：在刷新选项前，强制关闭可能正处于打开状态的下拉面板
             customWrapper.classList.remove('open');
             // 面板是被重建的，任何还未触发的延迟高亮都已经不指向有效节点，直接作废
             clearTimeout(modelHighlightTimer);
 
-            const selectedProviders = Array.from(providerTriggers)
-                .filter(cb => cb.checked)
-                .map(cb => cb.value);
+            const activeProvider = activeModelProvider();
 
-            let availableModels = new Set();
+            // 不再是"勾选 0 个 provider = 显示全部 provider 模型的并集"，而是"没有绑定
+            // 目标就只剩 default 这一个选项"；勾选了 provider 就只显示这一个 provider
+            // 自己的模型列表（不再跟其它已勾选 provider 的模型合并），并保留该 provider
+            // 自己映射表里的原始顺序（默认模型天然排在最前面）。
+            const availableModels = activeProvider ? (providerModelsMap[activeProvider] || []) : [];
 
-            if (selectedProviders.length === 0) {
-                Object.values(providerModelsMap).forEach(models => {
-                    if (Array.isArray(models)) {
-                        models.forEach(m => availableModels.add(m));
-                    }
-                });
-            } else {
-                selectedProviders.forEach(name => {
-                    const models = providerModelsMap[name] || [];
-                    if (Array.isArray(models)) {
-                        models.forEach(m => availableModels.add(m));
-                    }
-                });
-            }
-
-            const currentSelectedValue = modelSelect.value;
+            // 下拉框现在跟随 activeProvider 切换，每次都应该回显*那个 provider*已经存下
+            // 的选择，而不是残留着上一个 provider 的 modelSelect.value。
+            const currentSelectedValue = activeProvider ? (providerModelSelections[activeProvider] || '') : '';
 
             // 1. 重置隐藏的原生 select 元素
             modelSelect.innerHTML = '<option value="">-- Use Provider\'s Default Model --</option>';
-            
+
             // 2. 清空并重置自定义下拉面板的选项
             customOptionsContainer.innerHTML = '';
-            
+
             // 创建自定义的默认选项
             const defaultOpt = document.createElement('div');
             defaultOpt.className = 'custom-option';
@@ -2820,7 +3088,7 @@
             customOptionsContainer.appendChild(defaultOpt);
 
             // 动态填入新选项数据
-            Array.from(availableModels).sort().forEach(modelName => {
+            availableModels.forEach(modelName => {
                 // 同步至原生标签
                 const option = document.createElement('option');
                 option.value = modelName;
@@ -2835,8 +3103,8 @@
                 customOptionsContainer.appendChild(customOpt);
             });
 
-            // 3. 恢复联动刷新前的选中项状态
-            if (availableModels.has(currentSelectedValue) && currentSelectedValue !== '') {
+            // 3. 恢复这个 provider 自己存下的选中项状态
+            if (availableModels.includes(currentSelectedValue) && currentSelectedValue !== '') {
                 modelSelect.value = currentSelectedValue;
                 customTrigger.textContent = currentSelectedValue;
             } else {
@@ -2848,7 +3116,7 @@
             const allCustomOpts = customOptionsContainer.querySelectorAll('.custom-option');
             allCustomOpts.forEach(opt => {
                 const optValue = opt.getAttribute('data-value');
-                
+
                 // 标记当前高亮选中的项
                 if (optValue === modelSelect.value) {
                     opt.classList.add('selected');
@@ -2857,6 +3125,17 @@
                 opt.addEventListener('click', function() {
                     customTrigger.textContent = this.textContent;
                     modelSelect.value = optValue;
+
+                    // 这次选择只归属于当前绑定的 provider，记下来并刷新它卡片下方的小字
+                    const targetProvider = activeModelProvider();
+                    if (targetProvider) {
+                        if (optValue) {
+                            providerModelSelections[targetProvider] = optValue;
+                        } else {
+                            delete providerModelSelections[targetProvider];
+                        }
+                        refreshProviderModelLabel(targetProvider);
+                    }
 
                     // 派发原生 change 事件，确保上层表单感知数值变动
                     modelSelect.dispatchEvent(new Event('change'));
@@ -2868,10 +3147,18 @@
                     modelHighlightTimer = setTimeout(syncSelectedOptionHighlight, MODEL_HIGHLIGHT_DELAY_MS);
                 });
             });
+
+            updateModelSelectLockState();
         }
 
        let debounceTimer;
         const providerCards = document.querySelectorAll('.provider-checkbox');
+
+        // Frontier-only mode 的开关状态提前声明到这里（而不是留在下面它自己的
+        // "=====" 注释块里）——updateModelSelectLockState() 在 updateModelDropdown()
+        // 首次调用时就会读它，如果声明还留在下面，首次调用会因为 let 的 TDZ 直接抛
+        // ReferenceError。
+        let frontierOnlyActive = false;
 
         // 让整卡边框（.is-checked）与 input.checked 状态保持同步，
         // 覆盖点击、键盘操作（Tab+Space）以及浏览器 bfcache 回退恢复勾选态等所有路径。
@@ -2886,6 +3173,7 @@
             card.addEventListener('click', function(e) {
                 // 如果用户直接点到了 input 勾选框本身，让它正常走，不做干涉
                 if (e.target.tagName === 'INPUT') {
+                    setProviderCheckOrder(this.value, this.checked);
                     syncCardChecked(this);
                     clearTimeout(debounceTimer);
                     debounceTimer = setTimeout(() => {
@@ -2899,6 +3187,7 @@
 
                 const checkbox = this.querySelector('.provider-trigger');
                 checkbox.checked = !checkbox.checked;
+                setProviderCheckOrder(checkbox.value, checkbox.checked);
                 syncCardChecked(this);
 
                 // 手动触发一次刷新
@@ -2910,6 +3199,33 @@
         });
 
         updateModelDropdown();
+
+        // ==================================================
+        // Frontier-only mode（2026-07-08 新增）：一键把下面所有免费 g4f provider 卡片
+        // 锁死（disabled + is-locked 灰化 + 强制取消勾选），逼这次 Compare 只从 Claude/
+        // ChatGPT/Gemini 里选。是否"至少选中了一个"的最终校验在 submit 处理器里做（见
+        // frontierOnlyActive 用法），这里只管开关本身和视觉/勾选状态联动。
+        // ==================================================
+        const frontierOnlyToggle = document.getElementById('frontierOnlyToggle');
+        if (frontierOnlyToggle) {
+            frontierOnlyToggle.addEventListener('click', () => {
+                frontierOnlyActive = !frontierOnlyActive;
+                frontierOnlyToggle.classList.toggle('is-active', frontierOnlyActive);
+                frontierOnlyToggle.textContent = frontierOnlyActive ? 'Frontier-only Mode: ON' : 'Frontier-only Mode: OFF';
+                providerTriggers.forEach(cb => {
+                    cb.disabled = frontierOnlyActive;
+                    if (frontierOnlyActive) cb.checked = false;
+                });
+                providerCards.forEach(card => {
+                    card.classList.toggle('is-locked', frontierOnlyActive);
+                    syncCardChecked(card);
+                });
+                // 强制取消勾选的免费 provider 不会触发 setProviderCheckOrder（cb.checked
+                // 是脚本直接赋值,不冒泡 click/change),下拉框的绑定目标需要跟着手动清空。
+                if (frontierOnlyActive) providerCheckOrder = [];
+                updateModelDropdown();
+            });
+        }
 
         // ==================================================
         // Claude（Anthropic 官方 API）：与上面的 g4f Provider 复选框完全独立（见
@@ -3208,7 +3524,19 @@
                 .filter(cb => cb.checked)
                 .map(cb => cb.value);
 
-            const targetModel = modelSelect.value || null;
+            // Frontier-only mode's bottom line: free providers are all locked out, so at
+            // least one frontier provider must be checked or there would be nothing to run.
+            // Outside frontier-only mode, leaving everything unchecked is still a valid
+            // "test all free providers" request (unchanged legacy behavior).
+            if (frontierOnlyActive) {
+                const anyFrontierChecked = (claudeProviderTrigger && claudeProviderTrigger.checked && !claudeProviderTrigger.disabled) ||
+                    (chatgptController.trigger && chatgptController.trigger.checked && !chatgptController.trigger.disabled) ||
+                    (geminiTextController.trigger && geminiTextController.trigger.checked && !geminiTextController.trigger.disabled);
+                if (!anyFrontierChecked) {
+                    alert('Please select at least one frontier provider.');
+                    return;
+                }
+            }
 
             compareAbortController = new AbortController();
             const { signal } = compareAbortController;
@@ -3229,12 +3557,16 @@
                     prompt,
                     providers: selectedProviders,
                     max_workers: 5,
-                    request_id: currentCompareRequestId
+                    request_id: currentCompareRequestId,
+                    frontier_only: frontierOnlyActive,
+                    // 每个 provider 各自的模型选择（见 providerModelSelections 上方注释），
+                    // 取代原来单个全局 model 字段的语义；只挑选中的 provider 里有过覆盖的
+                    // 那几个,避免把没被测试的 provider 的历史选择也一起发过去。
+                    provider_models: selectedProviders.reduce((acc, name) => {
+                        if (providerModelSelections[name]) acc[name] = providerModelSelections[name];
+                        return acc;
+                    }, {})
                 };
-
-                if (targetModel) {
-                    requestBody.model = targetModel;
-                }
 
                 const response = await fetch('/api/compare', {
                     method: 'POST',
@@ -3416,8 +3748,24 @@
         document.getElementById('clearBtn').addEventListener('click', () => {
             document.getElementById('results').style.display = 'none';
             document.getElementById('prompt').value = '';
-            providerTriggers.forEach(cb => cb.checked = false);
-            providerCards.forEach(syncCardChecked);
+            if (frontierOnlyToggle) {
+                frontierOnlyActive = false;
+                frontierOnlyToggle.classList.remove('is-active');
+                frontierOnlyToggle.textContent = 'Frontier-only Mode: OFF';
+            }
+            providerTriggers.forEach(cb => {
+                cb.checked = false;
+                cb.disabled = false;
+            });
+            // 每个 provider 自己记住的模型选择、以及下拉框当前绑定的 provider，
+            // 都跟着 Clear Results 一起清空复位，小字标签恢复回各自的 "Default: X"。
+            providerCheckOrder = [];
+            Object.keys(providerModelSelections).forEach(name => delete providerModelSelections[name]);
+            providerCards.forEach(card => {
+                card.classList.remove('is-locked');
+                syncCardChecked(card);
+                refreshProviderModelLabel(card.querySelector('.provider-trigger').value);
+            });
             modelSelect.value = '';
             updateModelDropdown();
             if (claudeProviderTrigger) {
@@ -3464,6 +3812,14 @@
         const imageCustomOptionsContainer = document.getElementById('imageCustomOptions');
 
         imageCustomTrigger.addEventListener('click', function(e) {
+            // Frontier-only mode 锁死时不允许展开面板，见 customTrigger 同款注释。
+            if (imageCustomWrapper.classList.contains('is-locked')) {
+                e.stopPropagation();
+                return;
+            }
+            if (!imageCustomWrapper.classList.contains('open')) {
+                positionCustomOptions(imageCustomTrigger, imageCustomOptionsContainer);
+            }
             imageCustomWrapper.classList.toggle('open');
             e.stopPropagation();
         });
@@ -3472,31 +3828,66 @@
             imageCustomWrapper.classList.remove('open');
         });
 
+        // 同 customWrapper 那份监听器的原因：.custom-options 是 position:fixed，真实
+        // 页面滚动时收起，避免悬空错位；面板内部自己的滚动不冒泡到 window，不受影响。
+        window.addEventListener('scroll', function() {
+            imageCustomWrapper.classList.remove('open');
+        }, { passive: true });
+
+        // 与 compareForm 的 providerModelSelections/providerCheckOrder 同构（见其上方
+        // 注释），只是作用域换成图片表单自己的一套 provider/dropdown，同样是"下拉框跟随
+        // 最新勾选的 provider 切换,每个 provider 的选择显示在自己卡片下方小字"这套设计。
+        const imageProviderModelSelections = {};
+        let imageProviderCheckOrder = [];
+        let frontierOnlyImageActive = false;
+
+        function activeImageModelProvider() {
+            return imageProviderCheckOrder.length ? imageProviderCheckOrder[imageProviderCheckOrder.length - 1] : null;
+        }
+
+        function setImageProviderCheckOrder(name, checked) {
+            const idx = imageProviderCheckOrder.indexOf(name);
+            if (checked) {
+                if (idx !== -1) imageProviderCheckOrder.splice(idx, 1);
+                imageProviderCheckOrder.push(name);
+            } else if (idx !== -1) {
+                imageProviderCheckOrder.splice(idx, 1);
+            }
+        }
+
+        function getImageProviderDefaultModel(name) {
+            const models = imageProviderModelsMap[name];
+            return (Array.isArray(models) && models.length) ? models[0] : null;
+        }
+
+        function refreshImageProviderModelLabel(name) {
+            const card = Array.from(imageProviderCards).find(c => c.querySelector('.image-provider-trigger').value === name);
+            if (!card) return;
+            const small = card.querySelector('small');
+            if (!small) return;
+            const defaultModel = getImageProviderDefaultModel(name);
+            const selected = imageProviderModelSelections[name];
+            small.textContent = (selected && selected !== defaultModel)
+                ? `Selected: ${selected}`
+                : `Default: ${defaultModel}`;
+        }
+
+        function updateImageModelSelectLockState() {
+            const locked = frontierOnlyImageActive || !activeImageModelProvider();
+            imageCustomWrapper.classList.toggle('is-locked', locked);
+            if (locked) imageCustomWrapper.classList.remove('open');
+        }
+
         function updateImageModelDropdown() {
             imageCustomWrapper.classList.remove('open');
 
-            const selectedProviders = Array.from(imageProviderTriggers)
-                .filter(cb => cb.checked)
-                .map(cb => cb.value);
+            const activeProvider = activeImageModelProvider();
 
-            let availableModels = new Set();
+            // 不再合并所有已勾选 provider 的模型,只显示当前绑定 provider 自己的模型列表；
+            // 没有绑定目标（0 个 provider 勾选）就只剩 default 这一个选项。
+            const availableModels = activeProvider ? (imageProviderModelsMap[activeProvider] || []) : [];
 
-            if (selectedProviders.length === 0) {
-                Object.values(imageProviderModelsMap).forEach(models => {
-                    if (Array.isArray(models)) {
-                        models.forEach(m => availableModels.add(m));
-                    }
-                });
-            } else {
-                selectedProviders.forEach(name => {
-                    const models = imageProviderModelsMap[name] || [];
-                    if (Array.isArray(models)) {
-                        models.forEach(m => availableModels.add(m));
-                    }
-                });
-            }
-
-            const currentSelectedValue = imageModelSelect.value;
+            const currentSelectedValue = activeProvider ? (imageProviderModelSelections[activeProvider] || '') : '';
 
             imageModelSelect.innerHTML = '<option value="">-- Use Provider\'s Default Model --</option>';
             imageCustomOptionsContainer.innerHTML = '';
@@ -3507,7 +3898,7 @@
             defaultOpt.setAttribute('data-value', '');
             imageCustomOptionsContainer.appendChild(defaultOpt);
 
-            Array.from(availableModels).sort().forEach(modelName => {
+            availableModels.forEach(modelName => {
                 const option = document.createElement('option');
                 option.value = modelName;
                 option.textContent = modelName;
@@ -3520,7 +3911,7 @@
                 imageCustomOptionsContainer.appendChild(customOpt);
             });
 
-            if (availableModels.has(currentSelectedValue) && currentSelectedValue !== '') {
+            if (availableModels.includes(currentSelectedValue) && currentSelectedValue !== '') {
                 imageModelSelect.value = currentSelectedValue;
                 imageCustomTrigger.textContent = currentSelectedValue;
             } else {
@@ -3538,6 +3929,17 @@
                 opt.addEventListener('click', function() {
                     imageCustomTrigger.textContent = this.textContent;
                     imageModelSelect.value = optValue;
+
+                    const targetProvider = activeImageModelProvider();
+                    if (targetProvider) {
+                        if (optValue) {
+                            imageProviderModelSelections[targetProvider] = optValue;
+                        } else {
+                            delete imageProviderModelSelections[targetProvider];
+                        }
+                        refreshImageProviderModelLabel(targetProvider);
+                    }
+
                     imageModelSelect.dispatchEvent(new Event('change'));
                     imageCustomWrapper.classList.remove('open');
 
@@ -3545,6 +3947,8 @@
                     this.classList.add('selected');
                 });
             });
+
+            updateImageModelSelectLockState();
         }
 
         let imageDebounceTimer;
@@ -3560,6 +3964,7 @@
 
             card.addEventListener('click', function(e) {
                 if (e.target.tagName === 'INPUT') {
+                    setImageProviderCheckOrder(this.value, this.checked);
                     syncImageCardChecked(this);
                     clearTimeout(imageDebounceTimer);
                     imageDebounceTimer = setTimeout(updateImageModelDropdown, 50);
@@ -3569,6 +3974,7 @@
                 e.preventDefault();
                 const checkbox = this.querySelector('.image-provider-trigger');
                 checkbox.checked = !checkbox.checked;
+                setImageProviderCheckOrder(checkbox.value, checkbox.checked);
                 syncImageCardChecked(this);
 
                 clearTimeout(imageDebounceTimer);
@@ -3577,6 +3983,31 @@
         });
 
         updateImageModelDropdown();
+
+        // ==================================================
+        // Frontier-only mode（2026-07-08 新增），image-form 对等实现——见 compareForm 里
+        // frontierOnlyToggle 上方注释，同一套开关/锁定逻辑，作用在图片表单的免费 provider
+        // 区（imageProviderTriggers/imageProviderCards）。
+        // ==================================================
+        const frontierOnlyToggleImage = document.getElementById('frontierOnlyToggleImage');
+        if (frontierOnlyToggleImage) {
+            frontierOnlyToggleImage.addEventListener('click', () => {
+                frontierOnlyImageActive = !frontierOnlyImageActive;
+                frontierOnlyToggleImage.classList.toggle('is-active', frontierOnlyImageActive);
+                frontierOnlyToggleImage.textContent = frontierOnlyImageActive ? 'Frontier-only Mode: ON' : 'Frontier-only Mode: OFF';
+                imageProviderTriggers.forEach(cb => {
+                    cb.disabled = frontierOnlyImageActive;
+                    if (frontierOnlyImageActive) cb.checked = false;
+                });
+                imageProviderCards.forEach(card => {
+                    card.classList.toggle('is-locked', frontierOnlyImageActive);
+                    syncImageCardChecked(card);
+                });
+                // 强制取消勾选不会经过 click/change 事件,下拉框的绑定目标需要手动清空。
+                if (frontierOnlyImageActive) imageProviderCheckOrder = [];
+                updateImageModelDropdown();
+            });
+        }
 
         // ==================================================
         // Gemini（Google 官方 google-genai API，"Nano Banana"，2026-07-04 新增）：与上面
@@ -3743,7 +4174,17 @@
                 .filter(cb => cb.checked)
                 .map(cb => cb.value);
 
-            const targetModel = imageModelSelect.value || null;
+            // Frontier-only mode's bottom line: free image providers are all locked out, so
+            // at least one frontier image provider must be checked. See the compareForm
+            // submit handler's identical check above for the full rationale.
+            if (frontierOnlyImageActive) {
+                const anyFrontierChecked = (geminiProviderTrigger && geminiProviderTrigger.checked && !geminiProviderTrigger.disabled) ||
+                    (chatgptImageController.trigger && chatgptImageController.trigger.checked && !chatgptImageController.trigger.disabled);
+                if (!anyFrontierChecked) {
+                    alert('Please select at least one frontier provider.');
+                    return;
+                }
+            }
 
             imageAbortController = new AbortController();
             const { signal } = imageAbortController;
@@ -3758,12 +4199,13 @@
                     prompt,
                     providers: selectedProviders,
                     max_workers: 5,
-                    request_id: currentImageRequestId
+                    request_id: currentImageRequestId,
+                    frontier_only: frontierOnlyImageActive,
+                    provider_models: selectedProviders.reduce((acc, name) => {
+                        if (imageProviderModelSelections[name]) acc[name] = imageProviderModelSelections[name];
+                        return acc;
+                    }, {})
                 };
-
-                if (targetModel) {
-                    requestBody.model = targetModel;
-                }
 
                 const response = await fetch('/api/generate-images', {
                     method: 'POST',
@@ -3877,8 +4319,22 @@
         document.getElementById('clearImagesBtn').addEventListener('click', () => {
             document.getElementById('imageResults').style.display = 'none';
             document.getElementById('imagePrompt').value = '';
-            imageProviderTriggers.forEach(cb => cb.checked = false);
-            imageProviderCards.forEach(syncImageCardChecked);
+            if (frontierOnlyToggleImage) {
+                frontierOnlyImageActive = false;
+                frontierOnlyToggleImage.classList.remove('is-active');
+                frontierOnlyToggleImage.textContent = 'Frontier-only Mode: OFF';
+            }
+            imageProviderTriggers.forEach(cb => {
+                cb.checked = false;
+                cb.disabled = false;
+            });
+            imageProviderCheckOrder = [];
+            Object.keys(imageProviderModelSelections).forEach(name => delete imageProviderModelSelections[name]);
+            imageProviderCards.forEach(card => {
+                card.classList.remove('is-locked');
+                syncImageCardChecked(card);
+                refreshImageProviderModelLabel(card.querySelector('.image-provider-trigger').value);
+            });
             imageModelSelect.value = '';
             updateImageModelDropdown();
             if (geminiProviderTrigger) {
@@ -4767,12 +5223,19 @@
             }
         }
 
+        // 0-33 浅绿 / 34-66 中绿 / 67-100 深绿（见 .review-score-badge.score-* CSS）。
+        function scoreColorClass(score) {
+            if (score <= 33) return 'score-low';
+            if (score <= 66) return 'score-mid';
+            return 'score-high';
+        }
+
         function renderPeerReviews(reviews, uid) {
             if (!reviews || reviews.length === 0) return '';
             const items = reviews.map(r => `
                 <div class="peer-review-item">
                     <span class="reviewer-tag">Blind review from ${escapeHtml(r.reviewer_provider)}</span>
-                    <span class="review-score-badge">${r.score} pts</span>
+                    <span class="review-score-badge ${scoreColorClass(r.score)}">${r.score} pts</span>
                     <span class="review-comment-text">: ${escapeHtml(r.comment)}</span>
                 </div>
             `).join('');

@@ -18,6 +18,7 @@ import re
 import json
 import random
 import base64
+import threading
 from urllib.parse import urlparse
 
 # 用于并发执行多个Provider请求
@@ -73,11 +74,20 @@ try:
     G4F_AVAILABLE = True
     logger.info("g4f imported successfully")
 
-    # 当前支持的 Provider 列表
+    # 当前支持的 Provider 列表。CohereForAI_C4AI_Command/Groq/OpenRouterFree 是
+    # 2026-07-05 可用性调研新增（见 availability_g4f/available_providers_models.txt 和
+    # provider_test_results_v3.txt），均连续多轮真实调用零失败。Groq/OpenRouterFree 底层
+    # 在未提供用户自有 Key 时会走 g4f 官方维护的 g4f.space 中转代理（backup_url），
+    # 与 Yqcloud/OperaAria/PollinationsAI 同属"无凭证调用免费渠道"这一类别，不是本项目
+    # 自建的代理，不违反"不要给图片下载功能加服务端代理接口"这条规则（那条规则针对的是
+    # 本项目自己写的下载代理，不针对 g4f 内部的 provider 实现细节）。
     G4F_PROVIDERS = [
         g4f.Provider.Yqcloud,
         g4f.Provider.OperaAria,
         g4f.Provider.PollinationsAI,
+        g4f.Provider.CohereForAI_C4AI_Command,
+        g4f.Provider.Groq,
+        g4f.Provider.OpenRouterFree,
     ]
 
     # 配置映射表：一个 Provider 对应一个模型列表
@@ -86,17 +96,22 @@ try:
         'Yqcloud': ['gpt-3.5-turbo', 'gpt-4'],
         'OperaAria': ['aria'],
         'PollinationsAI': ['openai-fast'],
+        'CohereForAI_C4AI_Command': ['command-a-03-2025', 'command-r-08-2024'],
+        'Groq': ['openai/gpt-oss-120b'],
+        'OpenRouterFree': ['openrouter/free'],
     }
 
-    # 文生图（text-to-image）Provider 列表：2026-07-03 可用性调研（见
-    # availability_g4f/available_free_image_providers.txt）实测确认的 5 个免 Key 组合，
-    # 全部通过 g4f.client.Client().images.generate() 调用（与上方文本对话的
-    # g4f.ChatCompletion.create() 是完全不同的两套 g4f 接口，不可混用）。
+    # 文生图（text-to-image）Provider 列表：2026-07-05 复测（见
+    # availability_g4f/available_free_image_providers.txt）移除了 BlackForestLabs_Flux1Dev
+    # 和 StabilityAI_SD35Large——两者底层共享 HuggingFace 的 ZeroGPU 免费配额池，连续 4 轮
+    # 实测 100% 命中 "You have exceeded your ZeroGPU quota (0s left)"，配额已被全局耗尽且
+    # 不会短期恢复，同一批复测里没有找到其它可用的免 Key 替代 provider（完整候选与失败原因
+    # 见同目录 available_image_providers_models.txt）。剩余 3 个组合全部通过
+    # g4f.client.Client().images.generate() 调用（与上方文本对话的 g4f.ChatCompletion.create()
+    # 是完全不同的两套 g4f 接口，不可混用）。
     IMAGE_PROVIDERS = [
         g4f.Provider.PollinationsImage,
-        g4f.Provider.BlackForestLabs_Flux1Dev,
         g4f.Provider.AnyProvider,
-        g4f.Provider.StabilityAI_SD35Large,
         g4f.Provider.OperaAria,
     ]
 
@@ -104,9 +119,7 @@ try:
     # 命中时调用 images.generate() 不传 model 参数（其自身默认走 default_image_model）。
     IMAGE_PROVIDER_MODELS_MAP = {
         'PollinationsImage': ['auto'],
-        'BlackForestLabs_Flux1Dev': ['flux-dev'],
         'AnyProvider': ['flux'],
-        'StabilityAI_SD35Large': ['sd-3.5-large'],
         'OperaAria': ['aria'],
     }
 
@@ -116,15 +129,23 @@ try:
     # （见下方 FRONTIER_STYLE_PROMPTS_MAP）放在一起读起来依然各自分明，字数上限/结构要求
     # 本身不变（改动会被 test_main_whitebox.py 等用 patch() 注入的测试内容覆盖，不依赖
     # 这里的具体字符串）：
-    # gpt-4        → 从不脱离证据链的严谨分析师：结论-依据-反思三层结构，300字
-    # gpt-3.5      → 从不啰嗦的效率派：TLDR一句话结论优先，口语化，150字
-    # aria         → 信动作胜过信分析的实战顾问：跳过铺垫、直接给1-2个可操作动作，200字
-    # openai-fast  → 惜字如金的极速答题者：一句结论+一句理由，英文输出，100字内
+    # gpt-4              → 从不脱离证据链的严谨分析师：结论-依据-反思三层结构，300字
+    # gpt-3.5            → 从不啰嗦的效率派：TLDR一句话结论优先，口语化，150字
+    # aria               → 信动作胜过信分析的实战顾问：跳过铺垫、直接给1-2个可操作动作，200字
+    # openai-fast        → 惜字如金的极速答题者：一句结论+一句理由，英文输出，100字内
+    # command-a-03-2025  → 立足 Cohere 企业级定位的商业顾问：结构化要点、面向落地决策，250字
+    # command-r-08-2024  → 立足 Cohere 检索增强定位的事实核查员：先给可验证事实点，标注不确定处，200字
+    # openai/gpt-oss-120b → 立足 Groq LPU 芯片"极速推理"定位：直给结论，不解释推理过程，120字内
+    # openrouter/free      → 立足 OpenRouter"多模型聚合路由"定位：先说结论，再补一句多模型共识视角，150字
     ROUTE_PROMPTS_MAP = {
         ('Yqcloud', 'gpt-4'): '\n\n[System: Respond immediately. You are a rigorous analyst who never states a conclusion without showing its evidence trail. Answer quickly using a three-part structure: "Core conclusion -> Key evidence -> Potential risks or reflection." Keep the entire response under 300 words.]',
         ('Yqcloud', 'gpt-3.5-turbo'): '\n\n[System: Give a TLDR immediately. You are a no-nonsense efficiency assistant who leads with the punchline and never over-explains. State the single most important conclusion in one sentence first, then add up to two key points. Reply in a casual, conversational tone. Keep the entire response under 150 words. No filler.]',
         ('OperaAria', 'aria'): '\n\n[System: Give actionable advice immediately. You are a hands-on consultant who trusts action over analysis. Skip the background and tell the user directly "here are the 1-2 things you can do right now," tailored to the current situation. Keep the entire response under 200 words.]',
         ('PollinationsAI', 'openai-fast'): '\n\n[System: Reply immediately. You are a speed-first minimalist who never wastes a word. Give ONE sentence answer then ONE sentence reason. English only. Max 100 words. No preamble.]',
+        ('CohereForAI_C4AI_Command', 'command-a-03-2025'): '\n\n[System: Respond immediately. You are an enterprise business consultant in the spirit of Cohere\'s enterprise-AI focus, structuring answers around what a decision-maker can act on. Lead with a short structured breakdown of options or steps, then a clear recommendation. Keep the entire response under 250 words.]',
+        ('CohereForAI_C4AI_Command', 'command-r-08-2024'): '\n\n[System: Respond immediately. You are a fact-checking researcher in the spirit of Cohere\'s retrieval-augmented-generation focus. Lead with the most verifiable factual points, and explicitly flag anything you are not certain about. Keep the entire response under 200 words.]',
+        ('Groq', 'openai/gpt-oss-120b'): '\n\n[System: Respond instantly. You are built for raw inference speed on Groq\'s LPU hardware, so you never show your reasoning steps, only the destination. State the final answer directly with no lead-up. Keep the entire response under 120 words.]',
+        ('OpenRouterFree', 'openrouter/free'): '\n\n[System: Respond immediately. You are OpenRouter\'s free routed model, built around aggregating many different models into one gateway. Lead with your direct answer, then add one sentence framing it as a broad, cross-model consensus view. Keep the entire response under 150 words.]',
     }
 
     # 互评裁判提示词配置表：model → 裁判专属提示词前缀（要求输出 JSON 格式）。前沿模型的
@@ -137,6 +158,10 @@ try:
         'gpt-3.5-turbo': 'Quickly assess the following anonymous answer for organization and readability. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one efficiency-focused sentence of editing feedback"}',
         'aria': 'Review the following anonymous answer from a practical standpoint, noting how down-to-earth and actionable it is. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one blunt, plain-spoken sentence"}',
         'openai-fast': 'You are a blind reviewer. Rate the following answer for clarity and accuracy. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sharp sentence critique in English"}',
+        'command-a-03-2025': 'You are a blind reviewer judging from a business-decision standpoint. Rate how actionable and well-structured the following answer is. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sentence critique focused on actionability"}',
+        'command-r-08-2024': 'You are a blind reviewer judging factual accuracy. Rate how well-supported and verifiable the following answer is. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sentence critique focused on factual rigor"}',
+        'openai/gpt-oss-120b': 'You are a blind reviewer judging response speed and directness. Rate how concisely the following answer reaches its conclusion without unnecessary lead-up. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sentence critique focused on concision"}',
+        'openrouter/free': 'You are a blind reviewer judging breadth of perspective. Rate how well-rounded and consensus-like the following answer reads. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sentence critique focused on breadth of perspective"}',
     }
 
 except ImportError as e:
@@ -432,21 +457,48 @@ def init_image_result_object(provider_name, model):
 
 
 # ==================================================
+# 辅助函数：从文本里扫出所有"括号配平"的 {...} 顶层候选子串。
+# 部分 reviewer（尤其推理型模型）会在最终 JSON 前后夹带自我纠正的草稿，导致文本里
+# 出现不止一个 {...} 形状。旧实现用 text.find('{')/text.rfind('}') 掐头去尾，一旦
+# 出现两段 JSON 就会把中间的草稿文字也囊括进去拼成一段无法解析的字符串，最终整体
+# 解析失败、掉进 80 分兜底，但兜底文案里原样保留的草稿文字又恰好包含另一个合法的
+# score，导致用户看到"80 分"和 comment 里的分数对不上。改成按花括号深度配平扫描，
+# 拿到每一段独立、可能合法的候选子串，交给调用方逐个尝试解析。
+# ==================================================
+def _extract_balanced_json_candidates(text):
+    candidates = []
+    depth = 0
+    start = None
+    for i, ch in enumerate(text):
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    candidates.append(text[start:i + 1])
+                    start = None
+    return candidates
+
+
+# ==================================================
 # 辅助函数：解析互评 JSON 响应，提取 score 与 comment
-# 容错策略：任何解析失败均返回默认分 80 + 原始文本作为 comment
+# 容错策略：从最后一段候选 JSON 开始尝试解析（模型自我纠正后，最终定稿通常在最后），
+# 第一段能解析成功且带有效数字 score 的候选即采用；所有候选都解析失败才返回默认分
+# 80 + 原始文本作为 comment。
 # ==================================================
 def parse_peer_review_json(text):
-    try:
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end > start:
-            data = json.loads(text[start:end + 1])
-            score = data.get('score')
+    for candidate in reversed(_extract_balanced_json_candidates(text)):
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        score = data.get('score')
+        if isinstance(score, (int, float)):
             comment = str(data.get('comment', ''))
-            if isinstance(score, (int, float)):
-                return max(1, min(100, int(score))), comment
-    except Exception:
-        pass
+            return max(1, min(100, int(score))), comment
     return 80, text.strip()
 
 
@@ -694,10 +746,45 @@ def test_g4f_image_provider(provider, prompt, requested_model=None):
     return result
 
 
+# 互评单次请求的超时预算 + 重试次数。彻底失败的互评现在会被整条隐藏（不再展示"系统繁忙"
+# 兜底文案，见 run_peer_review()/run_frontier_peer_review() 末尾），所以重试的唯一价值是
+# 换一次真实评分，不再是为了避免展示丑陋的兜底文案；优先保证所有 provider 的正常 response
+# 不被互评拖慢，这里把重试次数从 3 次砍回 2 次（1 次重试），降低单条互评的最坏耗时。
+# run_cross_peer_review() 的 future 超时是从这两个常量用公式推算出来的，不能只改这里不
+# 同步调那边（同一份注意事项也写在这两组常量各自旁边）。
+PEER_REVIEW_REQUEST_TIMEOUT = 25
+PEER_REVIEW_MAX_ATTEMPTS = 2
+
+
+def _peer_review_retry_wait(attempt):
+    # attempt 是"接下来是第几次重试"（0-indexed，第一次重试传 0）。退避随重试次数
+    # 递增（3~5s、6~8s...），让密集互评请求自然错开，而不是每次都撞向同一个刚触发
+    # 过 429 的限流窗口。
+    return (attempt + 1) * 3 + random.uniform(0, 2)
+
+
+def _peer_review_single_worst_case_seconds():
+    # 单次互评（run_peer_review 一整条重试链）最坏情况下的总耗时上界：每次尝试都跑满
+    # PEER_REVIEW_REQUEST_TIMEOUT，重试之间的退避也按 _peer_review_retry_wait() 的
+    # 抖动上界（+2s）计入。run_cross_peer_review() 的 future 等待超时由这个值乘以
+    # reviewer 级排队深度推算而来，不能脱节地写死一个数字。
+    backoff_upper_bound_total = sum(
+        (i + 1) * 3 + 2 for i in range(PEER_REVIEW_MAX_ATTEMPTS - 1)
+    )
+    return PEER_REVIEW_MAX_ATTEMPTS * PEER_REVIEW_REQUEST_TIMEOUT + backoff_upper_bound_total
+
+
+# future.result() 等待的固定缓冲，覆盖线程池调度/GIL 切换等非计时的额外开销
+PEER_REVIEW_FUTURE_TIMEOUT_BUFFER = 10
+
+
 # ==================================================
 # 辅助函数：执行单次互评请求（不经过隐形 Prompt 路由）
 # ==================================================
 def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
+    # 彻底失败（重试耗尽或不可重试的错误）时返回 None 而不是兜底文案，调用方
+    # （run_cross_peer_review()）据此把这条互评整条隐藏，不再强行展示"系统繁忙"之类的
+    # 假分数假评语——一次成功的 response 不该因为某个免费 reviewer 抽风而被拖累展示体验。
     review_result = {
         'reviewer_provider': reviewer_provider.__name__,
         'reviewer_model': reviewer_model,
@@ -705,13 +792,13 @@ def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
         'comment': '',
     }
     last_exc = None
-    for attempt in range(2):
+    for attempt in range(PEER_REVIEW_MAX_ATTEMPTS):
         try:
             response = g4f.ChatCompletion.create(
                 model=reviewer_model,
                 messages=[{"role": "user", "content": review_prompt}],
                 provider=reviewer_provider,
-                timeout=25
+                timeout=PEER_REVIEW_REQUEST_TIMEOUT
             )
             score, comment = parse_peer_review_json(detect_and_truncate(str(response)))
             review_result['score'] = score
@@ -721,23 +808,17 @@ def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
             last_exc = e
             err_str = str(e).lower()
             # 仅 429 / queue-full 类错误值得重试；其他异常直接跳出
-            if attempt == 0 and ('429' in err_str or 'queue' in err_str):
-                wait = 2 + random.uniform(0, 1)
+            if attempt < PEER_REVIEW_MAX_ATTEMPTS - 1 and ('429' in err_str or 'queue' in err_str):
+                wait = _peer_review_retry_wait(attempt)
                 logger.warning(
                     f"Peer review 429/queue from {reviewer_provider.__name__}, "
-                    f"retrying in {wait:.1f}s"
+                    f"retrying in {wait:.1f}s (attempt {attempt + 2}/{PEER_REVIEW_MAX_ATTEMPTS})"
                 )
                 time.sleep(wait)
                 continue
             break
-    err_str = str(last_exc).lower()
-    if any(kw in err_str for kw in CONTENT_POLICY_ERROR_KEYWORDS):
-        review_result['comment'] = "This provider's content filter blocked the review. Try rephrasing your prompt."
-    elif any(kw in err_str for kw in PEER_REVIEW_NETWORK_ERROR_KEYWORDS):
-        review_result['comment'] = 'The system is busy and trying to reconnect. Please try again shortly.'
-    else:
-        review_result['comment'] = f'Review failed: {str(last_exc)}'
-    return review_result
+    logger.warning(f"Peer review from {reviewer_provider.__name__} failed, hiding it: {last_exc}")
+    return None
 
 
 # ==================================================
@@ -748,8 +829,9 @@ def run_peer_review(reviewer_provider, reviewer_model, review_prompt):
 # 的 {reviewer_provider, reviewer_model, score, comment} 形状，好让 run_cross_peer_review()
 # 不必区分 reviewer 是 g4f 还是前沿模型就能统一派发。user_api_key 非空时用它做这次评审
 # （与该 reviewer 自己回答本轮 prompt 时用的是不是同一把 Key 无关——两者各自独立路由，
-# 由调用方决定传什么）。已知的开发者账户余额/配额耗尽错误码（error_code 非空）转换成
-# 对用户友好的"reviewer 暂时不可用"文案，不把内部错误码泄漏进评语文本。
+# 由调用方决定传什么）。调用失败（包括开发者账户余额/配额耗尽）时返回 None 而不是一个
+# 带假分数的兜底 review_result，与 run_peer_review() 同一套"失败就隐藏"的约定，见那边
+# 的注释。
 # ==================================================
 def run_frontier_peer_review(kind, model_key, review_prompt, user_api_key=None):
     call_fn = {
@@ -758,25 +840,19 @@ def run_frontier_peer_review(kind, model_key, review_prompt, user_api_key=None):
         'Gemini': call_gemini_text_model,
     }[kind]
 
-    review_result = {
-        'reviewer_provider': kind,
-        'reviewer_model': model_key,
-        'score': 80,
-        'comment': '',
-    }
-
     call_result = call_fn(review_prompt, model_key, user_api_key, apply_persona=False)
 
-    if call_result['success']:
-        score, comment = parse_peer_review_json(call_result['response'])
-        review_result['score'] = score
-        review_result['comment'] = comment
-    elif call_result.get('error_code'):
-        review_result['comment'] = 'This reviewer is temporarily unavailable (server quota exhausted).'
-    else:
-        review_result['comment'] = f"Review failed: {call_result['error']}"
+    if not call_result['success']:
+        logger.warning(f"Peer review from {kind} failed, hiding it: {call_result.get('error')}")
+        return None
 
-    return review_result
+    score, comment = parse_peer_review_json(call_result['response'])
+    return {
+        'reviewer_provider': kind,
+        'reviewer_model': model_key,
+        'score': score,
+        'comment': comment,
+    }
 
 
 # ==================================================
@@ -793,7 +869,9 @@ def run_frontier_peer_review(kind, model_key, review_prompt, user_api_key=None):
 # 对象）还是 run_frontier_peer_review()（前沿模型）。
 #
 # 返回 {provider_name: [review_item, ...]}，调用方（/api/peer-review 路由）据此拼回
-# 每个结果自己的 peer_reviews 数组。
+# 每个结果自己的 peer_reviews 数组。某个 reviewer 彻底失败时 run_peer_review()/
+# run_frontier_peer_review() 返回 None，下面 append 之前的 None 检查会把它整条丢弃，
+# 数组长度因此可能小于 len(entries) - 1，前端本就按可变长度渲染，不需要跟着改。
 # ==================================================
 def run_cross_peer_review(entries):
     g4f_provider_obj_map = {p.__name__: p for p in G4F_PROVIDERS}
@@ -814,17 +892,41 @@ def run_cross_peer_review(entries):
     if not tasks:
         return reviews_by_provider
 
+    # provider 数量越多，每个 reviewer 要评审的 target 就越多（N-1 个），这些任务会在
+    # 下面的线程池里同时提交、大概率并发落在同一时间窗口——这才是 provider>=6 时对
+    # PollinationsAI/Groq/OpenRouterFree 这类严格限流免费后端出现 429 风暴的真正成因
+    # （不是重试次数不够，而是同一个 reviewer 一开始就被并发打了好几发请求）。这里给
+    # 每个 reviewer 身份（kind+provider）配一把独占锁，串行化"打向同一个 reviewer"的
+    # 请求；不同 reviewer 之间依然通过线程池并发，不会退化成整批完全串行。
+    reviewer_task_counts = {}
+    for reviewer, _, _ in tasks:
+        key = (reviewer['kind'], reviewer['provider'])
+        reviewer_task_counts[key] = reviewer_task_counts.get(key, 0) + 1
+    reviewer_locks = {key: threading.Lock() for key in reviewer_task_counts}
+
     def _dispatch(reviewer, review_prompt):
-        if reviewer['kind'] == 'g4f':
-            provider_obj = g4f_provider_obj_map.get(reviewer['provider'])
-            if provider_obj is None:
-                return None
-            return run_peer_review(provider_obj, reviewer['model'], review_prompt)
-        return run_frontier_peer_review(
-            reviewer['kind'], reviewer['model'], review_prompt, reviewer.get('user_api_key')
-        )
+        lock = reviewer_locks[(reviewer['kind'], reviewer['provider'])]
+        with lock:
+            if reviewer['kind'] == 'g4f':
+                provider_obj = g4f_provider_obj_map.get(reviewer['provider'])
+                if provider_obj is None:
+                    return None
+                return run_peer_review(provider_obj, reviewer['model'], review_prompt)
+            return run_frontier_peer_review(
+                reviewer['kind'], reviewer['model'], review_prompt, reviewer.get('user_api_key')
+            )
 
     max_workers = min(10, len(tasks))
+    # 单个 reviewer 排到的最坏耗时 = 它需要串行处理的任务数（reviewer_task_counts 里的
+    # 最大值）× 单次互评最坏耗时（_peer_review_single_worst_case_seconds()）。旧值 32s
+    # 是只有 1 次重试、退避固定 2~3s 时代定下的常量，跟这里提升过的重试次数/退避时长以及
+    # 新增的 reviewer 级排队完全脱节，必须由公式推算，不能维持一个写死的数字。
+    max_reviewer_queue_depth = max(reviewer_task_counts.values())
+    future_timeout = (
+        max_reviewer_queue_depth * _peer_review_single_worst_case_seconds()
+        + PEER_REVIEW_FUTURE_TIMEOUT_BUFFER
+    )
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(_dispatch, reviewer, review_prompt): target_provider
@@ -832,11 +934,11 @@ def run_cross_peer_review(entries):
         }
         for future, target_provider in futures.items():
             try:
-                review_item = future.result(timeout=32)
+                review_item = future.result(timeout=future_timeout)
                 if review_item is not None:
                     reviews_by_provider[target_provider].append(review_item)
             except TimeoutError:
-                logger.warning(f"Peer review for {target_provider} timed out after 32s")
+                logger.warning(f"Peer review for {target_provider} timed out after {future_timeout:.0f}s")
             except Exception as e:
                 logger.error(f"Peer review error for {target_provider}: {e}", exc_info=True)
 
@@ -1677,8 +1779,23 @@ def compare_providers():
         # 用户选中的 Provider 名字列表
         selected_providers = data.get('providers', [])
 
-        # 用户全局指定的单选模型名称（可选）
+        # Frontier-only 模式（2026-07-08 新增）：前端一键锁死免费 g4f provider 之后，
+        # 用这个独立布尔字段明确告诉后端"这次一个免费 provider 都不测",不能靠
+        # providers 数组为空来表达——空数组历史上一直复用为"测试全部"的默认值语义
+        # （见下方 else 分支),两种"空"必须用不同字段区分。
+        frontier_only = bool(data.get('frontier_only'))
+
+        # 用户全局指定的单选模型名称（可选，兼容旧调用方；有 provider_models 时被逐
+        # provider 覆盖）
         requested_model = data.get('model', None)
+
+        # 每个 provider 各自独立选择的模型（可选，2026-07-09 新增，见前端 index.html
+        # 的 providerModelSelections）：{provider_name: model_name}。没出现在这个字典
+        # 里的 provider 落回 requested_model。
+        provider_models = data.get('provider_models') or {}
+
+        def _requested_model_for(name):
+            return provider_models.get(name, requested_model)
 
         # 前端为这次调用生成的一次性 UUID，供"Stop Generating"取消落库使用
         # （见 _is_request_cancelled() 上方注释），与 Claude/Gemini 各自的
@@ -1696,55 +1813,59 @@ def compare_providers():
         )
 
         # 筛选需要测试的 Provider 实例
-        if selected_providers:
+        if frontier_only:
+            providers_to_test = []
+        elif selected_providers:
             providers_to_test = [
                 p for p in G4F_PROVIDERS
                 if p.__name__ in selected_providers
             ]
+            if not providers_to_test:
+                return jsonify({
+                    'error': 'No valid providers found'
+                }), 400
         else:
             providers_to_test = G4F_PROVIDERS
 
-        if not providers_to_test:
-            return jsonify({
-                'error': 'No valid providers found'
-            }), 400
-
         results = []
 
-        # 并发执行请求
-        with ThreadPoolExecutor(
-            max_workers=min(max_workers, len(providers_to_test))
-        ) as executor:
+        # frontier_only 场景下 providers_to_test 故意为空——跳过整个 g4f 并发阶段,
+        # 直接往下走排序/落库,给前端一个空结果的 history_id 供后续 Claude/ChatGPT/
+        # Gemini 追加。ThreadPoolExecutor(max_workers=0) 会抛 ValueError,必须整块跳过。
+        if providers_to_test:
+            with ThreadPoolExecutor(
+                max_workers=min(max_workers, len(providers_to_test))
+            ) as executor:
 
-            futures = {
-                executor.submit(
-                    test_g4f_provider,
-                    p,
-                    prompt,
-                    requested_model
-                ): p
-                for p in providers_to_test
-            }
+                futures = {
+                    executor.submit(
+                        test_g4f_provider,
+                        p,
+                        prompt,
+                        _requested_model_for(p.__name__)
+                    ): p
+                    for p in providers_to_test
+                }
 
-            for future, provider in futures.items():
-                try:
-                    result = future.result(timeout=21)
-                    results.append(result)
-                    logger.info(
-                        f"Completed: {result['provider']} "
-                        f"success={result['success']}"
-                    )
-                except Exception as e:
-                    name = provider.__name__
-                    fallback_model = determine_actual_model(name, requested_model)
-                    fallback_result = init_result_object(name, fallback_model)
-                    if isinstance(e, TimeoutError):
-                        fallback_result['error'] = 'The system is busy and trying to reconnect. Please try again shortly.'
-                        logger.warning(f"Provider {name} timed out after 21s")
-                    else:
-                        fallback_result['error'] = f'Execution error: {str(e)}'
-                        logger.error(f"Error testing {name}: {e}", exc_info=True)
-                    results.append(fallback_result)
+                for future, provider in futures.items():
+                    try:
+                        result = future.result(timeout=21)
+                        results.append(result)
+                        logger.info(
+                            f"Completed: {result['provider']} "
+                            f"success={result['success']}"
+                        )
+                    except Exception as e:
+                        name = provider.__name__
+                        fallback_model = determine_actual_model(name, _requested_model_for(name))
+                        fallback_result = init_result_object(name, fallback_model)
+                        if isinstance(e, TimeoutError):
+                            fallback_result['error'] = 'The system is busy and trying to reconnect. Please try again shortly.'
+                            logger.warning(f"Provider {name} timed out after 21s")
+                        else:
+                            fallback_result['error'] = f'Execution error: {str(e)}'
+                            logger.error(f"Error testing {name}: {e}", exc_info=True)
+                        results.append(fallback_result)
 
         # 为所有结果初始化空的互评列表，保留 8-field 契约的字段存在性。互评本身不再在这里
         # 跑——现在推迟到前端拿到本轮全部结果（g4f + 可能的前沿模型）之后，统一调用
@@ -2414,8 +2535,21 @@ def generate_images():
         # 用户选中的图片 Provider 名字列表
         selected_providers = data.get('providers', [])
 
-        # 用户全局指定的单选模型名称（可选）
+        # Frontier-only 模式（2026-07-08 新增）：与 compare_providers() 的同名字段同构，
+        # 见其上方注释——独立布尔字段用来把"零个免费 provider"与"providers 数组为空 =
+        # 测试全部"这两种历史上共用同一个空数组表达的语义区分开。
+        frontier_only = bool(data.get('frontier_only'))
+
+        # 用户全局指定的单选模型名称（可选，兼容旧调用方；有 provider_models 时被逐
+        # provider 覆盖）
         requested_model = data.get('model', None)
+
+        # 每个图片 provider 各自独立选择的模型（可选，与 compare_providers() 的
+        # provider_models 同构）：{provider_name: model_name}。
+        provider_models = data.get('provider_models') or {}
+
+        def _requested_model_for(name):
+            return provider_models.get(name, requested_model)
 
         # 前端为这次调用生成的一次性 UUID，供"Stop Generating"取消落库使用，
         # 与 compare_providers() 的 request_id 是独立命名空间。
@@ -2432,61 +2566,64 @@ def generate_images():
         )
 
         # 筛选需要调用的图片 Provider 实例
-        if selected_providers:
+        if frontier_only:
+            providers_to_test = []
+        elif selected_providers:
             providers_to_test = [
                 p for p in IMAGE_PROVIDERS
                 if p.__name__ in selected_providers
             ]
+            if not providers_to_test:
+                return jsonify({
+                    'error': 'No valid image providers found'
+                }), 400
         else:
             providers_to_test = IMAGE_PROVIDERS
 
-        if not providers_to_test:
-            return jsonify({
-                'error': 'No valid image providers found'
-            }), 400
-
         results = []
 
-        # 并发执行请求
-        with ThreadPoolExecutor(
-            max_workers=min(max_workers, len(providers_to_test))
-        ) as executor:
+        # frontier_only 场景下故意跳过整个 g4f 图片并发阶段（同 compare_providers()
+        # 上方注释，ThreadPoolExecutor(max_workers=0) 会抛 ValueError，必须整块跳过）。
+        if providers_to_test:
+            with ThreadPoolExecutor(
+                max_workers=min(max_workers, len(providers_to_test))
+            ) as executor:
 
-            futures = {
-                executor.submit(
-                    test_g4f_image_provider,
-                    p,
-                    prompt,
-                    requested_model
-                ): p
-                for p in providers_to_test
-            }
+                futures = {
+                    executor.submit(
+                        test_g4f_image_provider,
+                        p,
+                        prompt,
+                        _requested_model_for(p.__name__)
+                    ): p
+                    for p in providers_to_test
+                }
 
-            for future, provider in futures.items():
-                name = provider.__name__
-                # 每个 Provider 各自的 outer timeout 独立计算（见 get_image_timeouts()），
-                # 慢速的聚合型 Provider（如 AnyProvider）不会拖慢同批次里其他 Provider
-                # 的等待时间，也不会被默认预算过早判定超时。
-                _, outer_timeout = get_image_timeouts(name)
-                try:
-                    result = future.result(timeout=outer_timeout)
-                    results.append(result)
-                    logger.info(
-                        f"Image generation completed: {result['provider']} "
-                        f"success={result['success']}"
-                    )
-                except Exception as e:
-                    fallback_model = determine_actual_image_model(name, requested_model) or 'default'
-                    fallback_result = init_image_result_object(name, fallback_model)
-                    if isinstance(e, TimeoutError):
-                        fallback_result['error'] = 'The system is busy and trying to reconnect. Please try again shortly.'
-                        logger.warning(
-                            f"Image provider {name} timed out after {outer_timeout}s"
+                for future, provider in futures.items():
+                    name = provider.__name__
+                    # 每个 Provider 各自的 outer timeout 独立计算（见 get_image_timeouts()），
+                    # 慢速的聚合型 Provider（如 AnyProvider）不会拖慢同批次里其他 Provider
+                    # 的等待时间，也不会被默认预算过早判定超时。
+                    _, outer_timeout = get_image_timeouts(name)
+                    try:
+                        result = future.result(timeout=outer_timeout)
+                        results.append(result)
+                        logger.info(
+                            f"Image generation completed: {result['provider']} "
+                            f"success={result['success']}"
                         )
-                    else:
-                        fallback_result['error'] = f'Execution error: {str(e)}'
-                        logger.error(f"Error generating image with {name}: {e}", exc_info=True)
-                    results.append(fallback_result)
+                    except Exception as e:
+                        fallback_model = determine_actual_image_model(name, _requested_model_for(name)) or 'default'
+                        fallback_result = init_image_result_object(name, fallback_model)
+                        if isinstance(e, TimeoutError):
+                            fallback_result['error'] = 'The system is busy and trying to reconnect. Please try again shortly.'
+                            logger.warning(
+                                f"Image provider {name} timed out after {outer_timeout}s"
+                            )
+                        else:
+                            fallback_result['error'] = f'Execution error: {str(e)}'
+                            logger.error(f"Error generating image with {name}: {e}", exc_info=True)
+                        results.append(fallback_result)
 
         # 排序：成功优先，耗时短优先（与 compare_providers 的排序契约一致）
         results.sort(

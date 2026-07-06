@@ -153,7 +153,7 @@ class TestProviderSelectionSectionMarkup(unittest.TestCase):
 
     def test_claude_model_select_unchanged(self):
         html = self._get_index_html()
-        self.assertIn('<label for="claudeModelSelect">Claude Model:</label>', html)
+        self.assertIn('<label>Claude Model:</label>', html)
         self.assertIn('<option value="claude-sonnet-5">Claude Sonnet 5</option>', html)
         self.assertIn('<option value="claude-haiku-4-5">Claude Haiku 4.5</option>', html)
 
@@ -236,7 +236,7 @@ class TestImageFormProviderSelectionSectionMarkup(unittest.TestCase):
 
     def test_gemini_model_select_present(self):
         html = self._get_image_form_html()
-        self.assertIn('<label for="geminiModelSelect">Gemini Model:</label>', html)
+        self.assertIn('<label>Gemini Model:</label>', html)
         self.assertIn('<option value="nano-banana-pro">Nano Banana Pro</option>', html)
 
     def test_gemini_model_select_lists_all_three_nano_banana_tiers(self):
@@ -586,15 +586,17 @@ class TestGetImageProvidersEndpoint(unittest.TestCase):
         for provider in data:
             self.assertEqual(provider['type'], 'g4f_image')
 
-    def test_expected_five_researched_providers_present(self):
-        """The five combinations confirmed usable in availability_g4f's 2026-07-03 research
-        (see availability_g4f/available_free_image_providers.txt) must all be exposed."""
+    def test_expected_three_researched_providers_present(self):
+        """The three combinations confirmed usable in availability_g4f's 2026-07-05
+        research (see availability_g4f/available_free_image_providers.txt) must all be
+        exposed. BlackForestLabs_Flux1Dev/StabilityAI_SD35Large were removed after
+        repeated real calls confirmed their shared HuggingFace ZeroGPU quota is
+        permanently exhausted, and no free replacement was found."""
         response = self.client.get('/api/image-providers')
         data = json.loads(response.data)
         names = {p['name'] for p in data}
         self.assertEqual(names, {
-            'PollinationsImage', 'BlackForestLabs_Flux1Dev', 'AnyProvider',
-            'StabilityAI_SD35Large', 'OperaAria',
+            'PollinationsImage', 'AnyProvider', 'OperaAria',
         })
 
 
@@ -1187,15 +1189,20 @@ class TestGenerateImagesEndpoint(unittest.TestCase):
 
     @patch('main.G4FImageClient')
     def test_gpu_quota_error_surfaced_as_friendly_message(self, mock_client_cls):
-        """StabilityAI_SD35Large / BlackForestLabs_Flux1Dev run on HuggingFace ZeroGPU
-        Spaces and raise a raw JSON-ish 'ZeroGPU quota' error once the free quota is
-        exhausted -- end to end through the route, that must come back as an
-        actionable friendly message, not the raw payload."""
+        """GPU_QUOTA_ERROR_KEYWORDS classification is generic (keyword-based, not tied
+        to a specific provider name) -- HuggingFace ZeroGPU Space backends raise a raw
+        JSON-ish 'ZeroGPU quota' error once the free quota is exhausted, and any
+        integrated provider whose retry chain surfaces that string must still get the
+        friendly message end to end through the route, not the raw payload.
+        BlackForestLabs_Flux1Dev/StabilityAI_SD35Large were removed from IMAGE_PROVIDERS
+        (2026-07-05, permanent ZeroGPU quota exhaustion -- see
+        availability_g4f/available_free_image_providers.txt), so this now exercises the
+        classification through AnyProvider, which is still integrated."""
         mock_client_cls.return_value.images.generate.side_effect = Exception(
             'GPU token limit exceeded: data: {"error": "You have exceeded your '
             'ZeroGPU quota (65s requested vs. 0s left)."}'
         )
-        payload = {'prompt': 'a red apple', 'providers': ['StabilityAI_SD35Large']}
+        payload = {'prompt': 'a red apple', 'providers': ['AnyProvider']}
         response = self.client.post(
             '/api/generate-images',
             data=json.dumps(payload),

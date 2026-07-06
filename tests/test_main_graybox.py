@@ -682,10 +682,13 @@ class TestSaveImageHistoryRobustness(unittest.TestCase):
 
 
 # ============================================================
-# 8. 互评阶段超时时长回归测试（2026-07-03）
-# 修复 Yqcloud 等较慢 Provider 在互评阶段被误判超时的问题：
-# run_peer_review 内部 advisory timeout 从 15s 提升到 25s，
-# 外层 future.result 的等待上限同步从 25s 提升到 32s。
+# 8. 互评阶段超时时长回归测试（2026-07-03，2026-07-08 改为公式推导）
+# run_peer_review 内部单次请求超时是 PEER_REVIEW_REQUEST_TIMEOUT（25s），外层
+# future.result 的等待上限不再是写死的常量,而是
+# max_reviewer_queue_depth * _peer_review_single_worst_case_seconds() +
+# PEER_REVIEW_FUTURE_TIMEOUT_BUFFER 现算出来的（provider 数量越多、单个 reviewer
+# 排队要评审的 target 越多,超时预算也要跟着涨,否则重试链跑满时会被提前判超时丢弃
+# 结果——这正是 provider>=6 时互评偶发丢分的成因之一）。
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestPeerReviewOuterTimeoutValue(unittest.TestCase):
@@ -705,11 +708,12 @@ class TestPeerReviewOuterTimeoutValue(unittest.TestCase):
             'response_time': 1.0, 'model': model, 'type': 'g4f', 'peer_reviews': [],
         }
 
-    def test_peer_review_future_result_waits_up_to_32_seconds(self):
+    def test_peer_review_future_result_timeout_matches_formula(self):
         """future.result() inside run_cross_peer_review() (now reached via
         POST /api/peer-review, not /api/compare -- see 2026-07-07 changelog) must be
-        called with timeout=32, not the old 25, so slower reviewers get the extra
-        advisory-timeout headroom."""
+        called with the formula-derived timeout (queue depth 1 for this 2-provider
+        case, since each of ProvA/ProvB only reviews the other once), not a hardcoded
+        magic number that goes stale whenever the retry constants change."""
         providers = self._make_two_providers()
         original_result = concurrent.futures.Future.result
         captured_timeouts = []
@@ -731,9 +735,10 @@ class TestPeerReviewOuterTimeoutValue(unittest.TestCase):
                 content_type='application/json'
             )
 
+        expected_timeout = main._peer_review_single_worst_case_seconds() + main.PEER_REVIEW_FUTURE_TIMEOUT_BUFFER
         self.assertEqual(response.status_code, 200)
-        self.assertIn(32, captured_timeouts)
-        self.assertNotIn(25, captured_timeouts)
+        self.assertIn(expected_timeout, captured_timeouts)
+        self.assertNotIn(32, captured_timeouts)
 
     def test_peer_review_timeout_error_does_not_crash_and_leaves_that_review_missing(self):
         """A simulated TimeoutError from run_peer_review must be caught per-future;
@@ -1006,7 +1011,7 @@ class TestImageGlobalDegradationState(unittest.TestCase):
 
 # ============================================================
 # 11. 文生图硬超时数值回归测试
-# 与互评阶段的 32s outer timeout 同理：future.result() 必须以
+# 与互评阶段的公式推导 outer timeout 同理：future.result() 必须以
 # IMAGE_GENERATION_OUTER_TIMEOUT（当前 85 = 2 * advisory(40) + 5s 重试调度缓冲，
 # 2026-07-04 从"advisory + 固定 10s"公式改为"2 * advisory + 固定 5s"公式，因为
 # test_g4f_image_provider 的 429/queue 重试可能让两次尝试各自都跑到接近满

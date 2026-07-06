@@ -432,25 +432,25 @@ class TestRunPeerReview(unittest.TestCase):
         result = main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
         self.assertEqual(mock_create.call_count, 1)
         mock_sleep.assert_not_called()
-        self.assertIn('Review failed', result['comment'])
+        self.assertIsNone(result)
 
     @patch('main.time.sleep', return_value=None)
     @patch('main.random.uniform', return_value=0.5)
     @patch('main.g4f.ChatCompletion.create')
-    def test_429_then_retry_also_fails_returns_friendly_comment(self, mock_create, mock_rand, mock_sleep):
-        mock_create.side_effect = [
-            Exception('Error 429: Queue full'),
-            Exception('Error 429: Queue full'),
-        ]
+    def test_429_exhausting_all_attempts_returns_none(self, mock_create, mock_rand, mock_sleep):
+        # 失败的互评现在整条隐藏（返回 None），不再展示"系统繁忙"兜底文案，见
+        # run_peer_review() 顶部注释。PEER_REVIEW_MAX_ATTEMPTS 也从 3 砍回 2（1 次重试）
+        # 以优先保证 provider response 不被互评拖慢。
         import main
+        mock_create.side_effect = [Exception('Error 429: Queue full')] * main.PEER_REVIEW_MAX_ATTEMPTS
         result = main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
-        self.assertEqual(mock_create.call_count, 2)
-        self.assertIn('system is busy', result['comment'])
+        self.assertEqual(mock_create.call_count, main.PEER_REVIEW_MAX_ATTEMPTS)
+        self.assertIsNone(result)
 
     @patch('main.time.sleep', return_value=None)
     @patch('main.random.uniform', return_value=0.5)
     @patch('main.g4f.ChatCompletion.create')
-    def test_content_policy_error_does_not_retry_and_returns_friendly_comment(
+    def test_content_policy_error_does_not_retry_and_returns_none(
         self, mock_create, mock_rand, mock_sleep
     ):
         mock_create.side_effect = Exception(
@@ -461,8 +461,7 @@ class TestRunPeerReview(unittest.TestCase):
         result = main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
         self.assertEqual(mock_create.call_count, 1)
         mock_sleep.assert_not_called()
-        self.assertIn('content filter', result['comment'])
-        self.assertNotIn('system is busy', result['comment'])
+        self.assertIsNone(result)
 
     @patch('main.time.sleep', return_value=None)
     @patch('main.random.uniform', return_value=0.5)
@@ -476,8 +475,8 @@ class TestRunPeerReview(unittest.TestCase):
     @patch('main.time.sleep', return_value=None)
     @patch('main.random.uniform', return_value=0.5)
     @patch('main.g4f.ChatCompletion.create')
-    def test_result_keys_always_present(self, mock_create, mock_rand, mock_sleep):
-        mock_create.side_effect = Exception('Error 429: Queue full')
+    def test_result_keys_present_on_success(self, mock_create, mock_rand, mock_sleep):
+        mock_create.return_value = '{"score": 91, "comment": "nice"}'
         import main
         result = main.run_peer_review(self._make_mock_provider('FakeP'), 'aria', 'p')
         self.assertIn('reviewer_provider', result)

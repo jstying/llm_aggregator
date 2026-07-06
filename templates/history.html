@@ -1297,13 +1297,28 @@
 
         .review-score-badge {
             display: inline-block;
-            background: #06c167;
-            color: #ffffff;
             font-size: 0.75rem;
             font-weight: 700;
             padding: 2px 6px;
             border-radius: 4px;
             margin: 0 8px;
+        }
+
+        /* 互评分数三档配色（2026-07-09 新增），与 index.html 同一套规则:0-33 浅绿、
+           34-66 中绿、67-100 深绿。 */
+        .review-score-badge.score-low {
+            background: #E8F5E9;
+            color: #1B5E20;
+        }
+
+        .review-score-badge.score-mid {
+            background: #66BB6A;
+            color: #ffffff;
+        }
+
+        .review-score-badge.score-high {
+            background: #1B5E20;
+            color: #ffffff;
         }
 
         .review-comment-text {
@@ -2372,12 +2387,19 @@
             }
         }
 
+        // 0-33 浅绿 / 34-66 中绿 / 67-100 深绿（见 .review-score-badge.score-* CSS）。
+        function scoreColorClass(score) {
+            if (score <= 33) return 'score-low';
+            if (score <= 66) return 'score-mid';
+            return 'score-high';
+        }
+
         function renderPeerReviews(reviews, uid) {
             if (!reviews || reviews.length === 0) return '';
             const items = reviews.map(r => `
                 <div class="peer-review-item">
                     <span class="reviewer-tag">Blind review from ${escapeHtml(r.reviewer_provider)}</span>
-                    <span class="review-score-badge">${r.score} pts</span>
+                    <span class="review-score-badge ${scoreColorClass(r.score)}">${r.score} pts</span>
                     <span class="review-comment-text">: ${escapeHtml(r.comment)}</span>
                 </div>
             `).join('');
