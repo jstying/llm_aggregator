@@ -43,8 +43,5 @@ available_providers_models.txt
 available_image_providers_models.txt
 available_free_image_providers.txt
 
-# 敏感密钥文件（GAE线上环境会通过 ADC 凭据自动管理，无需上传此文件）
-firebase-key.json
-
 # 注意：切勿在此处添加 generated_media/ 
 # 因为项目依赖该本地目录进行图片持久化存储与历史回溯
