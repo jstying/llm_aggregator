@@ -19,6 +19,7 @@ import json
 import random
 import base64
 import threading
+import tempfile
 from urllib.parse import urlparse
 
 # 用于并发执行多个Provider请求
@@ -69,6 +70,18 @@ from auth.db import (  # noqa: E402
 try:
     import g4f
     from g4f.client import Client as G4FImageClient
+    import g4f.image.copy_images as _g4f_copy_images
+
+    # 2026-07-09: GAE Standard 环境（gen1/gen2 都一样，python312 不例外）本地文件系统
+    # 除 /tmp 外一律只读。g4f 落盘图片默认用的是它自己模块级的相对路径
+    # './generated_images'/'./generated_media'，本地开发时 CWD 可写掩盖了问题，一部署到
+    # 生产环境 mkdir/open 必定失败——这不是"磁盘偶尔写满"，是每次必现。这里落盘的
+    # Gemini/ChatGPT 图片结果和 g4f 自己下载的免费图片走的是同一个 get_media_dir() 和
+    # 这两个模块级变量，所以直接把它们重定向到 tempfile.gettempdir()（GAE 上是真正可写
+    # 的 /tmp），一次改两边一起修好；serve_generated_media() 读的也是同一个
+    # get_media_dir()，读写自动保持一致，不需要额外改动。
+    _g4f_copy_images.images_dir = os.path.join(tempfile.gettempdir(), 'generated_images')
+    _g4f_copy_images.media_dir = os.path.join(tempfile.gettempdir(), 'generated_media')
     from g4f.image.copy_images import get_media_dir
 
     G4F_AVAILABLE = True
@@ -162,7 +175,7 @@ except ImportError as e:
     IMAGE_PROVIDERS = []
     IMAGE_PROVIDER_MODELS_MAP = {}
     G4FImageClient = None
-    get_media_dir = lambda: './generated_media'
+    get_media_dir = lambda: os.path.join(tempfile.gettempdir(), 'generated_media')
     logger.warning(f"g4f not available: {e}")
 
 except Exception as e:
@@ -174,7 +187,7 @@ except Exception as e:
     IMAGE_PROVIDERS = []
     IMAGE_PROVIDER_MODELS_MAP = {}
     G4FImageClient = None
-    get_media_dir = lambda: './generated_media'
+    get_media_dir = lambda: os.path.join(tempfile.gettempdir(), 'generated_media')
     logger.warning(f"g4f initialization failed: {e}")
 
 

@@ -18,6 +18,34 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import main  # noqa: E402
 
 
+class TestMediaDirRedirectedUnderSystemTempDir(unittest.TestCase):
+    """Regression for the 2026-07-09 production bug: GAE Standard's local filesystem is
+    read-only everywhere except /tmp (true for the python312 gen2 runtime too, not just
+    legacy gen1). g4f's own get_media_dir() defaults to relative paths
+    ('./generated_images'/'./generated_media') resolved against the process CWD, which
+    is writable in local dev (masking the problem) but not on a real GAE instance --
+    every mkdir/open there raised, and this was the actual cause behind both the
+    ChatGPT *and* the Gemini image-history "local storage error" showing up together in
+    production. main.py now redirects g4f's own images_dir/media_dir module globals to
+    tempfile.gettempdir() right after import, since our own
+    _persist_image_result_local_copy() and g4f's internal image download both funnel
+    through the same get_media_dir()/module globals."""
+
+    def test_get_media_dir_resolves_under_system_temp_dir_not_a_relative_repo_path(self):
+        resolved = os.path.abspath(main.get_media_dir())
+        temp_root = os.path.abspath(tempfile.gettempdir())
+        self.assertTrue(
+            resolved.startswith(temp_root),
+            f"get_media_dir() must resolve under {temp_root}, got {resolved}"
+        )
+
+    def test_g4f_copy_images_module_globals_were_redirected(self):
+        import g4f.image.copy_images as g4f_copy_images
+        temp_root = os.path.abspath(tempfile.gettempdir())
+        self.assertTrue(os.path.abspath(g4f_copy_images.media_dir).startswith(temp_root))
+        self.assertTrue(os.path.abspath(g4f_copy_images.images_dir).startswith(temp_root))
+
+
 class TestDeleteLocalMediaFilesForImageResults(unittest.TestCase):
 
     def setUp(self):
