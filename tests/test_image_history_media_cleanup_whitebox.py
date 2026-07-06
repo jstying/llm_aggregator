@@ -217,7 +217,15 @@ class TestPersistImageResultLocalCopy(unittest.TestCase):
         self.assertEqual(result['b64_json'], original_b64)
         self.assertIsNone(result['url'])
 
-    def test_decode_failure_returns_original_result(self):
+    def test_decode_failure_returns_small_failure_result_not_original(self):
+        # 2026-07-08 regression: a persist failure used to return the original result
+        # unchanged, still carrying its (potentially multi-MB) b64_json. That oversized
+        # dict then blew up append_image_history_result()'s Firestore write with the
+        # same 'Property array contains an invalid nested entity' error this whole
+        # persistence mechanism exists to avoid -- and because that exception was only
+        # logged and swallowed by the caller, the entire record silently never made it
+        # into history, even though the frontend had already shown the image as a
+        # success. The failure branch must now degrade to a small, safe result instead.
         result = {
             'provider': 'ChatGPT', 'success': True, 'url': None,
             'b64_json': 'not-valid-base64!!!',
@@ -225,7 +233,36 @@ class TestPersistImageResultLocalCopy(unittest.TestCase):
             'type': 'openai_image',
         }
         persisted = main._persist_image_result_local_copy(result)
-        self.assertIs(persisted, result)
+        self.assertIsNot(persisted, result)
+        self.assertFalse(persisted['success'])
+        self.assertIsNone(persisted['url'])
+        self.assertIsNone(persisted['b64_json'])
+        self.assertTrue(persisted['error'])
+        self.assertEqual(persisted['provider'], 'ChatGPT')
+
+    def test_write_failure_falls_back_to_small_result_instead_of_leaking_b64_json(self):
+        # Same regression, but from the disk-write side (e.g. a full/read-only volume
+        # on a real GAE instance) rather than a decode error: valid base64, but the
+        # file write itself raises. The huge b64_json must never survive into the
+        # returned result.
+        import base64
+        raw = os.urandom(1500 * 1024)
+        result = {
+            'provider': 'ChatGPT', 'success': True, 'url': None,
+            'b64_json': base64.b64encode(raw).decode(),
+            'error': '', 'response_time': 2.0, 'model': 'gpt-image-2',
+            'type': 'openai_image',
+        }
+        with patch('builtins.open', side_effect=OSError('No space left on device')):
+            persisted = main._persist_image_result_local_copy(result)
+
+        self.assertFalse(persisted['success'])
+        self.assertIsNone(persisted['url'])
+        self.assertIsNone(persisted['b64_json'])
+        self.assertTrue(persisted['error'])
+        # The original caller-visible dict must still be untouched, same as the
+        # success path -- the frontend still renders the image for this request.
+        self.assertEqual(result['b64_json'], base64.b64encode(raw).decode())
 
     def test_large_base64_that_would_overflow_firestore_is_persisted_as_url(self):
         # Regression guard for the actual production bug: a base64 payload well past

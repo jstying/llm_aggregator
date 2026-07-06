@@ -482,9 +482,14 @@ class TestGeminiImageHistoryPersistence(unittest.TestCase):
         }
         with main.app.test_client() as client:
             self._login(client)
+            # This test is about the routing/wiring (does a successful call trigger an
+            # append at all, with the right args), not about local-disk persistence --
+            # that's covered separately by TestPersistImageResultLocalCopy -- so the
+            # b64_json->url conversion step is stubbed out as a no-op here.
             with patch.object(main, 'get_gemini_free_tier_usage', return_value=0), \
                  patch.object(main, 'increment_gemini_free_tier_usage'), \
                  patch.object(main, 'call_gemini_image_model', return_value=gemini_result), \
+                 patch.object(main, '_persist_image_result_local_copy', side_effect=lambda r: r), \
                  patch.object(main, 'append_image_history_result', return_value=True) as mock_append:
                 resp = client.post('/api/gemini-image', json={
                     'prompt': 'a cat', 'model': 'nano-banana-pro', 'history_id': 'imghist1'
@@ -757,6 +762,94 @@ class TestEndToEndGeminiResultSurvivesInPersistedImageHistory(unittest.TestCase)
         providers_in_reloaded_snapshot = [r['provider'] for r in reloaded['results']]
         self.assertIn('PollinationsImage', providers_in_reloaded_snapshot)
         self.assertIn('Gemini', providers_in_reloaded_snapshot)
+
+
+class TestEndToEndChatGPTImageSurvivesLocalDiskFailure(unittest.TestCase):
+    """Regression for the 2026-07-08 production bug: a ChatGPT image generation that
+    succeeded (and rendered fine on the live page) would silently vanish from the saved
+    image_history record. Root cause: main._persist_image_result_local_copy() used to
+    fall back to returning the *original*, still-multi-MB b64_json result whenever the
+    local get_media_dir() write failed for any reason (e.g. a full/read-only disk on a
+    real GAE instance). That oversized dict then crashed
+    auth_db.append_image_history_result()'s Firestore write with 'Property array
+    contains an invalid nested entity' -- the very error this persistence step exists to
+    avoid -- and the caller only logged and swallowed that exception, so the record
+    never made it into 'results' at all.
+
+    This drives the real (non-mocked) save_image_history()/append_image_history_result()
+    against the in-memory Firestore double, with the local disk write forced to fail,
+    and proves the ChatGPT entry still survives into the reloaded document."""
+
+    def setUp(self):
+        main.app.config['TESTING'] = True
+        self.fake_db = _FakeFirestoreClient()
+
+    def _login(self, client, user_id='uid1'):
+        with client.session_transaction() as sess:
+            sess['user_id'] = user_id
+            sess['username'] = 'alice'
+
+    def test_chatgpt_image_result_appears_even_when_local_persist_fails(self):
+        import base64
+
+        g4f_image_result = {
+            'provider': 'PollinationsImage', 'success': True, 'url': '/media/x.png',
+            'b64_json': None, 'error': '', 'response_time': 0.6, 'model': 'auto',
+            'type': 'g4f_image',
+        }
+        # A realistic gpt-image payload is well past Firestore's ~1MB array-entry
+        # ceiling -- this is exactly the size that used to blow up the append once the
+        # (failed) local persistence step left it inline.
+        chatgpt_result = {
+            'provider': 'ChatGPT', 'success': True, 'url': None,
+            'b64_json': base64.b64encode(os.urandom(1500 * 1024)).decode(),
+            'error': '', 'response_time': 2.1, 'model': 'gpt-image-2', 'type': 'openai_image',
+        }
+        fake_provider = MagicMock()
+        fake_provider.__name__ = 'PollinationsImage'
+
+        with patch.object(auth_db, 'db', self.fake_db), \
+                main.app.test_client() as client:
+            self._login(client)
+
+            with patch.object(main, 'test_g4f_image_provider', return_value=dict(g4f_image_result)), \
+                    patch.object(main, 'G4F_AVAILABLE', True), \
+                    patch.object(main, 'IMAGE_PROVIDERS', [fake_provider]), \
+                    patch.object(main, 'get_image_timeouts', return_value=(40, 85)):
+                generate_resp = client.post('/api/generate-images', json={
+                    'prompt': 'a cat', 'providers': ['PollinationsImage']
+                })
+            self.assertEqual(generate_resp.status_code, 200)
+            history_id = generate_resp.get_json()['history_id']
+            self.assertIsNotNone(history_id)
+
+            # Simulate the real-GAE failure mode: the local get_media_dir() write
+            # raises (e.g. a full or read-only instance disk), so the persistence step
+            # cannot swap b64_json for a url.
+            with patch.object(main, 'CHATGPT_AVAILABLE', True), \
+                    patch.object(main, 'get_free_tier_usage', return_value=0), \
+                    patch.object(main, 'increment_free_tier_usage'), \
+                    patch.object(main, 'call_chatgpt_image_model', return_value=chatgpt_result), \
+                    patch('builtins.open', side_effect=OSError('No space left on device')):
+                chatgpt_resp = client.post('/api/chatgpt-image', json={
+                    'prompt': 'a cat', 'model': 'gpt-image-2', 'history_id': history_id
+                })
+            self.assertEqual(chatgpt_resp.status_code, 200)
+            # The response returned to the frontend for *this* request is untouched --
+            # the user still sees their image render immediately.
+            self.assertTrue(chatgpt_resp.get_json()['success'])
+
+            reloaded = auth_db.get_image_history_by_id('uid1', history_id)
+
+        self.assertIsNotNone(reloaded)
+        providers_in_reloaded_snapshot = [r['provider'] for r in reloaded['results']]
+        self.assertIn('PollinationsImage', providers_in_reloaded_snapshot)
+        # The core regression check: the ChatGPT entry must still be present, even
+        # though its local disk persistence failed -- previously it silently vanished.
+        self.assertIn('ChatGPT', providers_in_reloaded_snapshot)
+        chatgpt_entry = next(r for r in reloaded['results'] if r['provider'] == 'ChatGPT')
+        self.assertFalse(chatgpt_entry['success'])
+        self.assertIsNone(chatgpt_entry['b64_json'])
 
 
 if __name__ == '__main__':

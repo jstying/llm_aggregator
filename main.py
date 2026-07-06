@@ -1434,8 +1434,17 @@ def _append_claude_result_to_history(user_id, history_id, result):
 # invalid nested entity——gpt-image 系列的默认输出几乎总会超过这个阈值。修复方式是
 # 持久化前把 base64 解码落盘到 get_media_dir()（与 g4f 图片同一套目录/路由），只把
 # url 写进 Firestore，b64_json 置空。本次请求返回给前端的 result 对象不受影响，仍然
-# 带着完整 b64_json 立即渲染，不需要多一次 /media 往返。解码/落盘失败就原样返回，
-# 不阻断这次追加尝试（大概率还是会在写入时报同样的错，但至少不会引入新的异常）。
+# 带着完整 b64_json 立即渲染，不需要多一次 /media 往返。
+#
+# 解码/落盘失败时**不能**原样返回 result：那样会把仍然巨大的 b64_json 原封不动地
+# 交给 append_image_history_result() 写入 Firestore，命中同一条 1MB 限制抛出异常，
+# 而调用方（_append_frontier_image_result()/_append_gemini_result_to_image_history()）
+# 只会把这个异常记日志吞掉——整条结果因此从未进入 results 数组，用户在前端看到生成
+# 成功，回头点历史记录却发现这条记录彻底消失（2026-07-08 真实 GAE 部署命中，落盘失败
+# 的具体原因不确定，可能是单实例本地磁盘写满，但无论原因是什么都不能让失败的落盘
+# 反过来炸穿 Firestore 写入）。落盘失败时改为返回一个不带 b64_json 的、体积很小的
+# 失败结果，保证这条记录一定能被追加进历史，哪怕只是如实记录"图片生成成功但未能
+# 保存"。
 # ==================================================
 def _persist_image_result_local_copy(result):
     b64_json = result.get('b64_json')
@@ -1454,7 +1463,12 @@ def _persist_image_result_local_copy(result):
         return persisted
     except Exception as e:
         logger.error(f"Failed to persist local copy of {result.get('provider')} image: {e}", exc_info=True)
-        return result
+        failed = dict(result)
+        failed['success'] = False
+        failed['url'] = None
+        failed['b64_json'] = None
+        failed['error'] = 'The image was generated but could not be saved to history (local storage error).'
+        return failed
 
 
 def _append_gemini_result_to_image_history(user_id, history_id, result):
