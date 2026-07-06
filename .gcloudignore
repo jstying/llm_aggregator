@@ -27,7 +27,7 @@ __pycache__/
 Thumbs.db
 
 # 环境变量本地配置文件（包含敏感或本地端口配置）
-.env
+# .env
 .flaskenv
 
 # IDE 和编辑器本地配置
