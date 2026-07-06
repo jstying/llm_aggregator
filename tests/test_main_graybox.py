@@ -24,9 +24,9 @@ def _make_result(provider, success, response_time, model='gpt-3.5-turbo',
 
 
 # ============================================================
-# 1. 排序权重验证
-# 通过 Mock 控制 test_g4f_provider 的返回值，
-# 验证 /api/compare 是否严格执行"成功优先，耗时短优先"规则。
+# 1. Sort weight verification
+# Mocks test_g4f_provider's return value to verify /api/compare
+# strictly enforces the "success first, then shorter response time first" rule.
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestSortOrderInvariant(unittest.TestCase):
@@ -144,9 +144,10 @@ class TestSortOrderInvariant(unittest.TestCase):
 
 
 # ============================================================
-# 2. 并发与超时降级测试
-# 模拟子线程抛出 TimeoutError，验证主线程的 except 块能够
-# 通过 init_result_object 正确组装 fallback 数据，接口不崩溃。
+# 2. Concurrency and timeout degradation test
+# Simulates a worker thread raising TimeoutError, verifying the main thread's
+# except block correctly assembles fallback data via init_result_object
+# without crashing the endpoint.
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestThreadTimeoutFallback(unittest.TestCase):
@@ -244,9 +245,10 @@ class TestThreadTimeoutFallback(unittest.TestCase):
 
 
 # ============================================================
-# 3. max_workers 边界约束测试
-# 感知内部 ThreadPoolExecutor 实例化参数，验证用户传入的
-# max_workers 被双重约束（上限 5，不超过 provider 数量）。
+# 3. max_workers boundary constraint test
+# Inspects the internal ThreadPoolExecutor instantiation argument, verifying
+# the user-supplied max_workers is double-constrained (capped at 5, and never
+# exceeding the provider count).
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestMaxWorkersConstraint(unittest.TestCase):
@@ -317,9 +319,9 @@ class TestMaxWorkersConstraint(unittest.TestCase):
 
 
 # ============================================================
-# 4. 全局降级状态测试
-# 直接修改 main.G4F_AVAILABLE 为 False，验证各路由返回
-# 503 或空列表，并在 tearDown 中恢复原始全局状态。
+# 4. Global degradation state test
+# Directly sets main.G4F_AVAILABLE to False, verifying each route returns
+# 503 or an empty list, and restores the original global state in tearDown.
 # ============================================================
 class TestGlobalDegradationState(unittest.TestCase):
 
@@ -414,9 +416,10 @@ class TestGlobalDegradationState(unittest.TestCase):
 
 
 # ============================================================
-# 5. 三路 Provider 互评局部失败测试
-# 3 个 Provider，第 3 个在第一轮失败，验证只有 2 个成功者
-# 进行双向互评，失败者不参与也不接收互评。
+# 5. Three-provider peer review partial failure test
+# With 3 providers, the 3rd fails in the first round; verifies only the 2
+# successful providers perform bidirectional peer review, and the failed
+# provider neither reviews others nor is reviewed itself.
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestPeerReviewPartialFailure(unittest.TestCase):
@@ -445,7 +448,7 @@ class TestPeerReviewPartialFailure(unittest.TestCase):
             'PeerB': ['aria'],
             'PeerC': ['gpt-3.5-turbo'],
         }
-        peer_prompts = {'gpt-3.5-turbo': '评分JSON:', 'aria': '评分JSON:'}
+        peer_prompts = {'gpt-3.5-turbo': 'Score JSON:', 'aria': 'Score JSON:'}
 
         with patch('main.g4f.ChatCompletion.create', side_effect=side_effect), \
              patch('main.G4F_PROVIDERS', providers), \
@@ -481,10 +484,11 @@ class TestPeerReviewPartialFailure(unittest.TestCase):
 
 
 # ============================================================
-# 6. 互评阶段整体崩溃健壮性测试（2026-07-07 更新：互评已从 compare_providers() 移到
-# 独立的 POST /api/peer-review，见 main.py 的 run_cross_peer_review() 与该路由里包住
-# 它的 try/except）。模拟互评任务构建阶段整体异常，验证接口仍能安全返回 200，
-# peer_reviews 保持空。
+# 6. Peer review phase overall crash robustness test (updated 2026-07-07: peer
+# review moved from compare_providers() to the standalone POST /api/peer-review;
+# see main.py's run_cross_peer_review() and the try/except wrapping it in that
+# route). Simulates an overall exception during peer review task construction,
+# verifying the endpoint still safely returns 200 with peer_reviews staying empty.
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestPeerReviewPhaseRobustness(unittest.TestCase):
@@ -533,9 +537,9 @@ class TestPeerReviewPhaseRobustness(unittest.TestCase):
 
 
 # ============================================================
-# 7. /api/test-single 外层异常健壮性测试
-# 通过令 test_g4f_provider 直接抛出异常来触发
-# test_single_provider 的外层 except 块，验证返回中文友好消息。
+# 7. /api/test-single outer exception robustness test
+# Triggers test_single_provider's outer except block by making
+# test_g4f_provider raise directly, verifying it returns a friendly message.
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestTestSingleRobustness(unittest.TestCase):
@@ -559,10 +563,10 @@ class TestTestSingleRobustness(unittest.TestCase):
 
 
 # ============================================================
-# 8. /health 配置标志状态测试
-# 通过 patch 将两个 prompt 映射表置为空，验证 health 接口
-# 的 routing_rules_loaded / peer_review_rules_loaded 字段
-# 正确反映当前配置状态。
+# 8. /health config flag state test
+# Patches the two prompt mapping tables to empty, verifying the health
+# endpoint's routing_rules_loaded / peer_review_rules_loaded fields correctly
+# reflect the current config state.
 # ============================================================
 class TestHealthConfigFlags(unittest.TestCase):
 
@@ -586,9 +590,10 @@ class TestHealthConfigFlags(unittest.TestCase):
 
 
 # ============================================================
-# 9. 对话历史持久化健壮性测试
-# save_chat_history 的调用被独立 try-except 包裹，任何崩溃
-# 都不应影响 /api/compare 本次对比结果的正常返回。
+# 9. Chat history persistence robustness test
+# The save_chat_history() call is wrapped in its own try/except; any crash
+# there must not affect /api/compare's normal return of this comparison's
+# results.
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestSaveHistoryRobustness(unittest.TestCase):
@@ -682,13 +687,18 @@ class TestSaveImageHistoryRobustness(unittest.TestCase):
 
 
 # ============================================================
-# 8. 互评阶段超时时长回归测试（2026-07-03，2026-07-08 改为公式推导）
-# run_peer_review 内部单次请求超时是 PEER_REVIEW_REQUEST_TIMEOUT（25s），外层
-# future.result 的等待上限不再是写死的常量,而是
+# 8. Peer review phase timeout duration regression test (2026-07-03, reworked
+# into a formula-derived value on 2026-07-08)
+# run_peer_review()'s internal single-request timeout is
+# PEER_REVIEW_REQUEST_TIMEOUT (25s). The outer future.result() wait ceiling
+# is no longer a hardcoded constant; it is now computed as
 # max_reviewer_queue_depth * _peer_review_single_worst_case_seconds() +
-# PEER_REVIEW_FUTURE_TIMEOUT_BUFFER 现算出来的（provider 数量越多、单个 reviewer
-# 排队要评审的 target 越多,超时预算也要跟着涨,否则重试链跑满时会被提前判超时丢弃
-# 结果——这正是 provider>=6 时互评偶发丢分的成因之一）。
+# PEER_REVIEW_FUTURE_TIMEOUT_BUFFER (the more providers there are, and the
+# more targets each reviewer has queued up to review, the more the timeout
+# budget must grow too -- otherwise a fully-exhausted retry chain gets
+# prematurely judged as timed out and its result discarded, which is one
+# cause of the peer review occasionally losing scores when provider count
+# >= 6).
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestPeerReviewOuterTimeoutValue(unittest.TestCase):
@@ -776,10 +786,12 @@ def _make_image_result(provider, success, response_time, model='auto', url=None,
 
 
 # ============================================================
-# 10. 文生图并发调度测试
-# POST /api/generate-images 是与 compare_providers() 同构的单阶段
-# 并发骨架（无互评），这里验证排序契约、max_workers 双重约束、
-# 硬超时熔断降级、以及 G4F_AVAILABLE 全局降级对图片路由同样生效。
+# 10. Text-to-image concurrent scheduling test
+# POST /api/generate-images is a single-stage concurrent skeleton
+# structurally identical to compare_providers() (minus peer review). This
+# verifies the sort contract, the max_workers double constraint, hard-timeout
+# fallback degradation, and that G4F_AVAILABLE global degradation applies
+# equally to the image routes.
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestImageSortOrderInvariant(unittest.TestCase):
@@ -1010,13 +1022,16 @@ class TestImageGlobalDegradationState(unittest.TestCase):
 
 
 # ============================================================
-# 11. 文生图硬超时数值回归测试
-# 与互评阶段的公式推导 outer timeout 同理：future.result() 必须以
-# IMAGE_GENERATION_OUTER_TIMEOUT（当前 85 = 2 * advisory(40) + 5s 重试调度缓冲，
-# 2026-07-04 从"advisory + 固定 10s"公式改为"2 * advisory + 固定 5s"公式，因为
-# test_g4f_image_provider 的 429/queue 重试可能让两次尝试各自都跑到接近满
-# advisory_timeout 才结束，固定 10s 缓冲不足以覆盖第二次尝试本身的耗时）等待，
-# 锁定该数值不被后续改动悄悄改小/改大而不同步更新 advisory timeout 与文档。
+# 11. Text-to-image hard timeout value regression test
+# Same reasoning as the peer review phase's formula-derived outer timeout:
+# future.result() must wait up to IMAGE_GENERATION_OUTER_TIMEOUT (currently
+# 85 = 2 * advisory(40) + a 5s retry-scheduling buffer; changed on 2026-07-04
+# from the formula "advisory + a fixed 10s" to "2 * advisory + a fixed 5s",
+# because test_g4f_image_provider's 429/queue retry can let both attempts
+# each run close to the full advisory_timeout before finishing, and a fixed
+# 10s buffer is not enough to cover the second attempt's own duration). This
+# locks the value in place so a future change can't quietly shrink/grow it
+# without updating the advisory timeout and docs in sync.
 # ============================================================
 @unittest.skipUnless(main.G4F_AVAILABLE, 'g4f not available in this environment')
 class TestImageOuterTimeoutValue(unittest.TestCase):

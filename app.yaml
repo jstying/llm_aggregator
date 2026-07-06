@@ -1,10 +1,13 @@
 runtime: python312
 
-# --timeout 300: gunicorn 的 sync worker 默认 30s 超时会在互评/文生图这类可能跑到
-# 一两分钟以上的请求还没跑完时就把 worker 杀掉，响应因此整个丢失（表现为 blind
-# review 概率性完全不显示）。300s 覆盖了图片生成 AnyProvider 的最坏 outer 超时
-# (145s) 和多 provider 互评排队的常见耗时。这是部署层配置，跟业务侧的图片/互评
-# 超时公式互相独立，改那边不需要跟着改这里，但如果两边都涨了要确认这个值还够用。
+# --timeout 300: gunicorn's sync worker has a default 30s timeout, which would kill
+# the worker while a request like peer review/text-to-image -- which can run to a
+# minute or two -- still hasn't finished, losing the whole response (showing up as
+# blind review intermittently not displaying at all). 300s covers image generation's
+# AnyProvider worst-case outer timeout (145s) plus the typical time spent queuing
+# multiple providers' peer review. This is deployment-layer config, independent from
+# the business-side image/peer-review timeout formulas; changing those doesn't
+# require changing this, but if both sides grow, confirm this value is still enough.
 entrypoint: gunicorn -b :$PORT --timeout 300 main:app
 
 env_variables:

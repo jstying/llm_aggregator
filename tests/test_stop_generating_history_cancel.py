@@ -30,7 +30,7 @@ import main  # noqa: E402
 
 
 # ==========================================================================
-# 白盒/单元测试：取消登记表
+# White-box / unit tests: the cancellation registry
 # ==========================================================================
 
 class TestCancelledHistoryRequestRegistry(unittest.TestCase):
@@ -67,7 +67,7 @@ class TestCancelledHistoryRequestRegistry(unittest.TestCase):
 
 
 # ==========================================================================
-# 黑盒测试：/api/compare/cancel、/api/generate-images/cancel
+# Black-box tests: /api/compare/cancel, /api/generate-images/cancel
 # ==========================================================================
 
 class TestCancelRoutes(unittest.TestCase):
@@ -99,7 +99,8 @@ class TestCancelRoutes(unittest.TestCase):
 
 
 # ==========================================================================
-# 黑盒测试：compare_providers()/generate_images() 命中取消登记表时跳过落库
+# Black-box tests: compare_providers()/generate_images() skip persisting to
+# the DB when the cancellation registry has a hit
 # ==========================================================================
 
 class TestComparePersistenceSkippedWhenCancelled(unittest.TestCase):
@@ -250,8 +251,9 @@ class TestGenerateImagesPersistenceSkippedWhenCancelled(unittest.TestCase):
 
 
 # ==========================================================================
-# 黑盒测试：claude_chat()/gemini_image_chat() 命中取消登记表时跳过追加历史，
-# 且两个 refund 接口现在无条件标记取消
+# Black-box tests: claude_chat()/gemini_image_chat() skip appending to history
+# when the cancellation registry has a hit, and both refund endpoints now
+# unconditionally mark the request as cancelled
 # ==========================================================================
 
 class TestClaudeChatSkipsAppendWhenCancelled(unittest.TestCase):

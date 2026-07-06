@@ -172,7 +172,7 @@ class TestProviderSelectionSectionMarkup(unittest.TestCase):
 
 
 class TestImageFormProviderSelectionSectionMarkup(unittest.TestCase):
-    """GET / (2026-07-04 新增): the image-generation form (#imageModeContainer) gets the
+    """GET / (added 2026-07-04): the image-generation form (#imageModeContainer) gets the
     exact same "frontier vs free" split as the compare form above, but as its own,
     independent container/namespace -- Gemini (Nano Banana Pro) is the image form's
     frontier provider, mirroring Claude's role in the compare form. Scoped to

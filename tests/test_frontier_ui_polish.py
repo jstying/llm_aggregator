@@ -109,10 +109,10 @@ class TestFrontierOnlyDropdownLockMarkup(unittest.TestCase):
         self.assertIn("providerCheckOrder = [];", html)
         self.assertIn("imageProviderCheckOrder = [];", html)
         clear_btn_start = html.index("document.getElementById('clearBtn').addEventListener")
-        clear_btn_block = html[clear_btn_start:clear_btn_start + 1200]
+        clear_btn_block = html[clear_btn_start:clear_btn_start + 1500]
         self.assertIn('updateModelDropdown();', clear_btn_block)
         clear_images_btn_start = html.index("document.getElementById('clearImagesBtn').addEventListener")
-        clear_images_btn_block = html[clear_images_btn_start:clear_images_btn_start + 1200]
+        clear_images_btn_block = html[clear_images_btn_start:clear_images_btn_start + 1500]
         self.assertIn('updateImageModelDropdown();', clear_images_btn_block)
 
 

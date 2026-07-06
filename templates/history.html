@@ -12,13 +12,14 @@
         }
 
         :root {
-            /* 页面全局缩放比例，与下方 body 的 zoom 保持同一个变量，避免两处数值分叉 */
+            /* Global page zoom ratio, kept as the same variable used by body's zoom below, avoiding the two values drifting apart */
             --page-zoom: 0.88;
         }
 
-        /* 完全隐藏原生的整页纵向滚动条 -- 与 templates/index.html 逐字同步，见其对应
-           规则的完整注释（2026-07-03 第二轮修复，改用 #pageScrollThumb 提供完全自绘、
-           可拖拽、不依赖浏览器原生滚动条渲染的滚动指示器）。 */
+        /* Fully hide the native full-page vertical scrollbar -- kept byte-for-byte in sync with
+           templates/index.html, see its full comment for the matching rule (2026-07-03 second
+           round fix, switched to #pageScrollThumb to provide a fully self-drawn, draggable
+           scroll indicator that does not depend on the browser's native scrollbar rendering). */
         html {
             -ms-overflow-style: none;
             scrollbar-width: none;
@@ -30,25 +31,32 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #fbfbfc; /* 极轻薄的冷调底色 */
-            color: #09110e; /* 带有绿意底蕴的深邃暗墨色 */
+            background: #fbfbfc; /* an extremely light, cool-toned background */
+            color: #09110e; /* a deep dark ink color with a hint of green undertone */
 
-            /* body 撑满视口高度并纵向排列 nav/guest-banner/app-layout，
-               让 .app-layout 用 flex:1 吃掉剩余高度，.left-sidebar 才能在结果区为空、
-               页面本身矮于视口时依然铺满到视口底部，而不是只跟 .main-content 的内容高度对齐。
-               `zoom` 是非标准的渲染期缩放：一个 min-height:100vh 的盒子套上 zoom:var(--page-zoom) 后，
-               实际渲染高度会变成 100vh * zoom（vh 始终按真实视口计算，不会跟着 zoom 一起放大）。
-               当 zoom < 1（当前的 0.88）时，直接写 min-height:100vh 会让渲染高度小于真实视口，
-               视口底部露出 body 背后的空白；当 zoom > 1（如曾经的 1.1）时则相反，会让渲染高度
-               大于真实视口，产生本不需要的额外可滚动空间——两种情况都与 flex:1 的效果无关、
-               无法通过调整 flex 本身修复。因此这里统一改用 calc(100vh / var(--page-zoom))：
-               预先把 min-height 按 1/zoom 的比例反向缩放，缩放渲染后就会精确还原成 100vh，
-               从而与 flex:1 配合，在任意 --page-zoom 数值下都能真正铺满到视口底部、不多不少。 */
+            /* body fills the viewport height and stacks nav/guest-banner/app-layout vertically,
+               letting .app-layout consume the remaining height with flex:1, so .left-sidebar can
+               still fill all the way to the bottom of the viewport when the results area is empty
+               and the page itself is shorter than the viewport, instead of only matching the
+               content height of .main-content.
+               `zoom` is a non-standard render-time scale: a box with min-height:100vh wrapped in
+               zoom:var(--page-zoom) actually renders at a height of 100vh * zoom (vh is always
+               computed against the real viewport, it does not get scaled up along with zoom).
+               When zoom < 1 (currently 0.88), writing min-height:100vh directly makes the rendered
+               height smaller than the real viewport, exposing blank space behind the body at the
+               bottom of the viewport; when zoom > 1 (like the old 1.1), the opposite happens: the
+               rendered height becomes larger than the real viewport, producing unwanted extra
+               scrollable space -- neither case has anything to do with flex:1's effect, and cannot
+               be fixed by adjusting flex itself. So this is unified to calc(100vh / var(--page-zoom))
+               instead: min-height is pre-scaled inversely by a factor of 1/zoom, so that after the
+               zoom render it comes back out to exactly 100vh, working together with flex:1 so that
+               at any --page-zoom value the layout truly fills to the bottom of the viewport, no
+               more and no less. */
             min-height: calc(100vh / var(--page-zoom));
             display: flex;
             flex-direction: column;
 
-            /* 在这里添加下面这行代码，即可实现全屏 88% 缩放 */
+            /* Add the line below here to achieve a full-screen 88% zoom */
             zoom: var(--page-zoom);
         }
 
@@ -70,21 +78,26 @@
             z-index: 100;
         }
 
-        /* 不再用 max-width:1200px + margin:auto 把导航栏box在成一个独立居中的窄条——
-           那样它的宽度和下方 .app-layout（侧边栏 260px + 主内容区，边到边铺满视口）完全
-           对不上，logo 的水平位置和 260px 深色侧边栏毫无关系，纯粹取决于视口宽度。
-           改为让 .nav-container 边到边铺满 .navbar（与 .app-layout 同宽），只在右侧保留
-           呼吸间距；左侧留白交给 .nav-left 自己的定宽居中处理（见下）。 */
+        /* No longer using max-width:1200px + margin:auto to box the navbar into its own
+           independent, centered narrow strip -- that width would never line up with
+           .app-layout below (260px sidebar + main content area, edge-to-edge filling the
+           viewport), leaving the logo's horizontal position with nothing to do with the
+           260px dark sidebar, purely dependent on viewport width instead. Changed so that
+           .nav-container fills .navbar edge-to-edge (same width as .app-layout), keeping only
+           breathing room on the right side; the left-side whitespace is handled by
+           .nav-left's own fixed-width centering (see below). */
         .nav-container {
             padding: 0 2rem 0 0;
             display: flex;
             align-items: center;
         }
 
-        /* 宽度与 .left-sidebar 完全一致（见下方两栏布局），且从 x=0 起始（.nav-container
-           左侧无 padding），因此 justify-content:center 能让 logo 精确居中在黑色侧边栏
-           所在的那一纵列正上方——即"与黑色 sidebar 居中对齐"。移动端侧边栏退化为浮层抽屉，
-           不再是静态两栏之一，这个定宽在下方 520px 断点内会被覆盖为 auto。 */
+        /* Width matches .left-sidebar exactly (see the two-column layout below), and starts
+           at x=0 (.nav-container has no left padding), so justify-content:center makes the
+           logo center precisely above the column occupied by the dark sidebar -- i.e.
+           "centered aligned with the black sidebar." On mobile the sidebar degrades into a
+           floating drawer, no longer one of the two static columns, so this fixed width gets
+           overridden to auto within the 520px breakpoint below. */
         .nav-left {
             width: 260px;
             flex-shrink: 0;
@@ -99,10 +112,10 @@
             font-weight: 800;
             color: #09110e;
             text-decoration: none;
-            letter-spacing: -0.04em; /* 紧凑的高级字距 */
+            letter-spacing: -0.04em; /* tight, premium letter spacing */
         }
 
-        /* 汉堡按钮：桌面端隐藏，仅在 <=520px 的移动端断点显示（见文件底部媒体查询） */
+        /* Hamburger button: hidden on desktop, only shown at the <=520px mobile breakpoint (see the media query at the bottom of the file) */
         .hamburger-btn {
             display: none;
             flex-direction: column;
@@ -137,14 +150,14 @@
             color: #09110e;
             text-decoration: none;
             padding: 0.5rem 1rem;
-            border-radius: 4px; /* 硬朗的小圆角 */
+            border-radius: 4px; /* a crisp, slight rounded corner */
             font-size: 0.9rem;
             font-weight: 600;
             transition: all 0.15s ease;
         }
 
         .nav-links a:hover {
-            background: rgba(6, 193, 103, 0.06); /* 带有呼吸感的浅绿高亮 */
+            background: rgba(6, 193, 103, 0.06); /* a light green highlight with a breathing feel */
             color: #06c167;
         }
 
@@ -199,7 +212,7 @@
         .app-layout {
             display: flex;
             align-items: stretch;
-            flex: 1; /* 吃掉 body 剩余高度，让空结果区时侧边栏也能铺满到视口底部 */
+            flex: 1; /* consumes the body's remaining height, so the sidebar can still fill to the bottom of the viewport when the results area is empty */
         }
 
         .left-sidebar {
@@ -235,7 +248,7 @@
 
         .main-content {
             flex: 1;
-            min-width: 0; /* 允许内部长内容正常收缩，避免撑破 flex 布局 */
+            min-width: 0; /* allows long inner content to shrink normally, preventing it from breaking the flex layout */
         }
 
         .sidebar-top {
@@ -460,8 +473,10 @@
             flex-shrink: 0;
         }
 
-        /* 默认只显示文字，操作图标透明且轻微右偏；hover/focus 时平滑淡入并归位。这组只包含
-           "点击去 Pin"（未置顶时）、重命名、删除——已置顶状态的图标不在这组里，见 .pin-indicator。 */
+        /* By default only the text is shown, action icons are transparent and slightly offset
+           to the right; on hover/focus they fade in smoothly and settle into place. This group
+           only contains "click to Pin" (when not yet pinned), rename, and delete -- the icon
+           for the already-pinned state is not in this group, see .pin-indicator. */
         .history-item-actions {
             display: flex;
             gap: 2px;
@@ -667,7 +682,7 @@
         }
 
         .header {
-            text-align: center; /* 改为居中对齐 */
+            text-align: center; /* changed to center alignment */
             margin-bottom: 36px;
             color: #09110e;
         }
@@ -677,21 +692,21 @@
             font-weight: 800;
             letter-spacing: -0.04em;
             margin-bottom: 8px;
-            display: inline-block; /* 保证火箭图标与文字良好居中 */
+            display: inline-block; /* ensures the rocket icon and the text center nicely together */
         }
 
         .header p {
             font-size: 1.05rem;
             color: #545e5a;
-            line-height: 1.5; /* 多行文案（本页的两句提示语）行距舒适，单行文案不受影响 */
-            max-width: 600px; /* 限制宽度，防止长句在宽屏上两头拉得太开 */
-            margin: 0 auto; /* 配合 max-width 实现段落整体居中 */
+            line-height: 1.5; /* comfortable line spacing for multi-line copy (this page's two hint sentences), single-line copy is unaffected */
+            max-width: 600px; /* limits the width, preventing a long sentence from stretching too wide apart on a wide screen */
+            margin: 0 auto; /* works with max-width to center the whole paragraph */
         }
 
         .form-container {
             background: #ffffff;
             border: 1px solid #e8e8e8;
-            border-radius: 6px; /* 统一硬朗风格 */
+            border-radius: 6px; /* consistent crisp style */
             padding: 36px;
             box-shadow: 0 4px 24px rgba(9, 17, 14, 0.015);
             margin-bottom: 36px;
@@ -754,13 +769,13 @@
             border-radius: 6px;
             font-size: 15px;
             transition: all 0.15s ease;
-            background-color: rgba(6, 193, 103, 0.015); /* 极淡的底色增加质感 */
+            background-color: rgba(6, 193, 103, 0.015); /* an extremely faint background adds texture */
             color: #09110e;
         }
 
         input:focus, textarea:focus {
             outline: none;
-            border-color: #09110e; /* 聚焦时使用暗墨色深化边缘 */
+            border-color: #09110e; /* uses the dark ink color to deepen the edge on focus */
             background-color: #ffffff;
             box-shadow: 0 0 0 3px rgba(9, 17, 14, 0.05);
         }
@@ -866,7 +881,7 @@
         .provider-checkbox input,
         .provider-checkbox * {
             outline: none !important;
-            -webkit-tap-highlight-color: transparent; /* 消除谷歌内核特有的点击高亮层 */
+            -webkit-tap-highlight-color: transparent; /* removes the Chromium-specific tap highlight layer */
         }
 
         .provider-checkbox {
@@ -878,7 +893,7 @@
             border-radius: 6px;
             cursor: pointer;
             height: 66px;
-            box-sizing: border-box; /* 强行让边框和内边距包含在66px内，不挤压外部 */
+            box-sizing: border-box; /* forces the border and padding to be contained within the 66px, without squeezing the outside */
             overflow: hidden;
             transition: background-color 0.1s ease, border-color 0.1s ease;
         }
@@ -886,19 +901,22 @@
         .provider-checkbox:hover {
             background: rgba(6, 193, 103, 0.03);
             border-color: #06c167;
-            /* 核心修改：删掉可能导致 Chrome 渲染尺寸抖动的 box-shadow */
+            /* Core fix: removed the box-shadow that could cause Chrome rendering-size jitter */
         }
 
-        /* 选中态：整卡边框沿用 hover 同款绿色，由 JS 在 toggle 时同步添加/移除
-           is-checked class（不依赖 :has() 选择器，避免旧版浏览器兼容问题）。 */
+        /* Checked state: the whole card's border reuses the same green as hover, added/removed
+           in sync by JS on toggle via the is-checked class (not relying on the :has() selector,
+           to avoid older browser compatibility issues). */
         .provider-checkbox.is-checked {
             border-color: #06c167;
         }
 
-        /* <input> 是替换元素（replaced element），规范上不保证支持 ::before/::after，
-           多个浏览器下自绘的勾选对勾会残缺（只剩一条边，看起来像斜线）。
-           改为彻底隐藏原生 input，用紧跟其后的 <span class="checkbox-box"> 承载
-           所有视觉样式，::after 只作用在普通 span 上，跨浏览器稳定渲染。 */
+        /* <input> is a replaced element, and the spec does not guarantee support for
+           ::before/::after -- the self-drawn checkmark renders broken in several browsers
+           (only one edge remains, looking like a diagonal slash).
+           Changed to fully hide the native input, and use the <span class="checkbox-box">
+           immediately following it to carry all the visual styling, with ::after only applied
+           to a plain span, rendering stably across browsers. */
         .provider-checkbox input {
             position: absolute;
             width: 0;
@@ -923,7 +941,7 @@
             border-radius: 2px;
             background: #ffffff;
             box-sizing: border-box;
-            flex-shrink: 0; /* 强制不允许 Chrome 挤压这个勾选框 */
+            flex-shrink: 0; /* forcibly disallows Chrome from squeezing this checkbox */
             transition: background-color 0.1s ease, border-color 0.1s ease;
         }
 
@@ -940,7 +958,7 @@
             border: solid #1a1a1a;
             border-width: 0 3px 3px 0;
             transform: rotate(45deg);
-            margin-top: -3px; /* 抵消对勾旋转后视觉重心偏下的错觉，使其在正方形内真正居中 */
+            margin-top: -3px; /* offsets the illusion that the checkmark's visual weight sits low after rotation, so it truly centers within the square */
             opacity: 0;
         }
 
@@ -1304,8 +1322,8 @@
             margin: 0 8px;
         }
 
-        /* 互评分数三档配色（2026-07-09 新增），与 index.html 同一套规则:0-33 浅绿、
-           34-66 中绿、67-100 深绿。 */
+        /* Three-tier peer review score coloring (added 2026-07-09), same rule set as
+           index.html: 0-33 light green, 34-66 mid green, 67-100 deep green. */
         .review-score-badge.score-low {
             background: #E8F5E9;
             color: #1B5E20;
@@ -1354,8 +1372,9 @@
                 padding: 0 0.75rem;
             }
 
-            /* 移动端侧边栏是浮层抽屉（position:fixed），不再占据静态两栏布局的 260px，
-               nav-left 的定宽居中在这个断点下失去意义，退回自然宽度、左对齐。 */
+            /* On mobile the sidebar is a floating drawer (position:fixed), no longer occupying
+               the 260px of the static two-column layout, so nav-left's fixed-width centering
+               loses its meaning at this breakpoint, falling back to natural width, left-aligned. */
             .nav-left {
                 width: auto;
                 flex-shrink: initial;
@@ -2387,7 +2406,7 @@
             }
         }
 
-        // 0-33 浅绿 / 34-66 中绿 / 67-100 深绿（见 .review-score-badge.score-* CSS）。
+        // 0-33 light green / 34-66 mid green / 67-100 deep green (see .review-score-badge.score-* CSS).
         function scoreColorClass(score) {
             if (score <= 33) return 'score-low';
             if (score <= 66) return 'score-mid';

@@ -1,8 +1,8 @@
-"""Tests for the unified cross g4f/frontier peer-review feature (2026-07-07 新增).
+"""Tests for the unified cross g4f/frontier peer-review feature (added 2026-07-07).
 
 Covers `main.run_frontier_peer_review()`, `main.run_cross_peer_review()`, and the new
 `POST /api/peer-review` endpoint that replaced `compare_providers()`'s old inline,
-g4f-only peer review phase (see CLAUDE.md 更新记录) so that free g4f providers and the
+g4f-only peer review phase (see CLAUDE.md's update log) so that free g4f providers and the
 three frontier text providers (Claude/ChatGPT/Gemini) can review each other
 bidirectionally.
 
@@ -51,7 +51,7 @@ def _chatgpt_result(success=True, response='hi', model='gpt-5.5'):
 
 
 # ==========================================================================
-# 白盒/单元测试：run_frontier_peer_review()
+# White-box / unit tests: run_frontier_peer_review()
 # ==========================================================================
 
 class TestRunFrontierPeerReview(unittest.TestCase):
@@ -80,8 +80,9 @@ class TestRunFrontierPeerReview(unittest.TestCase):
         mock_call.assert_called_once_with('review this', 'gpt-5.5', 'sk-own-key', apply_persona=False)
 
     def test_gemini_reviewer_quota_exhausted_returns_none(self):
-        # 失败的互评现在整条隐藏（返回 None），不再展示带假分数的"reviewer 暂时不可用"
-        # 文案，见 run_frontier_peer_review() 顶部注释。
+        # A failed review is now hidden entirely (returns None), instead of
+        # showing a fake-scored "reviewer temporarily unavailable" message --
+        # see the comment above run_frontier_peer_review().
         with patch.object(main, 'call_gemini_text_model', return_value={
             'provider': 'Gemini', 'success': False, 'response': '',
             'error': 'SERVER_GEMINI_TEXT_QUOTA_EXHAUSTED',
@@ -114,7 +115,7 @@ class TestRunFrontierPeerReview(unittest.TestCase):
 
 
 # ==========================================================================
-# 白盒/单元测试：run_cross_peer_review()
+# White-box / unit tests: run_cross_peer_review()
 # ==========================================================================
 
 class TestRunCrossPeerReview(unittest.TestCase):
@@ -156,7 +157,8 @@ class TestRunCrossPeerReview(unittest.TestCase):
              patch.object(main, 'run_frontier_peer_review', side_effect=fake_frontier_review) as mock_frontier_review:
             reviews = main.run_cross_peer_review(entries)
 
-        # 3 个 entry，两两互评（排除自评）= 3 * 2 = 6 次调用。
+        # 3 entries, each pair reviewing each other (excluding self-review)
+        # = 3 * 2 = 6 calls.
         self.assertEqual(mock_g4f_review.call_count + mock_frontier_review.call_count, 6)
         for provider in ('ProviderA', 'ProviderB', 'Claude'):
             self.assertEqual(len(reviews[provider]), 2)
@@ -213,7 +215,7 @@ class TestRunCrossPeerReview(unittest.TestCase):
 
 
 # ==========================================================================
-# 黑盒/集成测试：POST /api/peer-review
+# Black-box / integration tests: POST /api/peer-review
 # ==========================================================================
 
 class TestPeerReviewEndpoint(unittest.TestCase):
@@ -295,7 +297,8 @@ class TestPeerReviewEndpoint(unittest.TestCase):
                 ]
             })
 
-        # 只剩 1 条有效结果，凑不够 2 条，不触发互评。
+        # Only 1 valid result remains, not enough to reach 2, so peer review
+        # is not triggered.
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {'peer_reviews': {}})
         mock_run_review.assert_not_called()
@@ -327,7 +330,8 @@ class TestPeerReviewEndpoint(unittest.TestCase):
                 'results': [_claude_result(), _g4f_result('Yqcloud', 'gpt-3.5-turbo')]
             })
 
-        # Claude 条目因为 CLAUDE_AVAILABLE=False 被丢弃，只剩 1 条有效结果，不触发互评。
+        # The Claude entry is dropped because CLAUDE_AVAILABLE=False, leaving
+        # only 1 valid result, so peer review is not triggered.
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {'peer_reviews': {}})
         mock_run_review.assert_not_called()
@@ -366,7 +370,8 @@ class TestPeerReviewEndpoint(unittest.TestCase):
 
 
 # ==========================================================================
-# 白盒测试：前沿人设 map 完整性（防止未来编辑漏掉某个前沿模型）
+# White-box tests: frontier persona map completeness (guards against a future
+# edit accidentally missing a frontier model)
 # ==========================================================================
 
 class TestFrontierPersonaMapsCoverAllModels(unittest.TestCase):

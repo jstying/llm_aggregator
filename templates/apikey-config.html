@@ -91,12 +91,15 @@
 </div>
 
 <script>
-    // Claude/Gemini/ChatGPT 三个字段与业务逻辑真正绑定：分别与 localStorage.getItem('user_claude_key')/
-    // localStorage.getItem('user_gemini_key')/localStorage.getItem('user_chatgpt_key') 双向
-    // 同步（各自独立的 key，互不共享）。Gemini 的 Key 同时被 /api/gemini-image 和
-    // /api/gemini-chat 使用（X-User-Gemini-Key），ChatGPT 的 Key 同时被 /api/chatgpt-chat
-    // 和 /api/chatgpt-image 使用（X-User-ChatGPT-Key）——同一个官方 Key 本来就能覆盖该
-    // 供应商的文本和图片场景，不需要为每个场景单独存一份。
+    // The Claude/Gemini/ChatGPT fields are really wired into the business logic: each
+    // one is kept in two-way sync with localStorage.getItem('user_claude_key')/
+    // localStorage.getItem('user_gemini_key')/localStorage.getItem('user_chatgpt_key')
+    // (each an independent key, sharing nothing with the others). The Gemini key is
+    // used by both /api/gemini-image and /api/gemini-chat (X-User-Gemini-Key); the
+    // ChatGPT key is used by both /api/chatgpt-chat and /api/chatgpt-image
+    // (X-User-ChatGPT-Key) — the same official key already covers that provider's
+    // text and image scenarios, so there's no need to store a separate copy per
+    // scenario.
     const claudeKeyInput = document.getElementById('claudeKeyInput');
     const storedClaudeKey = localStorage.getItem('user_claude_key');
     if (storedClaudeKey) {
@@ -149,10 +152,13 @@
         showSaveStatus('Saved');
     });
 
-    // 清空按钮不等待表单提交，点击立刻同步清空输入框 + 移除 localStorage 里的 Key——
-    // 这样用户"不想再被继续扣自己 Key 的额度"时，效果立即生效，不需要先手动清空输入框
-    // 再点击"Save"才能生效（那样中途关闭标签页会让清空意图落空）。Claude/Gemini 各自
-    // 独立接线，互不影响。
+    // The Clear button doesn't wait for a form submit — clicking it immediately clears
+    // the input field and removes the key from localStorage in the same step. This way,
+    // when a user "doesn't want their own key's quota to keep being consumed anymore,"
+    // the effect takes hold right away, instead of needing them to first manually clear
+    // the input field and then click "Save" for it to take effect (which would let
+    // closing the tab midway defeat the intent to clear it). Claude/Gemini are each
+    // wired up independently, with no effect on each other.
     document.getElementById('clearClaudeKeyBtn').addEventListener('click', function() {
         claudeKeyInput.value = '';
         localStorage.removeItem('user_claude_key');

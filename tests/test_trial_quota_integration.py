@@ -34,7 +34,7 @@ import main  # noqa: E402
 
 
 # ==========================================================================
-# 白盒/单元测试
+# White-box / unit tests
 # ==========================================================================
 
 class TestFreeTierLimitsRaisedToTen(unittest.TestCase):
@@ -118,7 +118,7 @@ class TestGetFrontierQuotaContext(unittest.TestCase):
 
 
 # ==========================================================================
-# 黑盒/集成测试
+# Black-box / integration tests
 # ==========================================================================
 
 class TestQuotaStatusEndpoint(unittest.TestCase):

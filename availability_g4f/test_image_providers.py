@@ -4,14 +4,17 @@ import time
 import g4f.Provider
 from g4f.client import Client
 
-# 候选列表：均为 find_image_providers.py 静态扫描出的 working=True 且 needs_auth=False 的图片生成 Provider，
-# 额外追加两条用于单独验证"Gemini 生图（对应 Google AI Studio, https://aistudio.google.com/prompts/new_chat）
-# 是否可免 Key 免费使用"这一问题：
-#   - AnyProvider + nano-banana（gemini-2.5-flash-image-preview）：AnyProvider 是 g4f 的元路由 Provider，
-#     needs_auth=False，若它能在底层免 Key 路由到某个可用的 Gemini 图片后端，则说明存在免费路径；
-#   - GeminiPro：g4f 对 Google AI Studio（generativelanguage.googleapis.com）官方 API 的封装，
-#     login_url 直接指向 https://aistudio.google.com/u/0/apikey，源码里 models_needs_auth=True，
-#     即该 Provider 本身虽标记 needs_auth=False，但实际调用模型需要用户自备 API Key，预期会失败。
+# Candidate list: all image generation Providers statically scanned by find_image_providers.py with
+# working=True and needs_auth=False, plus two extra entries added just to separately verify the question
+# "can Gemini image generation (corresponding to Google AI Studio, https://aistudio.google.com/prompts/new_chat)
+# be used for free without a key":
+#   - AnyProvider + nano-banana (gemini-2.5-flash-image-preview): AnyProvider is g4f's meta-routing Provider,
+#     with needs_auth=False; if it can route to some available Gemini image backend key-free under the hood,
+#     that would indicate a free path exists;
+#   - GeminiPro: g4f's wrapper around the official Google AI Studio (generativelanguage.googleapis.com) API;
+#     login_url points directly to https://aistudio.google.com/u/0/apikey, and in the source code
+#     models_needs_auth=True, meaning that although this Provider itself is marked needs_auth=False, actually
+#     calling the model requires the user to bring their own API Key, so this is expected to fail.
 test_providers = [
     ("AnyProvider (flux baseline)",     g4f.Provider.AnyProvider,              "flux"),
     ("AnyProvider (gemini nano-banana)", g4f.Provider.AnyProvider,             "gemini-2.5-flash-image-preview"),
@@ -31,7 +34,7 @@ log_file = "../image_provider_test_results.txt"
 PROMPT = "A small red apple on a white background, digital art"
 CALL_TIMEOUT_SECONDS = 45
 
-print("=== 开始文生图接口自动化测试 ===")
+print("=== Starting automated text-to-image interface testing ===")
 
 client = Client()
 success_count = 0
@@ -46,10 +49,10 @@ def _generate(provider, model, prompt):
 
 
 with open(log_file, "w", encoding="utf-8") as f:
-    f.write("=== g4f 免 Key 文生图接口测试报告 ===\n\n")
+    f.write("=== g4f key-free text-to-image interface test report ===\n\n")
 
     for name, provider, model in test_providers:
-        status_msg = f"正在测试 [{name}]，使用模型: {model or '(默认)'} ..."
+        status_msg = f"Testing [{name}], using model: {model or '(default)'} ..."
         print(status_msg)
         f.write(status_msg + "\n")
 
@@ -63,14 +66,14 @@ with open(log_file, "w", encoding="utf-8") as f:
                 image_url = getattr(result.data[0], "url", None) or getattr(result.data[0], "b64_json", None)
 
             if image_url:
-                res_msg = f"SUCCESS [{name}] 生成结果: {str(image_url)[:100]}"
+                res_msg = f"SUCCESS [{name}] generated result: {str(image_url)[:100]}"
                 success_count += 1
             else:
-                res_msg = f"EMPTY   [{name}] 返回内容为空或无 url/b64_json"
+                res_msg = f"EMPTY   [{name}] returned empty content or no url/b64_json"
                 fail_count += 1
 
         except concurrent.futures.TimeoutError:
-            res_msg = f"TIMEOUT [{name}] 超过 {CALL_TIMEOUT_SECONDS} 秒未返回"
+            res_msg = f"TIMEOUT [{name}] did not return within {CALL_TIMEOUT_SECONDS} seconds"
             fail_count += 1
         except Exception as e:
             err_str = str(e)[:150].replace("\n", " ")
@@ -82,6 +85,6 @@ with open(log_file, "w", encoding="utf-8") as f:
         f.flush()
         time.sleep(3)
 
-    summary = f"\n测试结束 -> 成功: {success_count} 个 | 失败: {fail_count} 个\n"
+    summary = f"\nTest finished -> success: {success_count} | fail: {fail_count}\n"
     print(summary)
     f.write(summary)

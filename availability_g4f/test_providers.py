@@ -1,9 +1,9 @@
 import time
 import g4f
 
-# 候选列表：find_providers_models.py 静态扫描出的全部 working=True 且 needs_auth=False
-# 且具备文本对话能力（models 或 default_model 非空）的 Provider，已在项目中的
-# Yqcloud/OperaAria/PollinationsAI/CohereForAI_C4AI_Command 除外。
+# Candidate list: all Providers statically scanned by find_providers_models.py with working=True and needs_auth=False,
+# and with text chat capability (models or default_model non-empty), excluding those already in the
+# project (Yqcloud/OperaAria/PollinationsAI/CohereForAI_C4AI_Command).
 test_providers = [
     ("AnyProvider",                "gpt-4o-mini"),
     ("ApiAirforce",                "roleplay:free"),
@@ -38,17 +38,17 @@ test_providers = [
 
 log_file = "../provider_test_results_v3.txt"
 PROMPT = "What is 2+2? Answer in one short sentence."
-print("=== 开始接口自动化测试（第四轮，全量新候选筛查）===")
+print("=== Starting automated interface testing (round 4, full screening of new candidates) ===")
 
 success_count = 0
 fail_count = 0
 
 with open(log_file, "w", encoding="utf-8") as f:
-    f.write("=== g4f 免 Key 接口测试报告 V4 ===\n\n")
+    f.write("=== g4f key-free interface test report V4 ===\n\n")
 
     for name, model in test_providers:
         provider = getattr(g4f.Provider, name)
-        status_msg = f"正在测试 [{name}]，使用模型: {model or '(默认)'} ..."
+        status_msg = f"Testing [{name}], using model: {model or '(default)'} ..."
         print(status_msg)
         f.write(status_msg + "\n")
 
@@ -61,10 +61,10 @@ with open(log_file, "w", encoding="utf-8") as f:
             resp = g4f.ChatCompletion.create(**kwargs)
 
             if resp and len(str(resp).strip()) > 0:
-                res_msg = f"SUCCESS [{name}] 响应: {str(resp)[:80]}"
+                res_msg = f"SUCCESS [{name}] response: {str(resp)[:80]}"
                 success_count += 1
             else:
-                res_msg = f"EMPTY   [{name}] 返回内容为空"
+                res_msg = f"EMPTY   [{name}] returned empty content"
                 fail_count += 1
 
         except Exception as e:
@@ -77,6 +77,6 @@ with open(log_file, "w", encoding="utf-8") as f:
         f.flush()
         time.sleep(2)
 
-    summary = f"\n测试结束 -> 成功: {success_count} 个 | 失败: {fail_count} 个\n"
+    summary = f"\nTest finished -> success: {success_count} | fail: {fail_count}\n"
     print(summary)
     f.write(summary)

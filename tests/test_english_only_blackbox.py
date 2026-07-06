@@ -5,11 +5,12 @@ API, and not in the prompt-engineering strings sent to LLM providers (which is a
 separate concern from rendered UI, covered by TestPromptEngineeringIsEnglish below).
 
 Internal code comments (Python `#`, JS `//`, CSS/HTML `/* */`/`<!-- -->`) are explicitly
-OUT of scope -- they are never sent to a browser's rendered view and are the project's
-established engineering documentation language (CLAUDE.md itself is written in
-Chinese). This file therefore strips <script>/<style> bodies and HTML comments before
-scanning for CJK characters, mirroring the stripping approach in
-test_html_structure_blackbox.py's assert_html_tag_balance().
+OUT of scope -- they are never sent to a browser's rendered view, so they fall outside
+this English-only-UI-text policy regardless of what language they happen to be written
+in; they are internal engineering documentation, not user-facing content. This file
+therefore strips <script>/<style> bodies and HTML comments before scanning for CJK
+characters, mirroring the stripping approach in test_html_structure_blackbox.py's
+assert_html_tag_balance().
 """
 import re
 import sys
@@ -22,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import main  # noqa: E402
 
-CJK_PATTERN = re.compile(r'[一-鿿]')
+CJK_PATTERN = re.compile(r'[\u4e00-\u9fff]')
 
 # Attributes a user can actually see without opening dev tools/view-source: rendered
 # text, native tooltips, placeholder text, and visible option/input values.
@@ -205,10 +206,11 @@ class TestAuthPagesAreEnglishOnly(unittest.TestCase):
 
 class TestClaudeServerCreditsExhaustedMessageIsEnglish(unittest.TestCase):
     """2026-07-04: the SERVER_CREDITS_EXHAUSTED friendly message returned by
-    POST /api/claude-chat used to be Chinese ("开发者账户余额不足，请配置您的个人 API
-    Key 继续使用") -- this is rendered directly onto a failed result card in the
-    browser (see CLAUDE.md section 6), so it is very much user-visible text, not an
-    internal log message. Locks down the exact English replacement text documented in
+    POST /api/claude-chat used to be Chinese ("The developer account's balance is
+    insufficient; please configure your personal API key to keep using this") --
+    this is rendered directly onto a failed result card in the browser (see
+    CLAUDE.md section 6), so it is very much user-visible text, not an internal
+    log message. Locks down the exact English replacement text documented in
     CLAUDE.md."""
 
     def setUp(self):

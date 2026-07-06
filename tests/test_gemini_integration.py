@@ -1,5 +1,5 @@
 """Tests for the official Google Gemini ("Nano Banana") image-generation integration
-(2026-07-04 新增).
+(added 2026-07-04).
 
 Covers the fourth, fully independent call chain added alongside the two g4f chains
 (text ChatCompletion / image generate()) and the Claude chat chain:
@@ -91,11 +91,12 @@ def _make_real_quota_exhausted_error():
 
 
 # ==========================================================================
-# 白盒/单元测试
+# White-box / unit tests
 # ==========================================================================
 
 class TestCallGeminiImageModelKeyRouting(unittest.TestCase):
-    """call_gemini_image_model() 的 Key 路由与错误分类逻辑（不经过 Flask 路由）。"""
+    """call_gemini_image_model()'s key routing and error classification logic
+    (bypasses the Flask route)."""
 
     def test_uses_default_client_when_no_user_key(self):
         with patch.object(main, 'google_genai') as mock_genai:
@@ -199,14 +200,17 @@ class TestCallGeminiImageModelKeyRouting(unittest.TestCase):
         self.assertEqual(result['error_code'], 'SERVER_QUOTA_EXHAUSTED')
 
     def test_real_world_quota_exhausted_error_maps_to_server_quota_exhausted(self):
-        """实测形状（2026-07-05，用一个真实但零配额的 GEMINI_API_KEY 直接调用三个
-        Nano Banana 模型观察到，三个模型返回完全相同的错误）：429 + 异常类型名
-        RateLimitError + .status_code == 429（.status 属性不存在）+ message 形如
-        "Error code: 429 - {'error': {'message': 'You do not have enough quota to
-        make this request.', 'code': 'too_many_requests'}}"。这与官方 troubleshooting
-        文档字面暗示的 "RESOURCE_EXHAUSTED 状态字符串" 不完全一致——真正稳定的信号是
-        .status_code == 429，不是 .status 字符串（call_gemini_image_model() 对
-        .status 的检查是防御性兜底，见其上方注释）。"""
+        """The actually observed shape (2026-07-05, seen by calling all three Nano
+        Banana models directly with a real but zero-quota GEMINI_API_KEY -- all
+        three models returned the exact same error): 429 + exception type name
+        RateLimitError + .status_code == 429 (.status attribute absent) + a
+        message shaped like "Error code: 429 - {'error': {'message': 'You do
+        not have enough quota to make this request.', 'code':
+        'too_many_requests'}}". This does not fully match the "RESOURCE_EXHAUSTED
+        status string" literally hinted at by the official troubleshooting doc --
+        the truly stable signal is .status_code == 429, not the .status string
+        (call_gemini_image_model()'s check on .status is a defensive fallback,
+        see the comment above it)."""
         with patch.object(main, 'google_genai') as mock_genai:
             mock_client = _fake_gemini_client(side_effect=_make_real_quota_exhausted_error())
             mock_genai.Client.return_value = mock_client
@@ -273,9 +277,10 @@ class TestCallGeminiImageModelKeyRouting(unittest.TestCase):
 
 
 class TestGeminiFreeTierCounterDb(unittest.TestCase):
-    """auth/db.py 的两个新增计数器函数（纯 db 层，mock Firestore，与
-    tests/test_claude_integration.py::TestClaudeFreeTierCounterDb 逐一同构，只是字段名
-    换成 gemini_free_tier_usage）。"""
+    """The two new counter functions in auth/db.py (pure db layer, mocking
+    Firestore; structurally identical case-for-case to
+    tests/test_claude_integration.py::TestClaudeFreeTierCounterDb, just with
+    the field name swapped to gemini_free_tier_usage)."""
 
     def test_get_usage_defaults_to_zero_when_field_missing(self):
         from auth import db as auth_db
@@ -360,10 +365,11 @@ class TestGeminiFreeTierCounterDb(unittest.TestCase):
 
 
 class TestGeminiImageRouteKeyRoutingAndCounter(unittest.TestCase):
-    """/api/gemini-image 路由本身的计数器 + Key 路由决策逻辑（mock 掉
-    call_gemini_image_model()/两个计数器函数，只验证路由层面"谁调用了谁、传了什么
-    参数"），与 test_claude_integration.py::TestClaudeChatRouteKeyRoutingAndCounter
-    逐一同构。"""
+    """The /api/gemini-image route's own counter + key routing decision logic
+    (mocks out call_gemini_image_model()/the two counter functions, only
+    verifying at the route level "who called whom, with what arguments"),
+    structurally identical case-for-case to
+    test_claude_integration.py::TestClaudeChatRouteKeyRoutingAndCounter."""
 
     def setUp(self):
         main.app.config['TESTING'] = True
@@ -494,7 +500,7 @@ class TestGeminiImageRouteKeyRoutingAndCounter(unittest.TestCase):
 
 
 # ==========================================================================
-# 黑盒/集成测试
+# Black-box / integration tests
 # ==========================================================================
 
 class TestGeminiImageAuthGuard(unittest.TestCase):
@@ -586,10 +592,13 @@ class TestGeminiImageFreeTierFlow(unittest.TestCase):
 
 
 class TestGeminiImageServerQuotaExhausted(unittest.TestCase):
-    """端到端复现"开发者账户配额耗尽"场景：mock 掉 call_gemini_image_model() 使其返回
-    error_code == 'SERVER_QUOTA_EXHAUSTED'（call_gemini_image_model 自身的分类逻辑已在
-    TestCallGeminiImageModelKeyRouting 里单独覆盖），验证一路传导到 HTTP 响应体的
-    503 SERVER_QUOTA_EXHAUSTED，而不消耗用户的免费额度。"""
+    """End-to-end reproduction of the "developer account quota exhausted"
+    scenario: mocks out call_gemini_image_model() to make it return
+    error_code == 'SERVER_QUOTA_EXHAUSTED' (call_gemini_image_model's own
+    classification logic is already separately covered in
+    TestCallGeminiImageModelKeyRouting), verifying it propagates all the way
+    through to a 503 SERVER_QUOTA_EXHAUSTED in the HTTP response body,
+    without consuming the user's free quota."""
 
     def setUp(self):
         main.app.config['TESTING'] = True

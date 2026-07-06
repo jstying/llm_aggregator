@@ -12,25 +12,32 @@
         }
 
         :root {
-            /* 页面全局缩放比例，与下方 body 的 zoom 保持同一个变量，避免两处数值分叉 */
+            /* Global page zoom ratio, kept as the same variable used by body's zoom below, avoiding the two values drifting apart */
             --page-zoom: 0.88;
         }
 
-        /* 完全隐藏原生的整页纵向滚动条（Firefox 用 scrollbar-width:none，Chrome/Safari
-           用 ::-webkit-scrollbar{display:none}），改由下方 #pageScrollThumb 提供一个
-           完全自绘、JS 驱动、可拖拽的滚动指示器（2026-07-03 第二轮修复，用户报告"整体
-           右侧的 scrollbar 也要进行类似修改"，呼应下面 .sidebar-recents 的同源整改）。
+        /* Fully hide the native full-page vertical scrollbar (Firefox uses
+           scrollbar-width:none, Chrome/Safari use ::-webkit-scrollbar{display:none}),
+           replaced by #pageScrollThumb below, which provides a fully self-drawn, JS-driven,
+           draggable scroll indicator (2026-07-03 second-round fix, per a user report that
+           "the scrollbar on the overall right side needs a similar change too," echoing the
+           same-origin fix for .sidebar-recents below).
 
-           这里刻意不再沿用"用 overflow-y:scroll 强制常驻显示原生滚动条"的旧写法——
-           原生滚动条渲染在浏览器 UI 自己的合成层里，天然盖在任何页面内容之上，**没有
-           任何页面内元素能盖过它**；只要原生滚动条还占据哪怕一像素的可交互区域，自绘
-           指示器的 mousedown 事件就永远抢不到那个像素点，"可拖拽"这个需求在原生滚动
-           条仍然存在时根本做不到，也是"黑色 Recents 列右侧出现 2 个滚动条"（原生 +
-           自绘）这一用户报告的同类根因。改为让原生滚动条本身**恒为 0 宽度**（无论内容
-           是否溢出，两种状态下都不占用任何布局宽度）：这仍然满足"宽度在两种状态之间
-           保持不变、不会引发水平位移"这条最初引入 overflow-y:scroll 的理由——只是从
-           "恒为某个非零值"换成了"恒为 0"，两者都是"不变"，都不会导致 nav-container/
-           .container 的可用宽度来回变化。 */
+           Deliberately not reusing the old approach of "force the native scrollbar to always
+           be shown via overflow-y:scroll" here -- the native scrollbar renders in the
+           browser UI's own compositing layer, which naturally sits on top of any page
+           content, **no element inside the page can ever cover it**; as long as the native
+           scrollbar still occupies even a single pixel of interactive area, the self-drawn
+           indicator's mousedown event can never grab that pixel, so "draggable" is simply
+           impossible to achieve while the native scrollbar still exists -- this is also the
+           same root cause behind the user report of "2 scrollbars appearing on the right
+           side of the black Recents column" (native + self-drawn). Changed so the native
+           scrollbar itself is **always 0 width** (regardless of whether content overflows,
+           neither state occupies any layout width): this still satisfies the "width stays
+           the same between the two states, no horizontal shift" reasoning that originally
+           motivated overflow-y:scroll -- just switched from "always some non-zero value" to
+           "always 0," both are "constant," and neither causes the available width of
+           nav-container/.container to fluctuate. */
         html {
             -ms-overflow-style: none;
             scrollbar-width: none;
@@ -42,25 +49,32 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #fbfbfc; /* 极轻薄的冷调底色 */
-            color: #09110e; /* 带有绿意底蕴的深邃暗墨色 */
+            background: #fbfbfc; /* an extremely light, cool-toned background */
+            color: #09110e; /* a deep dark ink color with a hint of green undertone */
 
-            /* body 撑满视口高度并纵向排列 nav/guest-banner/app-layout，
-               让 .app-layout 用 flex:1 吃掉剩余高度，.left-sidebar 才能在结果区为空、
-               页面本身矮于视口时依然铺满到视口底部，而不是只跟 .main-content 的内容高度对齐。
-               `zoom` 是非标准的渲染期缩放：一个 min-height:100vh 的盒子套上 zoom:var(--page-zoom) 后，
-               实际渲染高度会变成 100vh * zoom（vh 始终按真实视口计算，不会跟着 zoom 一起放大）。
-               当 zoom < 1（当前的 0.88）时，直接写 min-height:100vh 会让渲染高度小于真实视口，
-               视口底部露出 body 背后的空白；当 zoom > 1（如曾经的 1.1）时则相反，会让渲染高度
-               大于真实视口，产生本不需要的额外可滚动空间——两种情况都与 flex:1 的效果无关、
-               无法通过调整 flex 本身修复。因此这里统一改用 calc(100vh / var(--page-zoom))：
-               预先把 min-height 按 1/zoom 的比例反向缩放，缩放渲染后就会精确还原成 100vh，
-               从而与 flex:1 配合，在任意 --page-zoom 数值下都能真正铺满到视口底部、不多不少。 */
+            /* body fills the viewport height and stacks nav/guest-banner/app-layout vertically,
+               letting .app-layout consume the remaining height with flex:1, so .left-sidebar can
+               still fill all the way to the bottom of the viewport when the results area is empty
+               and the page itself is shorter than the viewport, instead of only matching the
+               content height of .main-content.
+               `zoom` is a non-standard render-time scale: a box with min-height:100vh wrapped in
+               zoom:var(--page-zoom) actually renders at a height of 100vh * zoom (vh is always
+               computed against the real viewport, it does not get scaled up along with zoom).
+               When zoom < 1 (currently 0.88), writing min-height:100vh directly makes the rendered
+               height smaller than the real viewport, exposing blank space behind the body at the
+               bottom of the viewport; when zoom > 1 (like the old 1.1), the opposite happens: the
+               rendered height becomes larger than the real viewport, producing unwanted extra
+               scrollable space -- neither case has anything to do with flex:1's effect, and cannot
+               be fixed by adjusting flex itself. So this is unified to calc(100vh / var(--page-zoom))
+               instead: min-height is pre-scaled inversely by a factor of 1/zoom, so that after the
+               zoom render it comes back out to exactly 100vh, working together with flex:1 so that
+               at any --page-zoom value the layout truly fills to the bottom of the viewport, no
+               more and no less. */
             min-height: calc(100vh / var(--page-zoom));
             display: flex;
             flex-direction: column;
 
-            /* 在这里添加下面这行代码，即可实现全屏 88% 缩放 */
+            /* Add the line below here to achieve a full-screen 88% zoom */
             zoom: var(--page-zoom);
         }
 
@@ -84,25 +98,32 @@
             z-index: 100;
         }
 
-        /* 不再用 max-width:1200px + margin:auto 把导航栏box在成一个独立居中的窄条——
-           那样它的宽度和下方 .app-layout（侧边栏 260px + 主内容区，边到边铺满视口）完全
-           对不上，logo 的水平位置和 260px 深色侧边栏毫无关系，纯粹取决于视口宽度。
-           改为让 .nav-container 边到边铺满 .navbar（与 .app-layout 同宽），只在右侧保留
-           呼吸间距；左侧留白交给 .nav-left 自己的定宽居中处理（见下）。 */
-        /* justify-content:space-between 曾经把 .nav-left/.nav-links 两个 flex item 分别
-           顶到两端；2026-07-05 引入 .trial-quota-badges 作为第三个 item 后改用
-           .nav-links{margin-left:auto} 顶右（见下），这里改回默认的 flex-start，让
-           .trial-quota-badges 紧跟在 .nav-left 右侧而不是被 space-between 拉到正中间。 */
+        /* No longer using max-width:1200px + margin:auto to box the navbar into its own
+           independent, centered narrow strip -- that width would never line up with
+           .app-layout below (260px sidebar + main content area, edge-to-edge filling the
+           viewport), leaving the logo's horizontal position with nothing to do with the
+           260px dark sidebar, purely dependent on viewport width instead. Changed so that
+           .nav-container fills .navbar edge-to-edge (same width as .app-layout), keeping only
+           breathing room on the right side; the left-side whitespace is handled by
+           .nav-left's own fixed-width centering (see below). */
+        /* justify-content:space-between used to push the two flex items .nav-left/.nav-links
+           to opposite ends; after .trial-quota-badges was introduced as a third item on
+           2026-07-05, switched to .nav-links{margin-left:auto} to push it right instead (see
+           below), and changed this back to the default flex-start, so .trial-quota-badges
+           sits right next to .nav-left instead of being pulled to dead center by
+           space-between. */
         .nav-container {
             padding: 0 2rem 0 0;
             display: flex;
             align-items: center;
         }
 
-        /* 宽度与 .left-sidebar 完全一致（见下方两栏布局），且从 x=0 起始（.nav-container
-           左侧无 padding），因此 justify-content:center 能让 logo 精确居中在黑色侧边栏
-           所在的那一纵列正上方——即"与黑色 sidebar 居中对齐"。移动端侧边栏退化为浮层抽屉，
-           不再是静态两栏之一，这个定宽在下方 520px 断点内会被覆盖为 auto。 */
+        /* Width matches .left-sidebar exactly (see the two-column layout below), and starts
+           at x=0 (.nav-container has no left padding), so justify-content:center makes the
+           logo center precisely above the column occupied by the dark sidebar -- i.e.
+           "centered aligned with the black sidebar." On mobile the sidebar degrades into a
+           floating drawer, no longer one of the two static columns, so this fixed width gets
+           overridden to auto within the 520px breakpoint below. */
         .nav-left {
             width: 260px;
             flex-shrink: 0;
@@ -117,10 +138,10 @@
             font-weight: 800;
             color: #09110e;
             text-decoration: none;
-            letter-spacing: -0.04em; /* 紧凑的高级字距 */
+            letter-spacing: -0.04em; /* tight, premium letter spacing */
         }
 
-        /* 汉堡按钮：桌面端隐藏，仅在 <=520px 的移动端断点显示（见文件底部媒体查询） */
+        /* Hamburger button: hidden on desktop, only shown at the <=520px mobile breakpoint (see the media query at the bottom of the file) */
         .hamburger-btn {
             display: none;
             flex-direction: column;
@@ -148,17 +169,19 @@
             gap: 0.4rem;
             list-style: none;
             align-items: center;
-            /* 见上方 .nav-container 的注释：space-between 移除后由这里自己顶到最右侧。 */
+            /* See the comment on .nav-container above: after space-between was removed, this pushes itself all the way to the right instead. */
             margin-left: auto;
         }
 
-        /* Trial Quota 徽章（2026-07-05 新增）：紧跟在 .nav-left（260px 定宽 logo 列）
-           右侧、偏向导航栏左半部分，而不是被居中或推到最右——呼应"LLM Aggregator 右侧
-           一点，偏左"的产品要求。只在已登录时由 Jinja 渲染（游客/匿名对 Claude/Gemini
-           完全锁定，没有额度可展示，见 index() 里的 _get_frontier_quota_context()）。
-           #textQuotaBadge/#imageQuotaBadge 二选一显示，由 switchToImageMode()/
-           switchToCompareMode() 联动切换（与 .header-full/.header-short 那对元素同一种
-           "共享位置、互斥显示"模式）。 */
+        /* Trial Quota badge (added 2026-07-05): sits right next to .nav-left (the 260px
+           fixed-width logo column), leaning toward the left half of the navbar rather than
+           being centered or pushed all the way right -- echoing the product requirement of
+           "a bit to the right of LLM Aggregator, leaning left." Only rendered by Jinja when
+           logged in (guests/anonymous users are fully locked out of Claude/Gemini, with no
+           quota to display, see _get_frontier_quota_context() in index()).
+           #textQuotaBadge/#imageQuotaBadge show one or the other, toggled together by
+           switchToImageMode()/switchToCompareMode() (the same "shared position, mutually
+           exclusive display" pattern as the .header-full/.header-short pair). */
         .trial-quota-badges {
             display: flex;
             align-items: center;
@@ -166,7 +189,7 @@
         }
 
         /* Each mode now has 2-3 frontier providers (Claude/ChatGPT/Gemini for chat,
-           Gemini/ChatGPT for image, 2026-07-06 新增) instead of one, so #textQuotaBadge/
+           Gemini/ChatGPT for image, added 2026-07-06) instead of one, so #textQuotaBadge/
            #imageQuotaBadge are now groups of pills rather than a single pill -- still
            mutually exclusive per mode, same toggle logic as before, just display:flex
            instead of inline. */
@@ -188,8 +211,9 @@
             white-space: nowrap;
         }
 
-        /* 额度耗尽（剩余数字 <= 0）灰化（2026-07-09 新增）：与绿色配色区分开,让用户
-           一眼看出这颗 pill 对应的 provider 这次点不动了。 */
+        /* Quota-exhausted (remaining number <= 0) graying-out (added 2026-07-09): distinct
+           from the green color scheme, so the user can tell at a glance that the provider
+           this pill corresponds to cannot be clicked right now. */
         .trial-quota-badge.is-exhausted {
             background: rgba(9, 17, 14, 0.04);
             border-color: #e0e0e0;
@@ -200,14 +224,14 @@
             color: #09110e;
             text-decoration: none;
             padding: 0.5rem 1rem;
-            border-radius: 4px; /* 硬朗的小圆角 */
+            border-radius: 4px; /* a crisp, slight rounded corner */
             font-size: 0.9rem;
             font-weight: 600;
             transition: all 0.15s ease;
         }
 
         .nav-links a:hover {
-            background: rgba(6, 193, 103, 0.06); /* 带有呼吸感的浅绿高亮 */
+            background: rgba(6, 193, 103, 0.06); /* a light green highlight with a breathing feel */
             color: #06c167;
         }
 
@@ -262,7 +286,7 @@
         .app-layout {
             display: flex;
             align-items: stretch;
-            flex: 1; /* 吃掉 body 剩余高度，让空结果区时侧边栏也能铺满到视口底部 */
+            flex: 1; /* consumes the body's remaining height, so the sidebar can still fill to the bottom of the viewport when the results area is empty */
         }
 
         .left-sidebar {
@@ -321,7 +345,7 @@
 
         .main-content {
             flex: 1;
-            min-width: 0; /* 允许内部长内容正常收缩，避免撑破 flex 布局 */
+            min-width: 0; /* allows long inner content to shrink normally, preventing it from breaking the flex layout */
         }
 
         .sidebar-top {
@@ -439,8 +463,8 @@
             cursor: grabbing;
         }
 
-        /* ---- Whole-page custom scroll indicator (2026-07-03, user report: "整体右侧的
-           scrollbar 也要进行类似修改") — replaces the native browser scrollbar for the
+        /* ---- Whole-page custom scroll indicator (2026-07-03, user report: "the scrollbar
+           on the overall right side needs a similar change too") — replaces the native browser scrollbar for the
            entire document, mirroring #sidebarRecentsScrollThumb above. `position: fixed` +
            `right: 3px` overlays the last few px of the viewport instead of reserving its
            own dedicated gutter, exactly like the sidebar's indicator overlays inside
@@ -549,8 +573,10 @@
             flex-shrink: 0;
         }
 
-        /* 默认只显示文字，操作图标透明且轻微右偏；hover/focus 时平滑淡入并归位。这组只包含
-           "点击去 Pin"（未置顶时）、重命名、删除——已置顶状态的图标不在这组里，见 .pin-indicator。 */
+        /* By default only the text is shown, action icons are transparent and slightly offset
+           to the right; on hover/focus they fade in smoothly and settle into place. This group
+           only contains "click to Pin" (when not yet pinned), rename, and delete -- the icon
+           for the already-pinned state is not in this group, see .pin-indicator. */
         .history-item-actions {
             display: flex;
             gap: 2px;
@@ -758,7 +784,7 @@
         }
 
         .header {
-            text-align: center; /* 改为居中对齐 */
+            text-align: center; /* changed to center alignment */
             margin-bottom: 36px;
             color: #09110e;
         }
@@ -768,21 +794,21 @@
             font-weight: 800;
             letter-spacing: -0.04em;
             margin-bottom: 8px;
-            display: inline-block; /* 保证火箭图标与文字良好居中 */
+            display: inline-block; /* ensures the rocket icon and the text center nicely together */
         }
 
         .header p {
             font-size: 1.05rem;
             color: #545e5a;
-            line-height: 1.5; /* 多行文案（如 history.html 的两句提示语）行距舒适，单行文案不受影响 */
-            max-width: 600px; /* 限制宽度，防止长句在宽屏上两头拉得太开 */
-            margin: 0 auto; /* 配合 max-width 实现段落整体居中 */
+            line-height: 1.5; /* comfortable line spacing for multi-line copy (like history.html's two hint sentences), single-line copy is unaffected */
+            max-width: 600px; /* limits the width, preventing a long sentence from stretching too wide apart on a wide screen */
+            margin: 0 auto; /* works with max-width to center the whole paragraph */
         }
 
         .form-container {
             background: #ffffff;
             border: 1px solid #e8e8e8;
-            border-radius: 6px; /* 统一硬朗风格 */
+            border-radius: 6px; /* consistent crisp style */
             padding: 36px;
             box-shadow: 0 4px 24px rgba(9, 17, 14, 0.015);
             margin-bottom: 36px;
@@ -808,13 +834,13 @@
             border-radius: 6px;
             font-size: 15px;
             transition: all 0.15s ease;
-            background-color: rgba(6, 193, 103, 0.015); /* 极淡的底色增加质感 */
+            background-color: rgba(6, 193, 103, 0.015); /* an extremely faint background adds texture */
             color: #09110e;
         }
 
         input:focus, textarea:focus {
             outline: none;
-            border-color: #09110e; /* 聚焦时使用暗墨色深化边缘 */
+            border-color: #09110e; /* uses the dark ink color to deepen the edge on focus */
             background-color: #ffffff;
             box-shadow: 0 0 0 3px rgba(9, 17, 14, 0.05);
         }
@@ -899,17 +925,21 @@
            delay in its own transition list, so opening snaps max-height/overflow back to
            their usable values instantly, in sync with the immediate `visibility:visible`
            flip, while opacity/transform still ease in over 0.15s as before. */
-        /* 2026-07-13 修复：position:absolute + top:100% 让面板脱离正常流但仍不被任何
-           祖先裁剪（跟上面 max-height/overflow 注释里"nothing between here and <body>
-           clips it"是同一个根因）。未勾选任何 free provider 时下拉框联合了所有 provider
-           的模型、列表最长，必定触顶 250px 上限需要内部滚动；这个下拉框本身又贴近
-           .app-layout 底部，展开时这 250px 会实打实撑高 document 的 scrollHeight，但
-           .app-layout 自身的盒子高度不受影响（absolute 定位元素不计入祖先的正常布局
-           尺寸）。.left-sidebar 的 sticky 高度只跟视口挂钩，不知道这段"幽灵"高度的
-           存在，滚动到文档真正底部时就会在锚定的侧边栏下方露出空白。改成
-           position:fixed 后，展开瞬间由 customTrigger/imageCustomTrigger 的 click
-           处理器用 getBoundingClientRect() 现算 top/left/width——fixed 元素完全不参与
-           非 fixed 祖先的布局尺寸计算，从根上不再撑高 scrollHeight。 */
+        /* 2026-07-13 fix: position:absolute + top:100% takes the panel out of normal flow but
+           it still isn't clipped by any ancestor (same root cause as "nothing between here and
+           <body> clips it" in the max-height/overflow comment above). When no free provider is
+           checked, the dropdown merges every provider's models, making the longest possible
+           list, which always hits the 250px cap and needs internal scrolling; this dropdown
+           itself also sits close to the bottom of .app-layout, so when expanded, this 250px
+           really does stretch document's scrollHeight taller, but .app-layout's own box height
+           is unaffected (an absolutely-positioned element does not count toward an ancestor's
+           normal layout size). .left-sidebar's sticky height only tracks the viewport, and has
+           no idea this "phantom" height exists, so scrolling to the document's true bottom
+           exposes blank space below the anchored sidebar. After switching to position:fixed,
+           the click handler on customTrigger/imageCustomTrigger computes top/left/width on the
+           spot via getBoundingClientRect() the instant it expands -- a fixed element does not
+           participate at all in a non-fixed ancestor's layout size calculation, so it no longer
+           stretches scrollHeight at the root. */
         .custom-options {
             position: fixed;
             display: block;
@@ -955,10 +985,12 @@
             color: #ffffff;
         }
 
-        /* Frontier-only mode 置灰联动（2026-07-09 新增）：免费 provider 区的自定义
-           下拉框（modelSelect/imageModelSelect 的可视层）与勾选框共用同一套 is-locked
-           灰化语言,禁用 hover/点击展开面板,直到 mode 关闭才恢复正常。真正阻止展开
-           面板的逻辑在 customTrigger/imageCustomTrigger 的点击处理器里判断这个 class。 */
+        /* Frontier-only mode graying sync (added 2026-07-09): the free provider area's custom
+           dropdowns (the visual layer for modelSelect/imageModelSelect) share the same
+           is-locked graying language as the checkboxes, disabling hover/click to expand the
+           panel until mode is turned off. The actual logic that blocks the panel from
+           expanding checks this class inside customTrigger/imageCustomTrigger's click
+           handlers. */
         .custom-select-wrapper.is-locked .custom-select-trigger {
             cursor: not-allowed;
             opacity: 0.5;
@@ -977,7 +1009,7 @@
         .provider-checkbox input,
         .provider-checkbox * {
             outline: none !important;
-            -webkit-tap-highlight-color: transparent; /* 消除谷歌内核特有的点击高亮层 */
+            -webkit-tap-highlight-color: transparent; /* removes the Chromium-specific tap highlight layer */
         }
 
         .provider-checkbox {
@@ -989,7 +1021,7 @@
             border-radius: 6px;
             cursor: pointer;
             height: 66px;
-            box-sizing: border-box; /* 强行让边框和内边距包含在66px内，不挤压外部 */
+            box-sizing: border-box; /* forces the border and padding to be contained within the 66px, without squeezing the outside */
             overflow: hidden;
             transition: background-color 0.1s ease, border-color 0.1s ease;
         }
@@ -997,19 +1029,22 @@
         .provider-checkbox:hover {
             background: rgba(6, 193, 103, 0.03);
             border-color: #06c167;
-            /* 核心修改：删掉可能导致 Chrome 渲染尺寸抖动的 box-shadow */
+            /* Core fix: removed the box-shadow that could cause Chrome rendering-size jitter */
         }
 
-        /* 选中态：整卡边框沿用 hover 同款绿色，由 JS 在 toggle 时同步添加/移除
-           is-checked class（不依赖 :has() 选择器，避免旧版浏览器兼容问题）。 */
+        /* Checked state: the whole card's border reuses the same green as hover, added/removed
+           in sync by JS on toggle via the is-checked class (not relying on the :has() selector,
+           to avoid older browser compatibility issues). */
         .provider-checkbox.is-checked {
             border-color: #06c167;
         }
 
-        /* <input> 是替换元素（replaced element），规范上不保证支持 ::before/::after，
-           多个浏览器下自绘的勾选对勾会残缺（只剩一条边，看起来像斜线）。
-           改为彻底隐藏原生 input，用紧跟其后的 <span class="checkbox-box"> 承载
-           所有视觉样式，::after 只作用在普通 span 上，跨浏览器稳定渲染。 */
+        /* <input> is a replaced element, and the spec does not guarantee support for
+           ::before/::after -- the self-drawn checkmark renders broken in several browsers
+           (only one edge remains, looking like a diagonal slash).
+           Changed to fully hide the native input, and use the <span class="checkbox-box">
+           immediately following it to carry all the visual styling, with ::after only applied
+           to a plain span, rendering stably across browsers. */
         .provider-checkbox input {
             position: absolute;
             width: 0;
@@ -1034,7 +1069,7 @@
             border-radius: 2px;
             background: #ffffff;
             box-sizing: border-box;
-            flex-shrink: 0; /* 强制不允许 Chrome 挤压这个勾选框 */
+            flex-shrink: 0; /* forcibly disallows Chrome from squeezing this checkbox */
             transition: background-color 0.1s ease, border-color 0.1s ease;
         }
 
@@ -1051,7 +1086,7 @@
             border: solid #1a1a1a;
             border-width: 0 3px 3px 0;
             transform: rotate(45deg);
-            margin-top: -3px; /* 抵消对勾旋转后视觉重心偏下的错觉，使其在正方形内真正居中 */
+            margin-top: -3px; /* offsets the illusion that the checkmark's visual weight sits low after rotation, so it truly centers within the square */
             opacity: 0;
         }
 
@@ -1125,10 +1160,11 @@
             opacity: 1;
         }
 
-        /* Frontier-only mode（2026-07-08 新增）：一键锁死免费 g4f provider 卡片，逼用户
-           只能从 Claude/ChatGPT/Gemini 里选。视觉上复用 .claude-provider-checkbox.is-locked
-           同一套灰化规则（同一个 class 名字，跨 provider 表现一致，与游客锁卡是不同的锁定
-           原因但视觉语言统一）。 */
+        /* Frontier-only mode (added 2026-07-08): a single click locks down the free g4f
+           provider cards, forcing the user to pick only from Claude/ChatGPT/Gemini. Visually
+           reuses the same .claude-provider-checkbox.is-locked graying rule set (the same class
+           name, consistent behavior across providers -- a different locking reason from the
+           guest lock-card, but a unified visual language). */
         .provider-checkbox.is-locked,
         .image-provider-checkbox.is-locked {
             cursor: not-allowed;
@@ -1173,14 +1209,16 @@
             border-color: #e8e8e8;
         }
 
-        /* Claude（Anthropic 官方 API）Provider 卡片：视觉上与 .provider-checkbox/
-           .image-provider-checkbox 一致，但 class 名称必须独立（同上方注释的原则）——
-           不能复用 .provider-checkbox/.provider-trigger，否则会被
-           document.querySelectorAll('.provider-trigger') 一并纳入提交给 /api/compare
-           的 providers 数组，而 Claude 根本不在后端 g4f Provider 名字空间里；也不能复用
-           .image-provider-checkbox/.image-provider-trigger，同理。Claude 是第三条完全
-           独立的调用链路，走自己的 /api/claude-chat，结果只在前端渲染时并入同一份
-           results 数组，调度上互不相干。 */
+        /* Claude (official Anthropic API) provider card: visually matches
+           .provider-checkbox/.image-provider-checkbox, but the class name must be independent
+           (same principle as the comment above) -- it cannot reuse
+           .provider-checkbox/.provider-trigger, otherwise it would get swept up by
+           document.querySelectorAll('.provider-trigger') into the providers array submitted to
+           /api/compare, and Claude is not in the backend's g4f provider namespace at all; nor
+           can it reuse .image-provider-checkbox/.image-provider-trigger, for the same reason.
+           Claude is a third, fully independent call chain, going through its own
+           /api/claude-chat, with the result only merged into the same results array at
+           frontend render time -- unrelated to the scheduling of the other two. */
         .claude-provider-checkbox {
             display: flex;
             align-items: center;
@@ -1224,9 +1262,11 @@
             opacity: 1;
         }
 
-        /* 游客/匿名访客锁定态（第 3 节"Guest 模式拦截"）：整卡置灰 + not-allowed 光标，
-           配合 <label title="..."> 的浏览器原生 tooltip 与卡片内 <small> 文案双重提示
-           "请登录以解锁前沿模型"。真正的拦截由 <input disabled> 完成，这里只是视觉呈现。 */
+        /* Guest/anonymous visitor locked state (section 3, "Guest mode blocking"): the whole
+           card is grayed out + a not-allowed cursor, paired with the browser's native tooltip
+           from <label title="..."> and the <small> copy inside the card, doubly hinting "log in
+           to unlock frontier models." The actual blocking is done by <input disabled>; this is
+           only the visual presentation. */
         .claude-provider-checkbox.is-locked {
             cursor: not-allowed;
             opacity: 0.5;
@@ -1238,16 +1278,19 @@
             border-color: #e8e8e8;
         }
 
-        /* Gemini（"Nano Banana"官方 API）Provider 卡片，2026-07-04 新增：与
-           .claude-provider-checkbox 视觉上完全一致（同一套样式规则,只是换了 class
-           名字），但这张卡片出现在图片生成表单里而不是对话表单里——Claude 是对话场景
-           的 frontier provider,Gemini 是文生图场景的 frontier provider,两者是并列
-           但完全独立的第三/第四条调用链路。class 名称必须独立，不能复用
-           .image-provider-checkbox/.image-provider-trigger（同上方注释的隔离原则）——
-           否则会被 document.querySelectorAll('.image-provider-trigger') 一并纳入提交
-           给 /api/generate-images 的 providers 数组，而 Gemini 根本不在后端
-           IMAGE_PROVIDERS 名字空间里。Gemini 走自己的 /api/gemini-image，结果只在
-           前端渲染时并入同一份 image 结果数组，调度上互不相干。 */
+        /* Gemini (official "Nano Banana" API) provider card, added 2026-07-04: visually
+           completely identical to .claude-provider-checkbox (the same style rule set, just a
+           different class name), but this card appears in the image generation form instead
+           of the chat form -- Claude is the frontier provider for the chat scenario, Gemini is
+           the frontier provider for the text-to-image scenario, the two are parallel but fully
+           independent third/fourth call chains. The class name must be independent, it cannot
+           reuse .image-provider-checkbox/.image-provider-trigger (same isolation principle as
+           the comment above) -- otherwise it would get swept up by
+           document.querySelectorAll('.image-provider-trigger') into the providers array
+           submitted to /api/generate-images, and Gemini is not in the backend's
+           IMAGE_PROVIDERS namespace at all. Gemini goes through its own /api/gemini-image, with
+           the result only merged into the same image results array at frontend render time --
+           unrelated to the scheduling of the others. */
         .gemini-provider-checkbox {
             display: flex;
             align-items: center;
@@ -1303,7 +1346,7 @@
         }
 
         /* ChatGPT (chat) / Gemini-text (chat) / ChatGPT-image (image form) frontier
-           provider cards, 2026-07-06 新增: visually identical to .claude-provider-checkbox/
+           provider cards, added 2026-07-06: visually identical to .claude-provider-checkbox/
            .gemini-provider-checkbox (same rule set, grouped selectors -- pure CSS reuse),
            but each keeps its own class name so the JS isolation rule from that comment still
            holds: none of these may ever be queried alongside .provider-trigger/
@@ -1378,15 +1421,19 @@
             border-color: #e8e8e8;
         }
 
-        /* 前沿模型下拉框（2026-07-14 重构）：原生 <select>/<option> 的弹层由操作系统
-           合成渲染，:hover 规则和已选中态的背景色都无法被 CSS 完全覆盖（Chrome 等浏览器
-           展开态始终带系统蓝色选中/悬停高亮），appearance:none + option 背景色这类补丁
-           已在上一版验证过是原生 <select> 能做到的上限，仍达不到"已选中黑色、未选中白色、
-           hover 变绿、点击立即生效"的要求。现在改成与免费 provider 区完全同构的自定义
-           下拉组件（复用 .custom-select-wrapper/.custom-select-trigger/.custom-options/
-           .custom-option，样式和交互逻辑零差异）,底下保留的原生 <select> 变成
-           display:none 的纯状态存储，供既有的 .value/.disabled 读写逻辑继续工作，不需要
-           改动任何提交/校验代码。 */
+        /* Frontier model dropdown (2026-07-14 rebuild): the native <select>/<option> popup is
+           composited and rendered by the operating system, so neither the :hover rule nor the
+           selected state's background color can ever be fully overridden by CSS (in Chrome and
+           other browsers the expanded popup always carries the system's blue selected/hover
+           highlight); a patch like appearance:none + option background color was already
+           verified in the previous version as the ceiling of what a native <select> can
+           achieve, and it still falls short of the requirement "selected is black, unselected is
+           white, hover turns green, click applies instantly." Now rebuilt as a custom dropdown
+           component with exactly the same structure as the free provider area (reusing
+           .custom-select-wrapper/.custom-select-trigger/.custom-options/.custom-option, with
+           zero difference in style or interaction logic); the native <select> kept underneath
+           becomes a pure display:none state store, so the existing .value/.disabled
+           read/write logic keeps working with no need to change any submit/validation code. */
         .frontier-model-select {
             margin-top: 4px;
         }
@@ -1414,7 +1461,7 @@
             background: rgba(255, 255, 255, 0.08);
         }
 
-        /* Fixed 2-column grid per the "最多容纳 2 个" requirement — each cell is one
+        /* Fixed 2-column grid per the "accommodate at most 2" requirement — each cell is one
            Provider+Model combination's generated image, not an auto-fit/auto-fill grid
            (which would let more than 2 land on a single row on very wide viewports). */
         .image-results-grid {
@@ -1818,8 +1865,10 @@
             margin: 0 8px;
         }
 
-        /* 互评分数三档配色（2026-07-09 新增）：0-33 浅绿、34-66 中绿、67-100 深绿,
-           分数越高颜色越深,一眼区分评价档位。浅绿底色配深绿文字保证可读性。 */
+        /* Three-tier peer review score coloring (added 2026-07-09): 0-33 light green, 34-66
+           mid green, 67-100 deep green, the higher the score the deeper the color, so the
+           rating tier can be told apart at a glance. A light green background paired with dark
+           green text keeps it readable. */
         .review-score-badge.score-low {
             background: #E8F5E9;
             color: #1B5E20;
@@ -1868,8 +1917,9 @@
                 padding: 0 0.75rem;
             }
 
-            /* 移动端侧边栏是浮层抽屉（position:fixed），不再占据静态两栏布局的 260px，
-               nav-left 的定宽居中在这个断点下失去意义，退回自然宽度、左对齐。 */
+            /* On mobile the sidebar is a floating drawer (position:fixed), no longer occupying
+               the 260px of the static two-column layout, so nav-left's fixed-width centering
+               loses its meaning at this breakpoint, falling back to natural width, left-aligned. */
             .nav-left {
                 width: auto;
                 flex-shrink: initial;
@@ -1897,8 +1947,10 @@
                 font-size: 0.82rem;
             }
 
-            /* 移动端窄屏navbar 必须保持单行（见本断点顶部注释），Trial Quota 徽章
-               与 .nav-welcome 一样属于"可以牺牲"的次要信息，直接隐藏而不是挤压/换行。 */
+            /* On narrow mobile screens the navbar must stay a single line (see the comment at
+               the top of this breakpoint); the Trial Quota badge, like .nav-welcome, is
+               secondary info that "can be sacrificed," so it's hidden outright instead of being
+               squeezed or wrapped. */
             .trial-quota-badges {
                 display: none;
             }
@@ -1956,8 +2008,8 @@
                 </a>
             </div>
             {% if session.user_id and claude_quota and gemini_quota %}
-            <!-- Trial Quota badge (2026-07-05 新增，2026-07-06 扩展为每个 provider 一颗
-                 pill): only rendered for logged-in users -- all frontier providers are
+            <!-- Trial Quota badge (added 2026-07-05, expanded 2026-07-06 to one pill per
+                 provider): only rendered for logged-in users -- all frontier providers are
                  completely locked for guests/anonymous (see _get_frontier_quota_context()
                  in main.py). #textQuotaBadge/#imageQuotaBadge are mutually exclusive
                  groups, toggled by switchToImageMode()/switchToCompareMode() alongside
@@ -2072,16 +2124,17 @@
                 </div>
 
                 <div class="form-group">
-                    <!-- Frontier providers (2026-07-04 新增，2026-07-06 加入 ChatGPT/Gemini
-                         文本): paid/official-API providers, kept in their own row and their
+                    <!-- Frontier providers (added 2026-07-04, ChatGPT/Gemini text added
+                         2026-07-06): paid/official-API providers, kept in their own row and their
                          own container -- deliberately separate from the free g4f providers
                          below (#providerSelection). -->
                     <label>Select frontier providers:</label>
                     <div class="provider-selection" id="frontierProviderSelection">
-                        <!-- Claude（Anthropic 官方 API，2026-07-04 新增）：不使用 g4f
-                             providers 循环里的 .provider-checkbox/.provider-trigger class
-                             （见 CSS 注释）。游客/匿名访客整卡置灰 + 输入框 disabled，
-                             双重提示"请登录以解锁前沿模型"。 -->
+                        <!-- Claude (official Anthropic API, added 2026-07-04): does not use the
+                             .provider-checkbox/.provider-trigger class from the g4f providers
+                             loop (see the CSS comment). Guests/anonymous visitors get the whole
+                             card grayed out + the input disabled, doubly hinting "log in to
+                             unlock frontier models." -->
                         <label class="claude-provider-checkbox{{ ' is-locked' if not session.user_id else '' }}"
                                id="claudeProviderCard"
                                title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
@@ -2093,8 +2146,9 @@
                                 <small>{{ 'Anthropic official API' if session.user_id else 'Log in to unlock frontier models' }}</small>
                             </div>
                         </label>
-                        <!-- ChatGPT（官方 OpenAI API，2026-07-06 新增）：独立 class，见
-                             CSS 注释里的隔离原则。走独立的 /api/chatgpt-chat 路由。 -->
+                        <!-- ChatGPT (official OpenAI API, added 2026-07-06): its own
+                             independent class, see the isolation principle in the CSS comment.
+                             Goes through its own /api/chatgpt-chat route. -->
                         <label class="chatgpt-provider-checkbox{{ ' is-locked' if not session.user_id else '' }}"
                                id="chatgptProviderCard"
                                title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
@@ -2106,9 +2160,10 @@
                                 <small>{{ 'OpenAI official API' if session.user_id else 'Log in to unlock frontier models' }}</small>
                             </div>
                         </label>
-                        <!-- Gemini 文本（官方 google-genai API，2026-07-06 新增）：Gemini
-                             这次出现在对话表单，与图片表单里的 Gemini 卡片是两个并列的
-                             独立 Provider（各自额度、各自路由），因此独立 class。 -->
+                        <!-- Gemini text (official google-genai API, added 2026-07-06): Gemini
+                             appears here in the chat form, a parallel but independent provider
+                             from the Gemini card in the image form (each with its own quota,
+                             its own route), hence its own independent class. -->
                         <label class="gemini-text-provider-checkbox{{ ' is-locked' if not session.user_id else '' }}"
                                id="geminiTextProviderCard"
                                title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
@@ -2121,10 +2176,11 @@
                             </div>
                         </label>
                     </div>
-                    <!-- Frontier-only mode（2026-07-08 新增）：一键锁死下面的免费 provider
-                         区，逼这次 Compare 只跑 Claude/ChatGPT/Gemini。锁给游客/匿名（本来
-                         就没有任何前沿卡片可选），与其它前沿元素同一套 disabled + tooltip
-                         模式。 -->
+                    <!-- Frontier-only mode (added 2026-07-08): a single click locks down the
+                         free provider area below, forcing this Compare to only run
+                         Claude/ChatGPT/Gemini. Locked for guests/anonymous (who have no frontier
+                         card to choose from anyway), using the same disabled + tooltip pattern
+                         as the other frontier elements. -->
                     <button type="button" class="btn-frontier-toggle" id="frontierOnlyToggle"
                             {{ 'disabled' if not session.user_id else '' }}
                             title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
@@ -2259,16 +2315,17 @@
                 </div>
 
                 <div class="form-group">
-                    <!-- Frontier image providers (2026-07-04 新增，2026-07-06 加入 ChatGPT
-                         图片): paid/official-API image providers, mirroring
+                    <!-- Frontier image providers (added 2026-07-04, ChatGPT image added
+                         2026-07-06): paid/official-API image providers, mirroring
                          #frontierProviderSelection in the compare form above but scoped to
                          the image-generation form. -->
                     <label>Select frontier image providers:</label>
                     <div class="provider-selection" id="frontierImageProviderSelection">
-                        <!-- Gemini（Google 官方 google-genai API，2026-07-04 新增）：不使用
-                             g4f image providers 循环里的 .image-provider-checkbox/
-                             .image-provider-trigger class（见 CSS 注释）。游客/匿名访客整卡
-                             置灰 + 输入框 disabled，双重提示"Log in to unlock frontier models"。 -->
+                        <!-- Gemini (official Google google-genai API, added 2026-07-04): does
+                             not use the .image-provider-checkbox/.image-provider-trigger class
+                             from the g4f image providers loop (see the CSS comment).
+                             Guests/anonymous visitors get the whole card grayed out + the input
+                             disabled, doubly hinting "Log in to unlock frontier models." -->
                         <label class="gemini-provider-checkbox{{ ' is-locked' if not session.user_id else '' }}"
                                id="geminiProviderCard"
                                title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
@@ -2280,8 +2337,9 @@
                                 <small>{{ 'Google official API' if session.user_id else 'Log in to unlock frontier models' }}</small>
                             </div>
                         </label>
-                        <!-- ChatGPT 图片（官方 OpenAI API，GPT Image 系列，2026-07-06 新增）：
-                             独立 class，走独立的 /api/chatgpt-image 路由。 -->
+                        <!-- ChatGPT image (official OpenAI API, GPT Image family, added
+                             2026-07-06): its own independent class, goes through its own
+                             /api/chatgpt-image route. -->
                         <label class="chatgpt-image-provider-checkbox{{ ' is-locked' if not session.user_id else '' }}"
                                id="chatgptImageProviderCard"
                                title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
@@ -2294,9 +2352,10 @@
                             </div>
                         </label>
                     </div>
-                    <!-- Frontier-only mode（2026-07-08 新增），image-form 对等实现——见
-                         compareForm 里 #frontierOnlyToggle 上方注释,同一套按钮/锁定逻辑，
-                         只是作用在图片表单的免费 provider 区。 -->
+                    <!-- Frontier-only mode (added 2026-07-08), the image-form counterpart --
+                         see the comment above #frontierOnlyToggle in compareForm, the same
+                         button/locking logic, just applied to the image form's free provider
+                         area. -->
                     <button type="button" class="btn-frontier-toggle" id="frontierOnlyToggleImage"
                             {{ 'disabled' if not session.user_id else '' }}
                             title="{{ '' if session.user_id else 'Log in to unlock frontier models' }}">
@@ -2430,7 +2489,7 @@
         const imageProviderModelsMap = {{ image_provider_models_json | default({}) | tojson | safe }};
         const isLoggedIn = {{ 'true' if session.user_id else 'false' }};
 
-        // Trial Quota badge state (2026-07-05 新增). claudeQuota/geminiQuota start out as
+        // Trial Quota badge state (added 2026-07-05). claudeQuota/geminiQuota start out as
         // whatever index() computed at render time ({used, limit} or null for
         // guests/anonymous); refreshTrialQuotaBadge() below re-fetches these from
         // GET /api/quota-status after every Claude/Gemini call so the badge stays accurate
@@ -2792,7 +2851,7 @@
 
         // Keeps #pageScrollThumb's position/size in sync with the whole document's scroll
         // state -- the whole-page counterpart to updateSidebarScrollIndicator(), added
-        // 2026-07-03 ("整体右侧的 scrollbar 也要进行类似修改"). window.scrollY,
+        // 2026-07-03 ("the scrollbar on the overall right side needs a similar change too"). window.scrollY,
         // document.documentElement.scrollHeight and window.innerHeight are all consistently
         // already-zoomed measurements (same reasoning as scrollTop/scrollHeight/clientHeight
         // above), so their *ratios* need no zoom conversion; only the final top/height pixel
@@ -2850,19 +2909,22 @@
         const providerTriggers = document.querySelectorAll('.provider-trigger');
         const modelSelect = document.getElementById('modelSelect');
         
-        // 自定义组件的 DOM 节点
+        // DOM nodes for the custom component
         const customWrapper = document.getElementById('customSelectWrapper');
         const customTrigger = document.getElementById('customSelectTrigger');
         const customOptionsContainer = document.getElementById('customOptions');
 
-        // 展开 .custom-options（现在是 position:fixed，见其 CSS 注释）前用 trigger 的
-        // getBoundingClientRect() 现算 top/left/width。共享给对话表单和图片表单两个
-        // 下拉框——纯函数、显式传参，不违反"两套表单不能共用同名 class/DOM 查询"的隔离
-        // 原则（那条规则针对的是无容器限定的 querySelectorAll，这里没有）。
-        // getBoundingClientRect() 返回的是已经过 --page-zoom 缩放的"屏幕"像素，而
-        // style.top/left/width 是身处被 zoom 缩放的 body 子树内部、会被 zoom 再缩放
-        // 一遍的"逻辑"像素——同 syncSidebarStickyMetrics() 里的换算，这里也要先除以
-        // zoom 换算回来，否则面板会渲染在错误的位置。
+        // Before expanding .custom-options (now position:fixed, see its CSS comment), use the
+        // trigger's getBoundingClientRect() to compute top/left/width on the spot. Shared by
+        // both the chat form and the image form's dropdowns -- a pure function with explicit
+        // parameters, which does not violate the isolation principle "the two forms must not
+        // share a class name/DOM query" (that rule targets unscoped querySelectorAll, which is
+        // not the case here).
+        // getBoundingClientRect() returns "screen" pixels that have already been scaled by
+        // --page-zoom, while style.top/left/width are "logical" pixels living inside the
+        // zoom-scaled body subtree that will be scaled by zoom again -- same conversion as in
+        // syncSidebarStickyMetrics(), so this also needs to divide by zoom first to convert
+        // back, otherwise the panel would render in the wrong position.
         function positionCustomOptions(trigger, panel) {
             const zoom = parseFloat(
                 getComputedStyle(document.documentElement).getPropertyValue('--page-zoom')
@@ -2873,26 +2935,33 @@
             panel.style.width = (rect.width / zoom) + 'px';
         }
 
-        // 与 .custom-options 收起动画的 CSS transition 时长（0.15s）保持一致，
-        // 黑色高亮的变更延后到这个时长之后才应用，此时下拉面板已经完全隐藏。免费模型
-        // 下拉框和下面的 5 个前沿模型下拉框共用同一个常量,保持两边延迟时长同步。
+        // Kept consistent with .custom-options's collapse-animation CSS transition duration
+        // (0.15s); the black highlight change is deferred until after this duration, by which
+        // point the dropdown panel is already fully hidden. The free model dropdown and the 5
+        // frontier model dropdowns below share this same constant, keeping the delay duration
+        // in sync on both sides.
         const MODEL_HIGHLIGHT_DELAY_MS = 150;
 
-        // 前沿模型（Claude/ChatGPT/Gemini 文本与图片）下拉框，2026-07-14 新增：与
-        // #customSelectWrapper/#imageCustomSelectWrapper 同一套 .custom-select-wrapper/
-        // .custom-select-trigger/.custom-options/.custom-option 组件，而不是给原生
-        // <select> 打 CSS 补丁——原生下拉列表由操作系统合成渲染，:hover 和已选中态背景色
-        // 都无法被 CSS 完全覆盖。隐藏的原生 <select>（selectId 对应的元素）只作为纯状态
-        // 存储保留，disabled/value 的读写方式和既有代码（syncClaudeModelSelectEnabled()、
-        // createFrontierProviderController() 等）完全不变；这里只负责把可见的自定义面板
-        // 跟这个隐藏 select 双向同步。每个 select 的候选项是固定的（不像免费模型下拉框
-        // 那样会随勾选的 provider 动态重建），所以 .custom-option 直接写死在模板里,不需要
-        // 运行时生成。
+        // Frontier model (Claude/ChatGPT/Gemini text and image) dropdowns, added 2026-07-14:
+        // the same .custom-select-wrapper/.custom-select-trigger/.custom-options/.custom-option
+        // component as #customSelectWrapper/#imageCustomSelectWrapper, rather than patching the
+        // native <select> with CSS -- the native dropdown list is composited and rendered by the
+        // operating system, and neither :hover nor the selected state's background color can
+        // ever be fully overridden by CSS. The hidden native <select> (the element corresponding
+        // to selectId) is kept purely as a state store; the way disabled/value are read/written
+        // is completely unchanged from the existing code
+        // (syncClaudeModelSelectEnabled(), createFrontierProviderController(), etc.); this only
+        // handles keeping the visible custom panel in two-way sync with this hidden select. Each
+        // select's candidate options are fixed (unlike the free model dropdown, which gets
+        // rebuilt dynamically as providers are checked), so .custom-option is hardcoded directly
+        // in the template, with no need to be generated at runtime.
         //
-        // 2026-07-15 修复：点击选项黑色高亮不再立即跳变到新选项——镜像下方
-        // #customOptions（Select free models）的处理，trigger 文案和 select.value 立即
-        // 更新，但 .selected 类（黑色高亮）延后到面板收起动画结束（MODEL_HIGHLIGHT_DELAY_MS）
-        // 后才应用；重新展开时立即同步一次，防止上次延迟高亮还没来得及应用。
+        // 2026-07-15 fix: clicking an option no longer snaps the black highlight to the new
+        // option immediately -- mirroring the handling of #customOptions (Select free models)
+        // below, the trigger label and select.value update immediately, but the .selected class
+        // (black highlight) is deferred until after the panel's collapse animation finishes
+        // (MODEL_HIGHLIGHT_DELAY_MS); reopening syncs it immediately, in case the last deferred
+        // highlight hadn't had a chance to apply yet.
         function setupFrontierModelDropdown(selectId, wrapperId, triggerId, optionsId) {
             const select = document.getElementById(selectId);
             const wrapper = document.getElementById(wrapperId);
@@ -2941,9 +3010,10 @@
             document.addEventListener('click', () => wrapper.classList.remove('open'));
             window.addEventListener('scroll', () => wrapper.classList.remove('open'), { passive: true });
 
-            // select.disabled 仍然由既有代码按 provider 勾选状态直接赋值,这里只用
-            // MutationObserver 把这个隐藏 select 的 disabled 属性镜像成可见面板的
-            // is-locked 灰化态,不需要改动任何既有的 enable/disable 调用点。
+            // select.disabled is still assigned directly by the existing code based on the
+            // provider's checked state; this only uses a MutationObserver to mirror this hidden
+            // select's disabled attribute onto the visible panel's is-locked graying state,
+            // requiring no change to any existing enable/disable call site.
             new MutationObserver(() => {
                 wrapper.classList.toggle('is-locked', select.disabled);
             }).observe(select, { attributes: true, attributeFilter: ['disabled'] });
@@ -2961,18 +3031,20 @@
 
         let modelHighlightTimer = null;
 
-        // 将 .selected（黑色高亮）与 modelSelect.value 的当前值重新同步。
-        // 每次调用都重新查询 DOM，避免 updateModelDropdown() 重建选项后引用失效。
+        // Re-syncs .selected (the black highlight) with modelSelect.value's current value.
+        // Re-queries the DOM on every call, to avoid a stale reference after
+        // updateModelDropdown() rebuilds the options.
         function syncSelectedOptionHighlight() {
             customOptionsContainer.querySelectorAll('.custom-option').forEach(opt => {
                 opt.classList.toggle('selected', opt.getAttribute('data-value') === modelSelect.value);
             });
         }
 
-        // 统一控制自定义下拉列表点击切换的逻辑
+        // Centralized logic controlling the custom dropdown's click-to-toggle behavior
         customTrigger.addEventListener('click', function(e) {
-            // Frontier-only mode 锁死时不允许展开面板（见 .custom-select-wrapper.is-locked
-            // CSS 注释),mode 关闭之前这个下拉框保持不可操作。
+            // Does not allow the panel to expand while locked by Frontier-only mode (see the
+            // .custom-select-wrapper.is-locked CSS comment); this dropdown stays inoperable
+            // until mode is turned off.
             if (customWrapper.classList.contains('is-locked')) {
                 e.stopPropagation();
                 return;
@@ -2980,7 +3052,7 @@
             const opening = !customWrapper.classList.contains('open');
             if (opening) {
                 positionCustomOptions(customTrigger, customOptionsContainer);
-                // 重新打开时立即同步一次，防止上次延迟高亮还未来得及应用
+                // Sync immediately on reopening, in case the last deferred highlight hadn't had a chance to apply yet
                 clearTimeout(modelHighlightTimer);
                 syncSelectedOptionHighlight();
             }
@@ -2992,22 +3064,27 @@
             customWrapper.classList.remove('open');
         });
 
-        // .custom-options 现在是 position:fixed（见其 CSS 注释），不会随文档滚动自动
-        // 跟随 trigger 移动，真实页面滚动时直接收起，避免面板悬空错位。面板内部自己
-        // 的滚动（.custom-options 的 overflow-y:auto）不会触发这个监听器——'scroll'
-        // 事件本身不冒泡，只有 document/window 级别的滚动才会在 window 上触发。
+        // .custom-options is now position:fixed (see its CSS comment), so it does not
+        // automatically follow the trigger as the document scrolls; a real page scroll simply
+        // collapses it, avoiding the panel ending up floating in the wrong place. The panel's
+        // own internal scrolling (.custom-options's overflow-y:auto) does not trigger this
+        // listener -- the 'scroll' event itself does not bubble, only document/window-level
+        // scrolling fires on window.
         window.addEventListener('scroll', function() {
             customWrapper.classList.remove('open');
         }, { passive: true });
 
-        // 每个免费 provider 各自独立记住的模型选择（2026-07-09 新增，替换原来"一个全局
-        // model 应用到所有勾选 provider"的设计）：{provider name: model name}，只有跟
-        // 该 provider 自己的默认模型（providerModelsMap[name][0]）不同的选择才会出现在
-        // 这里,键缺失就代表沿用默认模型。providerCheckOrder 记录 provider 被勾选的先后
-        // 顺序（最新勾选的排在末尾），数组末项就是这个共享下拉框当前绑定的 provider——
-        // 用户要求"不能仿照 frontier model 一个 provider 单独一个 dropdown"，所以用
-        // "下拉框跟随最近一次勾选的 provider 切换"这个单一控件替代逐 provider 的下拉框，
-        // 同时把每个 provider 已经选好的模型显示在它自己卡片下方的小字里。
+        // Each free provider independently remembers its own model selection (added
+        // 2026-07-09, replacing the old design of "one global model applied to every checked
+        // provider"): {provider name: model name}, only a selection that differs from that
+        // provider's own default model (providerModelsMap[name][0]) appears here, a missing key
+        // means it still uses the default model. providerCheckOrder records the order in which
+        // providers were checked (the most recently checked one at the end), and the array's
+        // last item is whichever provider this shared dropdown is currently bound to -- the
+        // user asked that this "must not copy the frontier model pattern of one dropdown per
+        // provider," so a single control that "the dropdown follows whichever provider was most
+        // recently checked" replaces a per-provider dropdown, while each provider's already-
+        // chosen model is shown in the small text below its own card.
         const providerModelSelections = {};
         let providerCheckOrder = [];
 
@@ -3015,9 +3092,9 @@
             return providerCheckOrder.length ? providerCheckOrder[providerCheckOrder.length - 1] : null;
         }
 
-        // 勾选/取消勾选一个 provider 时同步 providerCheckOrder；勾选会把这个 provider
-        // 推到末尾（成为下拉框新的绑定目标），取消勾选只是从队列里摘掉,不影响其它
-        // 已勾选 provider 的先后顺序。
+        // Syncs providerCheckOrder when a provider is checked/unchecked; checking pushes this
+        // provider to the end (becoming the dropdown's new binding target), unchecking just
+        // removes it from the queue, without affecting the order of other checked providers.
         function setProviderCheckOrder(name, checked) {
             const idx = providerCheckOrder.indexOf(name);
             if (checked) {
@@ -3033,9 +3110,10 @@
             return (Array.isArray(models) && models.length) ? models[0] : null;
         }
 
-        // 把 providerModelSelections 里的当前选择同步回这个 provider 卡片下方的小字：
-        // 跟默认模型一样（或者压根没有覆盖）就显示 "Default: X"，不一样才显示
-        // "Selected: Y"（用户原话："如果选的还是和default一样那就不变动"）。
+        // Syncs the current selection in providerModelSelections back into the small text
+        // below this provider's card: shows "Default: X" when it matches the default model (or
+        // was never overridden), and only shows "Selected: Y" when it differs (per the user's
+        // own words: "if the choice is still the same as the default then don't change it").
         function refreshProviderModelLabel(name) {
             const card = Array.from(providerCards).find(c => c.querySelector('.provider-trigger').value === name);
             if (!card) return;
@@ -3048,8 +3126,9 @@
                 : `Default: ${defaultModel}`;
         }
 
-        // Frontier-only 模式跟"一个 provider 都没勾选"共用同一个锁定态：没有绑定目标
-        // 的下拉框展开了也没有意义,直接灰化+禁止展开,复用已有的 .is-locked 视觉。
+        // Frontier-only mode shares the same locked state as "not a single provider is
+        // checked": a dropdown with no binding target is meaningless to expand anyway, so it's
+        // simply grayed out + expansion blocked, reusing the existing .is-locked visual.
         function updateModelSelectLockState() {
             const locked = frontierOnlyActive || !activeModelProvider();
             customWrapper.classList.toggle('is-locked', locked);
@@ -3057,45 +3136,47 @@
         }
 
         function updateModelDropdown() {
-            // 解决鬼畜：在刷新选项前，强制关闭可能正处于打开状态的下拉面板
+            // Fix a glitch: forcibly close the dropdown panel, which might be in an open state, before refreshing its options
             customWrapper.classList.remove('open');
-            // 面板是被重建的，任何还未触发的延迟高亮都已经不指向有效节点，直接作废
+            // The panel is being rebuilt, so any not-yet-fired deferred highlight no longer points at a valid node -- discard it outright
             clearTimeout(modelHighlightTimer);
 
             const activeProvider = activeModelProvider();
 
-            // 不再是"勾选 0 个 provider = 显示全部 provider 模型的并集"，而是"没有绑定
-            // 目标就只剩 default 这一个选项"；勾选了 provider 就只显示这一个 provider
-            // 自己的模型列表（不再跟其它已勾选 provider 的模型合并），并保留该 provider
-            // 自己映射表里的原始顺序（默认模型天然排在最前面）。
+            // No longer "0 providers checked = show the union of every provider's models";
+            // instead "no bound target leaves only the default option"; once a provider is
+            // checked, only that one provider's own model list is shown (no longer merged with
+            // other checked providers' models), preserving that provider's own original order
+            // in the mapping table (the default model naturally sits first).
             const availableModels = activeProvider ? (providerModelsMap[activeProvider] || []) : [];
 
-            // 下拉框现在跟随 activeProvider 切换，每次都应该回显*那个 provider*已经存下
-            // 的选择，而不是残留着上一个 provider 的 modelSelect.value。
+            // The dropdown now switches along with activeProvider, and each time should reflect
+            // *that provider's* already-saved selection, rather than leaving behind the previous
+            // provider's modelSelect.value.
             const currentSelectedValue = activeProvider ? (providerModelSelections[activeProvider] || '') : '';
 
-            // 1. 重置隐藏的原生 select 元素
+            // 1. Reset the hidden native select element
             modelSelect.innerHTML = '<option value="">-- Use Provider\'s Default Model --</option>';
 
-            // 2. 清空并重置自定义下拉面板的选项
+            // 2. Clear and reset the custom dropdown panel's options
             customOptionsContainer.innerHTML = '';
 
-            // 创建自定义的默认选项
+            // Create the custom default option
             const defaultOpt = document.createElement('div');
             defaultOpt.className = 'custom-option';
             defaultOpt.textContent = "-- Use Provider's Default Model --";
             defaultOpt.setAttribute('data-value', '');
             customOptionsContainer.appendChild(defaultOpt);
 
-            // 动态填入新选项数据
+            // Dynamically populate the new option data
             availableModels.forEach(modelName => {
-                // 同步至原生标签
+                // Sync to the native tag
                 const option = document.createElement('option');
                 option.value = modelName;
                 option.textContent = modelName;
                 modelSelect.appendChild(option);
 
-                // 同步至自定义 div 标签
+                // Sync to the custom div tag
                 const customOpt = document.createElement('div');
                 customOpt.className = 'custom-option';
                 customOpt.textContent = modelName;
@@ -3103,7 +3184,7 @@
                 customOptionsContainer.appendChild(customOpt);
             });
 
-            // 3. 恢复这个 provider 自己存下的选中项状态
+            // 3. Restore this provider's own saved selected-option state
             if (availableModels.includes(currentSelectedValue) && currentSelectedValue !== '') {
                 modelSelect.value = currentSelectedValue;
                 customTrigger.textContent = currentSelectedValue;
@@ -3112,12 +3193,12 @@
                 customTrigger.textContent = "-- Use Provider's Default Model --";
             }
 
-            // 4. 为新生成的自定义选项单独绑定点击选择事件
+            // 4. Bind a click-to-select event individually to each newly generated custom option
             const allCustomOpts = customOptionsContainer.querySelectorAll('.custom-option');
             allCustomOpts.forEach(opt => {
                 const optValue = opt.getAttribute('data-value');
 
-                // 标记当前高亮选中的项
+                // Mark the currently highlighted, selected item
                 if (optValue === modelSelect.value) {
                     opt.classList.add('selected');
                 }
@@ -3126,7 +3207,7 @@
                     customTrigger.textContent = this.textContent;
                     modelSelect.value = optValue;
 
-                    // 这次选择只归属于当前绑定的 provider，记下来并刷新它卡片下方的小字
+                    // This selection belongs only to the currently bound provider; record it and refresh the small text below its card
                     const targetProvider = activeModelProvider();
                     if (targetProvider) {
                         if (optValue) {
@@ -3137,12 +3218,14 @@
                         refreshProviderModelLabel(targetProvider);
                     }
 
-                    // 派发原生 change 事件，确保上层表单感知数值变动
+                    // Dispatch a native change event, so the outer form is aware of the value change
                     modelSelect.dispatchEvent(new Event('change'));
                     customWrapper.classList.remove('open');
 
-                    // 黑色高亮的切换延后到收起动画结束、面板已完全不可见之后再应用，
-                    // 避免用户点击时看到高亮瞬间跳变到新选项、视觉紊乱。
+                    // Defer applying the black highlight switch until after the collapse
+                    // animation ends and the panel is fully invisible, avoiding the visual
+                    // clutter of the user seeing the highlight snap to the new option instantly
+                    // on click.
                     clearTimeout(modelHighlightTimer);
                     modelHighlightTimer = setTimeout(syncSelectedOptionHighlight, MODEL_HIGHLIGHT_DELAY_MS);
                 });
@@ -3154,24 +3237,25 @@
        let debounceTimer;
         const providerCards = document.querySelectorAll('.provider-checkbox');
 
-        // Frontier-only mode 的开关状态提前声明到这里（而不是留在下面它自己的
-        // "=====" 注释块里）——updateModelSelectLockState() 在 updateModelDropdown()
-        // 首次调用时就会读它，如果声明还留在下面，首次调用会因为 let 的 TDZ 直接抛
-        // ReferenceError。
+        // Frontier-only mode's toggle state is declared here early (rather than staying down
+        // in its own "=====" comment block below) -- updateModelSelectLockState() reads it as
+        // soon as updateModelDropdown() is first called, and if the declaration were left
+        // below, the first call would throw a ReferenceError outright due to let's TDZ.
         let frontierOnlyActive = false;
 
-        // 让整卡边框（.is-checked）与 input.checked 状态保持同步，
-        // 覆盖点击、键盘操作（Tab+Space）以及浏览器 bfcache 回退恢复勾选态等所有路径。
+        // Keeps the whole card's border (.is-checked) in sync with input.checked's state,
+        // covering every path: clicking, keyboard operation (Tab+Space), and the checked state
+        // restored by the browser's bfcache back-navigation.
         function syncCardChecked(card) {
             const checkbox = card.querySelector('.provider-trigger');
             card.classList.toggle('is-checked', checkbox.checked);
         }
 
         providerCards.forEach(card => {
-            syncCardChecked(card); // 初始状态同步（含 bfcache 恢复的已勾选情况）
+            syncCardChecked(card); // Initial state sync (including a checked state restored via bfcache)
 
             card.addEventListener('click', function(e) {
-                // 如果用户直接点到了 input 勾选框本身，让它正常走，不做干涉
+                // If the user clicked directly on the input checkbox itself, let it proceed normally, no intervention
                 if (e.target.tagName === 'INPUT') {
                     setProviderCheckOrder(this.value, this.checked);
                     syncCardChecked(this);
@@ -3182,15 +3266,15 @@
                     return;
                 }
 
-                // 如果用户点的是大方块的其他区域，手动切换勾选状态
-                e.preventDefault(); // 核心：干掉 Chrome 默认的 label 投射行为，防止二次触发
+                // If the user clicked some other area of the big box, manually toggle the checked state
+                e.preventDefault(); // Core fix: kill Chrome's default label-forwarding behavior, preventing a double trigger
 
                 const checkbox = this.querySelector('.provider-trigger');
                 checkbox.checked = !checkbox.checked;
                 setProviderCheckOrder(checkbox.value, checkbox.checked);
                 syncCardChecked(this);
 
-                // 手动触发一次刷新
+                // Manually trigger a refresh
                 clearTimeout(debounceTimer);
                 debounceTimer = setTimeout(() => {
                     updateModelDropdown();
@@ -3201,10 +3285,12 @@
         updateModelDropdown();
 
         // ==================================================
-        // Frontier-only mode（2026-07-08 新增）：一键把下面所有免费 g4f provider 卡片
-        // 锁死（disabled + is-locked 灰化 + 强制取消勾选），逼这次 Compare 只从 Claude/
-        // ChatGPT/Gemini 里选。是否"至少选中了一个"的最终校验在 submit 处理器里做（见
-        // frontierOnlyActive 用法），这里只管开关本身和视觉/勾选状态联动。
+        // Frontier-only mode (added 2026-07-08): a single click locks down all the free g4f
+        // provider cards below (disabled + is-locked graying + forcibly unchecked), forcing this
+        // Compare to only pick from Claude/ChatGPT/Gemini. The final validation of whether "at
+        // least one is selected" happens in the submit handler (see the use of
+        // frontierOnlyActive); this only handles the toggle itself and syncing the
+        // visual/checked state.
         // ==================================================
         const frontierOnlyToggle = document.getElementById('frontierOnlyToggle');
         if (frontierOnlyToggle) {
@@ -3220,20 +3306,24 @@
                     card.classList.toggle('is-locked', frontierOnlyActive);
                     syncCardChecked(card);
                 });
-                // 强制取消勾选的免费 provider 不会触发 setProviderCheckOrder（cb.checked
-                // 是脚本直接赋值,不冒泡 click/change),下拉框的绑定目标需要跟着手动清空。
+                // Forcibly unchecking a free provider does not trigger setProviderCheckOrder
+                // (cb.checked is assigned directly by the script, it does not bubble a
+                // click/change event), so the dropdown's binding target needs to be cleared
+                // manually to match.
                 if (frontierOnlyActive) providerCheckOrder = [];
                 updateModelDropdown();
             });
         }
 
         // ==================================================
-        // Claude（Anthropic 官方 API）：与上面的 g4f Provider 复选框完全独立（见
-        // .claude-provider-checkbox/.claude-provider-trigger 的 CSS 注释）——不参与
-        // providerTriggers/providerCards 的批量查询，不写入 /api/compare 的 providers
-        // 数组，而是单独提交到 /api/claude-chat，再把结果并入同一份 displayResults()
-        // 渲染的 results 数组，实现"同一个结果网格里视觉对比"，但后端调度链路
-        // （超时/重试/互评）完全隔离，互不影响。
+        // Claude (official Anthropic API): fully independent from the g4f provider checkboxes
+        // above (see the CSS comment on .claude-provider-checkbox/.claude-provider-trigger) --
+        // it does not take part in the batch queries over providerTriggers/providerCards, and
+        // is not written into the providers array of /api/compare, instead being submitted
+        // separately to /api/claude-chat, with the result then merged into the same results
+        // array that displayResults() renders, achieving "visual comparison within the same
+        // results grid" while the backend scheduling chain (timeout/retry/peer review) stays
+        // fully isolated and unaffected.
         // ==================================================
         const claudeProviderCard = document.getElementById('claudeProviderCard');
         const claudeProviderTrigger = document.getElementById('claudeProviderTrigger');
@@ -3251,10 +3341,11 @@
         }
         syncClaudeModelSelectEnabled();
 
-        // 超限弹窗（第 3 节）：免费前沿模型试用额度（1 次）用完后，后端返回
-        // {"error": "FREE_TIER_EXHAUSTED"}，前端立刻弹出这个模态弹窗，引导用户去配置
-        // 个人 API Key。复用 .confirm-modal-overlay/.confirm-modal 的既有视觉样式
-        // （见 showDeleteConfirmModal），但这是一个独立的、懒创建的 overlay 节点。
+        // Quota-exhausted modal (section 3): once the free frontier model trial quota is used
+        // up, the backend returns {"error": "FREE_TIER_EXHAUSTED"}, and the frontend immediately
+        // pops up this modal, guiding the user to configure their personal API key. Reuses the
+        // existing .confirm-modal-overlay/.confirm-modal visual style (see
+        // showDeleteConfirmModal), but this is its own independent, lazily-created overlay node.
         function showClaudeUpgradeModal() {
             let overlay = document.getElementById('claudeUpgradeModalOverlay');
             if (!overlay) {
@@ -3285,20 +3376,25 @@
             overlay.classList.add('visible');
         }
 
-        // 请求 Claude，返回一个与 displayResults() 期待的 result 形状兼容的对象（不含
-        // peer_reviews 时补一个空数组，保证 renderPeerReviews() 不需要额外判空）。
-        // 返回 null 表示"这次不应该渲染任何卡片"（目前仅 FREE_TIER_EXHAUSTED 命中，
-        // 因为超限弹窗已经完整传达了信息，不需要再额外堆一张失败卡片）。
+        // Requests Claude, returning an object compatible with the result shape displayResults()
+        // expects (when peer_reviews is absent, an empty array is added, so renderPeerReviews()
+        // never needs an extra null check). Returns null to mean "no card should be rendered
+        // this time" (currently only hit for FREE_TIER_EXHAUSTED, because the quota-exhausted
+        // modal already fully communicates the situation, so there's no need to stack on an
+        // extra failure card).
         //
-        // historyId（2026-07-05 新增）：/api/compare 已经返回的 history_id，原样转发
-        // 给后端。后端据此把这次 Claude 调用的结果追加进那条已经落库的对话历史记录里
-        // （见 main.py 的 _append_claude_result_to_history()）——这是本函数存在
-        // history_id 参数的唯一原因：修复"Claude 结果这次能在页面上看见，重新打开
-        // /history/<id> 却不见了"的问题（此前这里只把结果 push 进本地内存的
-        // data.results 用于当次渲染，从来没有回写 Firestore）。游客/匿名不会走到这里
-        // （Claude 勾选框对他们是 disabled 的），因此不需要特殊处理 historyId 为空
-        // 的情况——直接转发即可，后端会在 history_id 缺失时自行跳过追加。
-        // requestId/signal (2026-07-05 新增): requestId is a fresh client-generated UUID
+        // historyId (added 2026-07-05): the history_id already returned by /api/compare,
+        // forwarded to the backend as-is. Based on this, the backend appends this Claude call's
+        // result into that already-persisted chat history record (see
+        // _append_claude_result_to_history() in main.py) -- this is the sole reason this
+        // function has a history_id parameter: it fixes the bug where "the Claude result is
+        // visible on the page this time, but reopening /history/<id> shows it's gone" (before
+        // this fix, the result was only pushed into local in-memory data.results for this
+        // render, and never written back to Firestore). Guests/anonymous users never reach here
+        // (the Claude checkbox is disabled for them), so there's no need for special handling of
+        // an empty historyId -- just forward it as-is, and the backend will skip appending on
+        // its own whenever history_id is missing.
+        // requestId/signal (added 2026-07-05): requestId is a fresh client-generated UUID
         // for this one call, forwarded to the backend so that -- if this call ends up
         // consuming a free-tier use -- claude_chat() can record it in its refund ledger
         // (see main.py's _record_pending_frontier_refund()). signal is an AbortSignal from
@@ -3367,14 +3463,16 @@
         }
 
         // ==================================================
-        // Generic controller factory for a frontier provider card (2026-07-06 新增，仅用于
-        // ChatGPT 文本/Gemini 文本/ChatGPT 图片这三个新 Provider -- Claude/Gemini 图片是
-        // 早于这个工厂函数的既有代码，为避免动到已经上线的付费集成逻辑，本次不重构它们)。
-        // 每个前沿 Provider 都需要同样的五件事：checkbox 与模型 <select> 的启用态联动、
-        // FREE_TIER_EXHAUSTED 弹窗、POST 到自己的 /api/... 端点、Stop 后通过
-        // /api/.../refund 核销额度、Clear 时复位——在这里收敛成一份，而不是把上面
-        // fetchClaudeResult()/showClaudeUpgradeModal()/refundClaudeIfNeeded() 那一整套
-        // （约 90 行）再复制三份。
+        // Generic controller factory for a frontier provider card (added 2026-07-06, used only
+        // for the three new providers ChatGPT text/Gemini text/ChatGPT image -- Claude/Gemini
+        // image are existing code that predates this factory function, and to avoid touching
+        // already-live paid integration logic, they are not refactored this time).
+        // Every frontier provider needs the same five things: syncing the checkbox and the
+        // model <select>'s enabled state, the FREE_TIER_EXHAUSTED modal, POSTing to its own
+        // /api/... endpoint, reconciling quota via /api/.../refund after Stop, and resetting on
+        // Clear -- consolidated here into one place, instead of copying the whole ~90-line
+        // fetchClaudeResult()/showClaudeUpgradeModal()/refundClaudeIfNeeded() set above three
+        // more times.
         // ==================================================
         function createFrontierProviderController(opts) {
             const card = document.getElementById(opts.cardId);
@@ -3559,9 +3657,11 @@
                     max_workers: 5,
                     request_id: currentCompareRequestId,
                     frontier_only: frontierOnlyActive,
-                    // 每个 provider 各自的模型选择（见 providerModelSelections 上方注释），
-                    // 取代原来单个全局 model 字段的语义；只挑选中的 provider 里有过覆盖的
-                    // 那几个,避免把没被测试的 provider 的历史选择也一起发过去。
+                    // Each provider's own model selection (see the comment above
+                    // providerModelSelections), replacing the semantics of the old single
+                    // global model field; only picks the ones among the selected providers that
+                    // actually have an override, avoiding sending along the historical
+                    // selections of providers that weren't tested this time.
                     provider_models: selectedProviders.reduce((acc, name) => {
                         if (providerModelSelections[name]) acc[name] = providerModelSelections[name];
                         return acc;
@@ -3599,7 +3699,7 @@
                         data.results.push(claudeResult);
                         data.total_providers += 1;
                         if (claudeResult.success) data.successful_providers += 1;
-                        // 与 compare_providers() 排序规则保持一致：成功优先，耗时短优先。
+                        // Kept consistent with compare_providers()'s sort rule: success first, then shorter response time first.
                         data.results.sort((a, b) => {
                             if (a.success !== b.success) return a.success ? -1 : 1;
                             return a.response_time - b.response_time;
@@ -3641,7 +3741,7 @@
                     refreshTrialQuotaBadge();
                 }
 
-                // Unified cross peer review (2026-07-07 新增): now that every free g4f AND
+                // Unified cross peer review (added 2026-07-07): now that every free g4f AND
                 // frontier (Claude/ChatGPT/Gemini) result for this submit is known, ask the
                 // backend to run one round of bidirectional peer review across all of them
                 // (see main.py's run_cross_peer_review()/POST /api/peer-review) -- this
@@ -3757,8 +3857,9 @@
                 cb.checked = false;
                 cb.disabled = false;
             });
-            // 每个 provider 自己记住的模型选择、以及下拉框当前绑定的 provider，
-            // 都跟着 Clear Results 一起清空复位，小字标签恢复回各自的 "Default: X"。
+            // Each provider's own remembered model selection, and the provider the dropdown is
+            // currently bound to, are both cleared and reset along with Clear Results, and the
+            // small text label reverts to its own "Default: X".
             providerCheckOrder = [];
             Object.keys(providerModelSelections).forEach(name => delete providerModelSelections[name]);
             providerCards.forEach(card => {
@@ -3812,7 +3913,7 @@
         const imageCustomOptionsContainer = document.getElementById('imageCustomOptions');
 
         imageCustomTrigger.addEventListener('click', function(e) {
-            // Frontier-only mode 锁死时不允许展开面板，见 customTrigger 同款注释。
+            // Does not allow the panel to expand while locked by Frontier-only mode, see the matching comment on customTrigger.
             if (imageCustomWrapper.classList.contains('is-locked')) {
                 e.stopPropagation();
                 return;
@@ -3828,15 +3929,18 @@
             imageCustomWrapper.classList.remove('open');
         });
 
-        // 同 customWrapper 那份监听器的原因：.custom-options 是 position:fixed，真实
-        // 页面滚动时收起，避免悬空错位；面板内部自己的滚动不冒泡到 window，不受影响。
+        // Same reason as the customWrapper listener: .custom-options is position:fixed, so a
+        // real page scroll collapses it, avoiding it ending up floating in the wrong place; the
+        // panel's own internal scrolling does not bubble to window, so it's unaffected.
         window.addEventListener('scroll', function() {
             imageCustomWrapper.classList.remove('open');
         }, { passive: true });
 
-        // 与 compareForm 的 providerModelSelections/providerCheckOrder 同构（见其上方
-        // 注释），只是作用域换成图片表单自己的一套 provider/dropdown，同样是"下拉框跟随
-        // 最新勾选的 provider 切换,每个 provider 的选择显示在自己卡片下方小字"这套设计。
+        // Structured identically to compareForm's providerModelSelections/providerCheckOrder
+        // (see the comment above them), just scoped to the image form's own set of
+        // provider/dropdown, the same design of "the dropdown follows whichever provider was
+        // most recently checked, and each provider's selection is shown in the small text below
+        // its own card."
         const imageProviderModelSelections = {};
         let imageProviderCheckOrder = [];
         let frontierOnlyImageActive = false;
@@ -3883,8 +3987,9 @@
 
             const activeProvider = activeImageModelProvider();
 
-            // 不再合并所有已勾选 provider 的模型,只显示当前绑定 provider 自己的模型列表；
-            // 没有绑定目标（0 个 provider 勾选）就只剩 default 这一个选项。
+            // No longer merges the models of every checked provider, only shows the model list
+            // of the currently bound provider itself; with no bound target (0 providers
+            // checked), only the default option remains.
             const availableModels = activeProvider ? (imageProviderModelsMap[activeProvider] || []) : [];
 
             const currentSelectedValue = activeProvider ? (imageProviderModelSelections[activeProvider] || '') : '';
@@ -3985,9 +4090,9 @@
         updateImageModelDropdown();
 
         // ==================================================
-        // Frontier-only mode（2026-07-08 新增），image-form 对等实现——见 compareForm 里
-        // frontierOnlyToggle 上方注释，同一套开关/锁定逻辑，作用在图片表单的免费 provider
-        // 区（imageProviderTriggers/imageProviderCards）。
+        // Frontier-only mode (added 2026-07-08), the image-form counterpart -- see the comment
+        // above frontierOnlyToggle in compareForm, the same toggle/locking logic, applied to the
+        // image form's free provider area (imageProviderTriggers/imageProviderCards).
         // ==================================================
         const frontierOnlyToggleImage = document.getElementById('frontierOnlyToggleImage');
         if (frontierOnlyToggleImage) {
@@ -4003,22 +4108,26 @@
                     card.classList.toggle('is-locked', frontierOnlyImageActive);
                     syncImageCardChecked(card);
                 });
-                // 强制取消勾选不会经过 click/change 事件,下拉框的绑定目标需要手动清空。
+                // A forced uncheck does not go through a click/change event, so the dropdown's binding target needs to be cleared manually.
                 if (frontierOnlyImageActive) imageProviderCheckOrder = [];
                 updateImageModelDropdown();
             });
         }
 
         // ==================================================
-        // Gemini（Google 官方 google-genai API，"Nano Banana"，2026-07-04 新增）：与上面
-        // 的 g4f 图片 Provider 复选框完全独立（见 .gemini-provider-checkbox/
-        // .gemini-provider-trigger 的 CSS 注释）——不参与 imageProviderTriggers/
-        // imageProviderCards 的批量查询，不写入 /api/generate-images 的 providers 数组，
-        // 而是单独提交到 /api/gemini-image，再把结果并入同一份 displayImageResults()
-        // 渲染的 results 数组，实现"同一个结果网格里视觉对比"，但后端调度链路完全隔离。
-        // 这套逻辑是 Claude 那套（fetchClaudeResult/showClaudeUpgradeModal 等）的镜像，
-        // 只是作用域从对话表单换成图片表单，因此各自独立维护一份而不是共享函数——与
-        // 项目里 image_history/history 两套 CRUD 逐一同构但不共享代码的既有惯例一致。
+        // Gemini (official Google google-genai API, "Nano Banana", added 2026-07-04): fully
+        // independent from the g4f image provider checkboxes above (see the CSS comment on
+        // .gemini-provider-checkbox/.gemini-provider-trigger) -- it does not take part in the
+        // batch queries over imageProviderTriggers/imageProviderCards, and is not written into
+        // the providers array of /api/generate-images, instead being submitted separately to
+        // /api/gemini-image, with the result then merged into the same results array that
+        // displayImageResults() renders, achieving "visual comparison within the same results
+        // grid" while the backend scheduling chain stays fully isolated. This logic mirrors the
+        // Claude set (fetchClaudeResult/showClaudeUpgradeModal, etc.), just with the scope
+        // switched from the chat form to the image form, so each is maintained independently
+        // rather than sharing a function -- consistent with the project's existing convention
+        // of the image_history/history CRUD pairs being structured identically but not sharing
+        // code.
         // ==================================================
         const geminiProviderCard = document.getElementById('geminiProviderCard');
         const geminiProviderTrigger = document.getElementById('geminiProviderTrigger');
@@ -4036,9 +4145,11 @@
         }
         syncGeminiModelSelectEnabled();
 
-        // 超限弹窗：与 showClaudeUpgradeModal() 同构（同样的通用"前沿模型试用额度已用完"
-        // 文案，独立的懒创建 overlay 节点），免费前沿模型试用额度（1 次）用完后，后端
-        // 返回 {"error": "FREE_TIER_EXHAUSTED"}，前端立刻弹出这个模态弹窗。
+        // Quota-exhausted modal: structured identically to showClaudeUpgradeModal() (the same
+        // generic "frontier model trial quota used up" copy, its own independent lazily-created
+        // overlay node); once the free frontier model trial quota is used up, the backend
+        // returns {"error": "FREE_TIER_EXHAUSTED"}, and the frontend immediately pops up this
+        // modal.
         function showGeminiUpgradeModal() {
             let overlay = document.getElementById('geminiUpgradeModalOverlay');
             if (!overlay) {
@@ -4069,19 +4180,24 @@
             overlay.classList.add('visible');
         }
 
-        // 请求 Gemini，返回一个与 displayImageResults() 期待的 result 形状兼容的对象
-        // （image 8-key 契约：provider/success/url/b64_json/error/response_time/model/type，
-        // 无 peer_reviews 字段——图片结果本来就没有互评这个概念）。返回 null 表示"这次
-        // 不应该渲染任何卡片"（目前仅 FREE_TIER_EXHAUSTED 命中，因为超限弹窗已经完整
-        // 传达了信息，不需要再额外堆一张失败卡片）。
+        // Requests Gemini, returning an object compatible with the result shape
+        // displayImageResults() expects (the image 8-key contract:
+        // provider/success/url/b64_json/error/response_time/model/type, with no peer_reviews
+        // field -- image results simply have no concept of peer review). Returns null to mean
+        // "no card should be rendered this time" (currently only hit for FREE_TIER_EXHAUSTED,
+        // because the quota-exhausted modal already fully communicates the situation, so there's
+        // no need to stack on an extra failure card).
         //
-        // historyId（2026-07-05 新增）：/api/generate-images 已经返回的 history_id，
-        // 原样转发给后端，与 fetchClaudeResult() 的 historyId 参数同一个道理——后端据此
-        // 把这次 Gemini 调用的结果追加进那条已经落库的图片生成历史记录里（见 main.py 的
-        // _append_gemini_result_to_image_history()），修复"Gemini 结果这次能在页面上
-        // 看见、能下载，重新打开 /image-history/<id> 却不见了"的问题。游客/匿名不会
-        // 走到这里（Gemini 勾选框对他们是 disabled 的），不需要特殊处理 historyId 为空。
-        // requestId/signal (2026-07-05 新增): mirrors fetchClaudeResult()'s parameters of
+        // historyId (added 2026-07-05): the history_id already returned by
+        // /api/generate-images, forwarded to the backend as-is, following the same reasoning as
+        // fetchClaudeResult()'s historyId parameter -- based on this, the backend appends this
+        // Gemini call's result into that already-persisted image generation history record (see
+        // _append_gemini_result_to_image_history() in main.py), fixing the bug where "the Gemini
+        // result is visible and downloadable on the page this time, but reopening
+        // /image-history/<id> shows it's gone." Guests/anonymous users never reach here (the
+        // Gemini checkbox is disabled for them), so there's no need for special handling of an
+        // empty historyId.
+        // requestId/signal (added 2026-07-05): mirrors fetchClaudeResult()'s parameters of
         // the same name -- see that function's comment for the full rationale.
         async function fetchGeminiImageResult(prompt, model, historyId, requestId, signal) {
             try {
@@ -4140,9 +4256,11 @@
             }
         }
 
-        // ChatGPT 图片（GPT Image 系列，2026-07-06 新增）：用 createFrontierProviderController()
-        // 工厂（见对话表单区域的定义与注释）而不是再手写一份 fetchGeminiImageResult() 那样
-        // 的独立函数——图片 8-key 契约里没有 peer_reviews，故不传 decorateSuccess。
+        // ChatGPT image (GPT Image family, added 2026-07-06): uses the
+        // createFrontierProviderController() factory (see its definition and comment in the
+        // chat form area) instead of hand-writing yet another standalone function like
+        // fetchGeminiImageResult() -- the image 8-key contract has no peer_reviews, so
+        // decorateSuccess is not passed.
         const chatgptImageController = createFrontierProviderController({
             cardId: 'chatgptImageProviderCard', triggerId: 'chatgptImageProviderTrigger', modelSelectId: 'chatgptImageModelSelect',
             modalId: 'chatgptImageUpgradeModalOverlay', freeTierLimit: CHATGPT_IMAGE_FREE_TIER_LIMIT,
@@ -4238,7 +4356,7 @@
                         data.results.push(geminiResult);
                         data.total_providers += 1;
                         if (geminiResult.success) data.successful_providers += 1;
-                        // 与 generate_images() 排序规则保持一致：成功优先，耗时短优先。
+                        // Kept consistent with generate_images()'s sort rule: success first, then shorter response time first.
                         data.results.sort((a, b) => {
                             if (a.success !== b.success) return a.success ? -1 : 1;
                             return a.response_time - b.response_time;
@@ -4458,8 +4576,10 @@
                 btn.addEventListener('click', () => {
                     const idx = parseInt(btn.getAttribute('data-idx'), 10);
                     const result = window.__lastImageResults[idx];
-                    // 下载文件名的扩展名跟随实际图片格式（jpg/png/webp 等），而不是硬编码
-                    // .png——否则真实字节与扩展名不匹配时，部分系统看图工具会拒绝打开。
+                    // The download filename's extension follows the actual image format
+                    // (jpg/png/webp, etc.), rather than being hardcoded to .png -- otherwise,
+                    // when the real bytes don't match the extension, some system image viewers
+                    // will refuse to open it.
                     let ext = 'png';
                     if (result.url) {
                         const extMatch = result.url.split('?')[0].match(/\.([a-z0-9]+)$/i);
@@ -5223,7 +5343,7 @@
             }
         }
 
-        // 0-33 浅绿 / 34-66 中绿 / 67-100 深绿（见 .review-score-badge.score-* CSS）。
+        // 0-33 light green / 34-66 mid green / 67-100 deep green (see .review-score-badge.score-* CSS).
         function scoreColorClass(score) {
             if (score <= 33) return 'score-low';
             if (score <= 66) return 'score-mid';

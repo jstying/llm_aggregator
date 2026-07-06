@@ -93,12 +93,16 @@ def get_chat_history_list(user_id, limit=20, offset=0):
         logger.warning("get_chat_history_list called but Firebase unavailable")
         return []
 
-    # 只做单字段等值查询（Firestore 对每个字段都自带自动索引，无需额外配置）。
-    # 原实现在这里链式调用了两次 order_by（is_pinned + created_at），那属于复合查询，
-    # Firestore 要求为其手动创建复合索引——该索引不随代码提交，每个 Firebase 项目
-    # 都需要单独在控制台创建，新环境下若忘记创建会直接抛 FAILED_PRECONDITION 500。
-    # 为了不依赖这一外部手动步骤，排序和分页改为取回该用户的全部历史后在应用层完成；
-    # 单个用户的对话历史量级很小，这里的开销可以忽略。
+    # Only a single-field equality query (Firestore auto-indexes every field, so no
+    # extra config is needed). The original implementation chained two order_by calls
+    # here (is_pinned + created_at), which counts as a composite query — Firestore
+    # requires a manually created composite index for that, and that index does not
+    # travel with the code commit; every Firebase project needs to create it separately
+    # in the console, and forgetting to do so in a new environment throws a
+    # FAILED_PRECONDITION 500 outright. To avoid depending on this external manual step,
+    # sorting and pagination were moved to fetch this user's entire history and finish
+    # the work in the application layer instead; a single user's chat history volume is
+    # small, so the overhead here is negligible.
     query = db.collection('history').where(filter=FieldFilter('user_id', '==', user_id))
     history_list = []
     for doc in query.stream():
@@ -199,26 +203,37 @@ def toggle_pin_chat_history(user_id, history_id):
 
 
 # ==================================================
-# 追加前沿模型（Claude）结果到一条已存在的对话历史（2026-07-05 新增）。
+# Append a frontier model (Claude) result to an existing chat history record
+# (added 2026-07-05).
 #
-# 背景：/api/compare 在拿到 g4f 结果后立即调用 save_chat_history() 落库并返回
-# history_id；此时前端的 compareForm 提交处理器才刚开始额外发起
-# POST /api/claude-chat（见 templates/index.html 的 fetchClaudeResult()）。因此
-# Claude 的结果一定是在这条历史记录已经落库之后才计算出来的——之前的实现只是把它
-# 追加进浏览器内存里的 data.results 数组用于当次页面渲染，从未回写 Firestore，
-# 导致用户在 /history/<id> 里重新打开这条记录时，Claude 那一张结果卡片凭空消失
-# （历史 bug，2026-07-05 修复，见 CLAUDE.md 第 9 节）。
+# Background: /api/compare calls save_chat_history() to persist the record and
+# return history_id as soon as it has the g4f results; only at that point does
+# the frontend's compareForm submit handler start firing an extra
+# POST /api/claude-chat (see fetchClaudeResult() in templates/index.html). So
+# the Claude result is always computed after this history record has already
+# been persisted — the old implementation just appended it into the
+# in-browser data.results array for that single page render, never writing it
+# back to Firestore, so when the user reopened this record at /history/<id>
+# the Claude result card had vanished into thin air (a historical bug, fixed
+# 2026-07-05, see CLAUDE.md section 9).
 #
-# 本函数只做"追加"，不做"创建"——不接受也不需要 title/prompt 等字段，调用前该
-# history_id 对应的文档必须已经存在（由 save_chat_history() 创建）。归属校验与其余
-# 对话历史 CRUD 函数一致：history_id 必须存在且属于 user_id，否则返回 False，调用方
-# （main.py 的 claude_chat()）据此只记一条警告日志，不影响本次 Claude 请求本身的
-# 响应（持久化失败不应该让用户看不到刚生成的回答）。
+# This function only does "append," never "create" — it does not accept or
+# need fields like title/prompt, and the document for this history_id must
+# already exist before calling it (created by save_chat_history()). Ownership
+# checking is the same as the rest of the chat history CRUD functions:
+# history_id must exist and belong to user_id, otherwise it returns False, and
+# the caller (main.py's claude_chat()) only logs a warning in that case — it
+# does not affect the response for this Claude request itself (a persistence
+# failure should never keep the user from seeing the answer that was just
+# generated).
 #
-# 排序：追加后立即按"成功优先、耗时短优先"重新排序整个 results 数组再整体写回——
-# 与 compare_providers()/generate_images() 返回给前端的排序契约保持一致，这样用户
-# 之后重新打开这条历史记录时，Claude 结果卡片出现的位置和当时在页面上实时看到的
-# 位置相同，而不是永远被追加在数组末尾。
+# Sorting: right after appending, the whole results array is re-sorted using
+# "success first, then shorter response time first" and written back in
+# full — matching the same sort contract that compare_providers()/
+# generate_images() return to the frontend, so when the user later reopens
+# this history record, the Claude result card appears in the same position it
+# was shown in live on the page, instead of always being stuck at the end of
+# the array.
 # ==================================================
 def append_chat_history_result(user_id, history_id, result):
     if not FIREBASE_AVAILABLE:
@@ -240,15 +255,21 @@ def append_chat_history_result(user_id, history_id, result):
 
 
 # ==================================================
-# 把跨 g4f/前沿模型的统一互评结果（main.py 的 run_cross_peer_review()，由新的
-# POST /api/peer-review 路由触发）写回一条已经存在的对话历史记录（2026-07-07 新增）。
-# 与 append_chat_history_result() 同样"只能更新已有记录，不能创建新记录"，但语义不同：
-# 不追加新的 result 条目，而是按 provider 名字匹配，把已有条目的 peer_reviews 字段原地
-# 替换成传入的最终版本。之所以需要这一步：compare_providers() 保存历史记录时互评还没
-# 跑（互评现在推迟到所有前沿模型调用都返回之后才统一触发，见 main.py 的
-# run_cross_peer_review() 上方注释），如果不回写，历史详情页会永久丢失互评内容。
-# peer_reviews_by_provider 形状是 {provider_name: [review_item, ...]}，只覆盖其中出现
-# 的 provider，其余条目的 peer_reviews 保持不变。
+# Write the unified cross g4f/frontier-model peer review results (produced by
+# main.py's run_cross_peer_review(), triggered by the new POST /api/peer-review
+# route) back into an existing chat history record (added 2026-07-07).
+# Like append_chat_history_result(), this can "only update an existing record,
+# never create a new one," but the semantics differ: instead of appending a new
+# result entry, it matches by provider name and replaces the existing entry's
+# peer_reviews field in place with the final version passed in. Why this step
+# is needed: when compare_providers() saves the history record, peer review has
+# not run yet (peer review is now deferred until all frontier model calls have
+# returned, then triggered together in one pass — see the comment above
+# main.py's run_cross_peer_review()); without writing it back, the history
+# detail page would permanently lose the peer review content.
+# peer_reviews_by_provider has the shape {provider_name: [review_item, ...]};
+# it only overwrites the providers that appear in it, leaving peer_reviews on
+# every other entry unchanged.
 # ==================================================
 def update_chat_history_peer_reviews(user_id, history_id, peer_reviews_by_provider):
     if not FIREBASE_AVAILABLE:
@@ -273,13 +294,17 @@ def update_chat_history_peer_reviews(user_id, history_id, peer_reviews_by_provid
 
 
 # ==================================================
-# 文生图历史 CRUD：与上面 6 个对话历史函数逐一同构，但写入独立的 'image_history'
-# 集合，而不是复用 'history'。这与文本/图片两条 g4f 调用链路（ChatCompletion vs
-# images.generate()）、两套 Provider 映射表（PROVIDER_MODELS_MAP vs
-# IMAGE_PROVIDER_MODELS_MAP）严格隔离的既有原则一致——8-key 图片 DTO 与 7-key 文本
-# DTO（+ 互评 peer_reviews）字段结构不同，混进同一个集合会让每条文档的 schema
-# 依赖 "这条到底是聊天还是图片" 这一隐性判别，且历史上聊天记录已经积累在 'history'
-# 集合里，不应该被图片文档污染。
+# Text-to-image history CRUD: mirrors the 6 chat history functions above one
+# for one, but writes into an independent 'image_history' collection instead
+# of reusing 'history'. This is consistent with the existing principle of
+# strictly isolating the text/image g4f call chains (ChatCompletion vs
+# images.generate()) and their two provider mapping tables
+# (PROVIDER_MODELS_MAP vs IMAGE_PROVIDER_MODELS_MAP) — the 8-key image DTO and
+# the 7-key text DTO (+ peer_reviews) have different field shapes, and mixing
+# them into the same collection would make every document's schema depend on
+# the implicit discriminator of "is this actually a chat or an image entry";
+# also, chat history records have already been accumulating in the 'history'
+# collection historically and should not be polluted by image documents.
 # ==================================================
 def save_image_history(user_id, prompt, results):
     if not FIREBASE_AVAILABLE:
@@ -305,8 +330,10 @@ def get_image_history_list(user_id, limit=20, offset=0):
         logger.warning("get_image_history_list called but Firebase unavailable")
         return []
 
-    # 与 get_chat_history_list 同理：只做单字段等值查询，排序/分页留在 Python 层，
-    # 避免依赖需要在 Firebase 控制台手动创建的复合索引。
+    # Same as get_chat_history_list: only a single-field equality query, with
+    # sorting/pagination left to the Python layer, to avoid depending on a
+    # composite index that would need to be created by hand in the Firebase
+    # console.
     query = db.collection('image_history').where(filter=FieldFilter('user_id', '==', user_id))
     history_list = []
     for doc in query.stream():
@@ -397,16 +424,22 @@ def toggle_pin_image_history(user_id, history_id):
 
 
 # ==================================================
-# 追加前沿模型（Gemini）结果到一条已存在的图片生成历史（2026-07-05 新增）。
+# Append a frontier model (Gemini) result to an existing image generation
+# history record (added 2026-07-05).
 #
-# 与 append_chat_history_result() 是同一个 bug 的图片版镜像：/api/generate-images
-# 已经在 save_image_history() 落库之后才返回 history_id，Gemini 的结果要等前端
-# 额外发起的 POST /api/gemini-image 完成才计算出来，因此同样需要一次显式的"追加"
-# 才能进入已保存的文档，而不是像修复前那样只存在于浏览器内存里、刷新/重新打开
-# /image-history/<id> 后就消失。
+# This is the image-side mirror of the same bug as
+# append_chat_history_result(): /api/generate-images already returns
+# history_id after save_image_history() has persisted the record, and the
+# Gemini result is only computed once the frontend's extra POST
+# /api/gemini-image call finishes, so an explicit "append" is likewise needed
+# to get it into the already-saved document — instead of, as before the fix,
+# only ever existing in browser memory and vanishing on a refresh or on
+# reopening /image-history/<id>.
 #
-# 同样只做"追加"，不做"创建"；同样的归属校验、同样"追加后按成功优先/耗时短优先
-# 重新排序整个 results 数组再整体写回"的处理，与对话历史版本逐一同构。
+# Likewise only does "append," never "create"; the same ownership check, and
+# the same "re-sort the whole results array by success first / shorter
+# response time first, then write it back in full" handling, mirroring the
+# chat history version one for one.
 # ==================================================
 def append_image_history_result(user_id, history_id, result):
     if not FIREBASE_AVAILABLE:
@@ -428,13 +461,18 @@ def append_image_history_result(user_id, history_id, result):
 
 
 # ==================================================
-# Claude 免费额度计数器（2026-07-04 新增）：为每个注册用户在 'users' 集合文档上维护一个
-# 整型字段 claude_free_tier_usage，记录"已用掉开发者账户额度调用 Claude 的次数"。字段
-# 初始值隐式为 0——不需要在 create_user() 里预先写入，读取时用
-# doc.to_dict().get('claude_free_tier_usage', 0) 兜底即可，与 is_pinned 等字段的
-# 处理方式一致。仅在用户未自带 Key、且调用成功时才由 main.py 的 claude_chat() 路由
-# 调用 increment_claude_free_tier_usage()——本模块的两个函数只负责读/写这一个字段，
-# 不关心调用方是否携带了自带 Key（那部分路由逻辑见 main.py）。
+# Claude free-tier usage counter (added 2026-07-04): maintains an integer
+# field, claude_free_tier_usage, on each registered user's document in the
+# 'users' collection, recording "how many times the developer account's quota
+# has been used to call Claude." The field's initial value is implicitly 0 —
+# there is no need to pre-write it in create_user(); reading with
+# doc.to_dict().get('claude_free_tier_usage', 0) as a fallback is enough,
+# consistent with how fields like is_pinned are handled. main.py's
+# claude_chat() route only calls increment_claude_free_tier_usage() when the
+# user did not bring their own key and the call succeeded — the two functions
+# in this module only handle reading/writing this one field and do not care
+# whether the caller brought their own key (that part of the routing logic is
+# in main.py).
 # ==================================================
 def get_claude_free_tier_usage(user_id):
     if not FIREBASE_AVAILABLE:
@@ -458,11 +496,15 @@ def increment_claude_free_tier_usage(user_id):
     return True
 
 
-# "Stop Generating"按钮退款专用（2026-07-05 新增）：先读后写而不是无条件
-# Increment(-1)，避免在极端情况下（比如账本被重复命中）把计数减到负数——
-# 与 increment 那侧"检查和递增中间没有事务保护"的既有简化一致,这里同样不加事务，
-# 只加一个"不为负"的下限。调用方（main.py 的 /api/claude-chat/refund）已经用
-# 一次性 request_id 账本保证了不会被重复调用，这里的下限只是防御性兜底。
+# For the "Stop Generating" button's refund path only (added 2026-07-05):
+# reads before writing instead of unconditionally doing Increment(-1), to
+# avoid driving the count negative in an extreme case (e.g. the ledger being
+# hit twice). This is consistent with the existing simplification on the
+# increment side, "no transaction between the check and the increment" —
+# there's likewise no transaction added here, just a "never negative" floor.
+# The caller (main.py's /api/claude-chat/refund) already guarantees it can't
+# be called twice via a one-time request_id ledger, so the floor here is only
+# a defensive backstop.
 def decrement_claude_free_tier_usage(user_id):
     if not FIREBASE_AVAILABLE:
         logger.warning("decrement_claude_free_tier_usage called but Firebase unavailable")
@@ -479,13 +521,17 @@ def decrement_claude_free_tier_usage(user_id):
 
 
 # ==================================================
-# Gemini（Nano Banana）免费额度计数器（2026-07-04 新增）：与 Claude 的两个计数器函数
-# 逐一同构，但读写 users 集合文档上一个独立的整型字段 gemini_free_tier_usage，与
-# claude_free_tier_usage 互不共享额度——一个用户可以分别免费试用 1 次 Claude 和 1 次
-# Gemini，两边互不影响。字段同样不需要在 create_user() 里预先写入，读取时用
-# doc.to_dict().get('gemini_free_tier_usage', 0) 兜底默认 0 即可。同样没有归属校验
-# 的概念（user_id 直接来自 session['user_id']），也存在与 Claude 计数器一致的、
-# 刻意接受的非原子性（检查与递增是两次独立的 Firestore 读写）。
+# Gemini (Nano Banana) free-tier usage counter (added 2026-07-04): mirrors
+# Claude's two counter functions one for one, but reads/writes an independent
+# integer field, gemini_free_tier_usage, on the users collection document,
+# sharing no quota at all with claude_free_tier_usage — a user can separately
+# get 1 free trial call each for Claude and for Gemini, with no effect on each
+# other. This field likewise needs no pre-write in create_user(); reading with
+# doc.to_dict().get('gemini_free_tier_usage', 0) as a default fallback is
+# enough. There is likewise no concept of ownership checking (user_id comes
+# directly from session['user_id']), and the same deliberately accepted
+# non-atomicity as the Claude counter exists here too (checking and
+# incrementing are two separate Firestore reads/writes).
 # ==================================================
 def get_gemini_free_tier_usage(user_id):
     if not FIREBASE_AVAILABLE:
@@ -509,8 +555,8 @@ def increment_gemini_free_tier_usage(user_id):
     return True
 
 
-# "Stop Generating"按钮退款专用（2026-07-05 新增），与 decrement_claude_free_tier_usage
-# 同构，见其上方注释。
+# For the "Stop Generating" button's refund path only (added 2026-07-05),
+# mirrors decrement_claude_free_tier_usage(), see the comment above it.
 def decrement_gemini_free_tier_usage(user_id):
     if not FIREBASE_AVAILABLE:
         logger.warning("decrement_gemini_free_tier_usage called but Firebase unavailable")
@@ -527,11 +573,15 @@ def decrement_gemini_free_tier_usage(user_id):
 
 
 # ==================================================
-# 通用免费额度计数器（2026-07-06 新增）：Claude/Gemini 各有一套专属命名函数（above），
-# 是历史遗留；新增的前沿 Provider（ChatGPT 文本/图片、Gemini 文本）改用这一套按
-# field_name 参数化的通用版本,避免为每个新计数器都各写三个近乎逐行相同的函数。
-# 语义、非原子性简化、"退款下限不为负"都与上面 Claude/Gemini 专属版本完全一致，
-# 只是把要读写的字段名从硬编码换成参数。
+# Generic free-tier usage counter (added 2026-07-06): Claude/Gemini each have
+# their own set of dedicated, specifically named functions (above), which are
+# a historical leftover; newly added frontier providers (ChatGPT text/image,
+# Gemini text) instead use this generic, field_name-parameterized version, to
+# avoid writing three near-identical functions for every new counter. The
+# semantics, the non-atomicity simplification, and the "refund floor never
+# goes negative" rule are all fully identical to the Claude/Gemini dedicated
+# versions above; only the field name to read/write is swapped from being
+# hardcoded to being a parameter.
 # ==================================================
 def get_free_tier_usage(user_id, field_name):
     if not FIREBASE_AVAILABLE:

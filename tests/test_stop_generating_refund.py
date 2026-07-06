@@ -26,7 +26,7 @@ import main  # noqa: E402
 
 
 # ==========================================================================
-# 白盒/单元测试：退款账本
+# White-box / unit tests: the refund ledger
 # ==========================================================================
 
 class TestPendingFrontierRefundLedger(unittest.TestCase):
@@ -78,7 +78,7 @@ class TestPendingFrontierRefundLedger(unittest.TestCase):
 
 
 # ==========================================================================
-# 白盒/单元测试：auth/db.py 的额度回退函数
+# White-box / unit tests: the quota decrement functions in auth/db.py
 # ==========================================================================
 
 class TestFreeTierCounterDecrement(unittest.TestCase):
@@ -162,7 +162,8 @@ class TestFreeTierCounterDecrement(unittest.TestCase):
 
 
 # ==========================================================================
-# 黑盒/集成测试：dev-account-exhausted 文案 + 两条 refund 路由
+# Black-box / integration tests: the dev-account-exhausted messaging and the
+# two refund routes
 # ==========================================================================
 
 class TestClaudeChatRefundRoute(unittest.TestCase):

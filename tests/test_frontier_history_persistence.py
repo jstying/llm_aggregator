@@ -1,4 +1,4 @@
-"""Tests for frontier model (Claude/Gemini) history persistence (2026-07-05 新增).
+"""Tests for frontier model (Claude/Gemini) history persistence (added 2026-07-05).
 
 Bug fixed by this feature: Claude/Gemini results were visible live (and downloadable,
 for Gemini's generated image) right after a "Compare"/"Generate" submit, but reopening
@@ -55,7 +55,7 @@ from auth import db as auth_db  # noqa: E402
 
 
 # ==========================================================================
-# 白盒/单元测试：auth/db.py 的两个新函数
+# White-box / unit tests: the two new functions in auth/db.py
 # ==========================================================================
 
 class TestAppendChatHistoryResultDb(unittest.TestCase):
@@ -264,7 +264,7 @@ class TestAppendImageHistoryResultDb(unittest.TestCase):
 
 
 # ==========================================================================
-# 白盒/单元测试：main.py 里包装的两个 _append_* 辅助函数
+# White-box / unit tests: the two _append_* wrapper helpers in main.py
 # ==========================================================================
 
 class TestAppendClaudeHelperInMain(unittest.TestCase):
@@ -329,7 +329,8 @@ class TestAppendGeminiHelperInMain(unittest.TestCase):
 
 
 # ==========================================================================
-# 黑盒/集成测试：POST /api/claude-chat 与 POST /api/gemini-image 的 history_id 流转
+# Black-box / integration tests: history_id flow through POST /api/claude-chat
+# and POST /api/gemini-image
 # ==========================================================================
 
 class TestClaudeChatHistoryPersistence(unittest.TestCase):
@@ -596,10 +597,12 @@ class TestGeminiImageHistoryPersistence(unittest.TestCase):
 
 
 # ==========================================================================
-# 灰盒/端到端测试：用一个最小的内存版"假 Firestore"替身驱动真实的
-# save_chat_history()/save_image_history()/append_*_result() 实现（不 mock 它们
-# 本身），跨两次真实请求验证持久化文档最终确实同时含有 g4f 与前沿模型两种结果——
-# 比只断言"某个函数被以正确参数调用"更接近真实回归验证。
+# Gray-box / end-to-end tests: drives the real save_chat_history()/
+# save_image_history()/append_*_result() implementations (not mocked out)
+# with a minimal in-memory "fake Firestore" stand-in, verifying across two
+# real requests that the persisted document ends up containing both g4f and
+# frontier-model results -- closer to a genuine regression check than merely
+# asserting "some function was called with the right arguments."
 # ==========================================================================
 
 class _FakeFirestoreDoc:

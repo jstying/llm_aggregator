@@ -1,6 +1,6 @@
 """Tests for the three new frontier integrations added 2026-07-06, all built by
-mirroring the existing Claude/Gemini-image architecture (see CLAUDE.md 第 10 节
-"安全区：新增前沿 provider"):
+mirroring the existing Claude/Gemini-image architecture (see CLAUDE.md section 10,
+"Safe zone: adding a new frontier provider"):
 
 - ChatGPT text (call_chatgpt_model() + POST /api/chatgpt-chat)
 - Gemini text (call_gemini_text_model() + POST /api/gemini-chat)
@@ -81,7 +81,7 @@ def _fake_gemini_text_client(text='hello there', side_effect=None):
 
 
 # ==========================================================================
-# 白盒/单元测试：错误分类共享 helper
+# White-box / unit tests: shared error classification helper
 # ==========================================================================
 
 class TestClassifyOpenAiError(unittest.TestCase):
@@ -136,7 +136,7 @@ class TestClassifyGoogleGenaiErrorExtraction(unittest.TestCase):
 
 
 # ==========================================================================
-# 白盒/单元测试：call_chatgpt_model()
+# White-box / unit tests: call_chatgpt_model()
 # ==========================================================================
 
 class TestCallChatGptModel(unittest.TestCase):
@@ -215,7 +215,7 @@ class TestCallChatGptModel(unittest.TestCase):
 
 
 # ==========================================================================
-# 白盒/单元测试：call_gemini_text_model()
+# White-box / unit tests: call_gemini_text_model()
 # ==========================================================================
 
 class TestCallGeminiTextModel(unittest.TestCase):
@@ -241,9 +241,10 @@ class TestCallGeminiTextModel(unittest.TestCase):
         with patch.object(main, 'google_genai') as mock_genai:
             client = _fake_gemini_text_client()
             mock_genai.Client.return_value = client
-            # apply_persona=False：这条测试关心的是 model_key -> 官方 model ID 的映射，
-            # 不是 2026-07-07 新增的 FRONTIER_STYLE_PROMPTS_MAP 人设后缀（见
-            # tests/test_peer_review_cross_frontier.py 覆盖人设本身）。
+            # apply_persona=False: this test cares about the model_key -> official
+            # model ID mapping, not the FRONTIER_STYLE_PROMPTS_MAP persona suffix
+            # added 2026-07-07 (see tests/test_peer_review_cross_frontier.py for
+            # coverage of the persona itself).
             main.call_gemini_text_model('hi', 'gemini-3.1-flash-lite', apply_persona=False)
             _, kwargs = client.interactions.create.call_args
             self.assertEqual(kwargs['model'], 'gemini-3.1-flash-lite')
@@ -292,7 +293,7 @@ class TestCallGeminiTextModel(unittest.TestCase):
 
 
 # ==========================================================================
-# 白盒/单元测试：call_chatgpt_image_model()
+# White-box / unit tests: call_chatgpt_image_model()
 # ==========================================================================
 
 class TestCallChatGptImageModel(unittest.TestCase):
@@ -349,7 +350,7 @@ class TestCallChatGptImageModel(unittest.TestCase):
 
 
 # ==========================================================================
-# 白盒/单元测试：auth/db.py 通用额度计数器
+# White-box / unit tests: auth/db.py's generic free-tier counter
 # ==========================================================================
 
 class TestGenericFreeTierCounterDb(unittest.TestCase):
@@ -421,7 +422,8 @@ class TestGenericFreeTierCounterDb(unittest.TestCase):
 
 
 # ==========================================================================
-# 黑盒/集成测试：三条新路由的认证守卫 + 额度流程 + 校验
+# Black-box / integration tests: the three new routes' auth guard, free-tier
+# flow, and validation
 # ==========================================================================
 
 class TestNewFrontierRoutesAuthGuard(unittest.TestCase):
@@ -508,9 +510,10 @@ class TestNewFrontierRoutesValidationAndAvailability(unittest.TestCase):
 
 
 class TestNewFrontierRoutesFreeTierFlow(unittest.TestCase):
-    """一次点击 = 一次额度、own-key 绕过检查/递增、失败不消耗额度 -- 与
-    test_claude_integration.py::TestClaudeChatRouteKeyRoutingAndCounter /
-    test_gemini_integration.py::TestGeminiImageRouteKeyRoutingAndCounter 逐一同构。"""
+    """One click == one quota unit, an own-key bypasses the check/increment,
+    and a failure never consumes quota -- structurally identical case-for-case
+    to test_claude_integration.py::TestClaudeChatRouteKeyRoutingAndCounter /
+    test_gemini_integration.py::TestGeminiImageRouteKeyRoutingAndCounter."""
 
     def setUp(self):
         main.app.config['TESTING'] = True

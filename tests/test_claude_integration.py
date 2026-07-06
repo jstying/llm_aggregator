@@ -1,4 +1,4 @@
-"""Tests for the official Anthropic (Claude) integration (2026-07-04 新增).
+"""Tests for the official Anthropic (Claude) integration (added 2026-07-04).
 
 Covers the third, fully independent call chain added alongside the two existing g4f
 chains (text ChatCompletion / image generate()): `main.call_claude_model()` +
@@ -30,14 +30,18 @@ import anthropic  # noqa: E402
 def _make_credits_exhausted_error(status_code=400, error_type='invalid_request_error',
                                    message='Your credit balance is too low to access the Anthropic API. '
                                             'Please go to Plans & Billing to upgrade or purchase credits.'):
-    """构造一个真实的 anthropic.APIStatusError 实例（而不是字符串近似），确保测试
-    验证的是 SDK 实际暴露的 .status_code/.type/.message 属性，与 call_claude_model()
-    里的判断逻辑完全对应。默认参数是**实测**的真实形状（用一个真实余额为 0 的
-    Anthropic 账户直接调用 client.messages.create() 观察到）：400 + error.type ==
-    'invalid_request_error' + message 含 "credit balance is too low"——而不是任务
-    描述最初设想的 429 + 'insufficient_funds'，也不是通用文档字面暗示的
-    403 + 'billing_error'（call_claude_model() 仍兼容性地检查这个 type 值，因此
-    调用方可以传 error_type='billing_error' 来测那条分支，见下面的用例）。"""
+    """Builds a real anthropic.APIStatusError instance (rather than a string
+    approximation), so the test verifies the .status_code/.type/.message
+    attributes actually exposed by the SDK, matching exactly what
+    call_claude_model()'s classification logic checks. The default arguments
+    are the **actually observed** real-world shape (seen by calling
+    client.messages.create() directly against a real Anthropic account with a
+    zero balance): 400 + error.type == 'invalid_request_error' + message
+    containing "credit balance is too low" -- not the 429 + 'insufficient_funds'
+    originally assumed in the task spec, and not the 403 + 'billing_error'
+    literally hinted at by the general docs (call_claude_model() still checks
+    that type value as a compatibility fallback, so a caller can pass
+    error_type='billing_error' to exercise that branch -- see the case below)."""
     req = httpx.Request('POST', 'https://api.anthropic.com/v1/messages')
     body = {'error': {'type': error_type, 'message': message}}
     resp = httpx.Response(status_code, request=req, json=body)
@@ -54,11 +58,12 @@ def _fake_claude_response(text='Hello from Claude'):
 
 
 # ==========================================================================
-# 白盒/单元测试
+# White-box / unit tests
 # ==========================================================================
 
 class TestCallClaudeModelKeyRouting(unittest.TestCase):
-    """call_claude_model() 的 Key 路由与错误分类逻辑（不经过 Flask 路由）。"""
+    """call_claude_model()'s key routing and error classification logic
+    (bypasses the Flask route)."""
 
     def test_uses_default_client_when_no_user_key(self):
         with patch.object(main, 'anthropic') as mock_anthropic:
@@ -124,12 +129,15 @@ class TestCallClaudeModelKeyRouting(unittest.TestCase):
         mock_anthropic.Anthropic.assert_not_called()
 
     def test_real_world_credit_balance_error_maps_to_server_credits_exhausted(self):
-        """实测形状（用一个真实余额为 0 的账户直接调用官方 API 观察到）：
-        400 + error.type == 'invalid_request_error' + message 含 "credit balance
-        is too low"。这不是任务描述最初设想的 429 + 'insufficient_funds'（Anthropic
-        的错误体系里没有这个组合），也不是通用文档字面暗示的 403 + 'billing_error'
-        （见下一个用例的兼容性检查）——真正稳定的判断依据是 message 里的
-        "credit balance" 关键词。"""
+        """The actually observed shape (seen by calling the official API
+        directly against a real account with a zero balance): 400 +
+        error.type == 'invalid_request_error' + message containing "credit
+        balance is too low". This is not the 429 + 'insufficient_funds'
+        originally assumed in the task spec (Anthropic's error taxonomy has
+        no such combination), nor the 403 + 'billing_error' literally hinted
+        at by the general docs (see the compatibility check in the next case)
+        -- the truly stable signal is the "credit balance" keyword in the
+        message."""
         with patch.object(main, 'anthropic') as mock_anthropic:
             mock_anthropic.APIStatusError = anthropic.APIStatusError
             mock_anthropic.APIConnectionError = anthropic.APIConnectionError
@@ -144,9 +152,11 @@ class TestCallClaudeModelKeyRouting(unittest.TestCase):
         self.assertEqual(result['error_code'], 'SERVER_CREDITS_EXHAUSTED')
 
     def test_billing_error_type_also_recognized_defensively(self):
-        """兼容性检查：即使某个账户/未来 API 版本真的返回文档字面暗示的
-        403 + error.type == 'billing_error' 形状，也应该识别为余额耗尽——判断
-        逻辑对 message 关键词和 error.type 两条线索都做了检查，不依赖某一条。"""
+        """Compatibility check: even if some account/future API version really
+        does return the shape literally hinted at by the docs -- 403 +
+        error.type == 'billing_error' -- it should still be recognized as
+        balance exhaustion. The classification logic checks both the message
+        keyword and the error.type clue, without relying on either one alone."""
         with patch.object(main, 'anthropic') as mock_anthropic:
             mock_anthropic.APIStatusError = anthropic.APIStatusError
             mock_anthropic.APIConnectionError = anthropic.APIConnectionError
@@ -161,8 +171,9 @@ class TestCallClaudeModelKeyRouting(unittest.TestCase):
         self.assertEqual(result['error_code'], 'SERVER_CREDITS_EXHAUSTED')
 
     def test_plain_rate_limit_error_is_not_credits_exhausted(self):
-        """真正的 429 rate_limit_error（无 billing_error 类型、消息里也没有
-        "credit balance"）是瞬时限流，不应该被误判为开发者余额耗尽。"""
+        """A genuine 429 rate_limit_error (no billing_error type, and no
+        "credit balance" in the message) is transient rate limiting, and must
+        not be misclassified as developer balance exhaustion."""
         with patch.object(main, 'anthropic') as mock_anthropic:
             mock_anthropic.APIStatusError = anthropic.APIStatusError
             mock_anthropic.APIConnectionError = anthropic.APIConnectionError
@@ -194,8 +205,8 @@ class TestCallClaudeModelKeyRouting(unittest.TestCase):
 
 
 class TestClaudeFreeTierCounterDb(unittest.TestCase):
-    """auth/db.py 的两个新增计数器函数（纯 db 层，mock Firestore，与
-    tests/test_auth_whitebox.py 的既有 mocking 方式一致）。"""
+    """The two new counter functions in auth/db.py (pure db layer, mocking
+    Firestore the same way tests/test_auth_whitebox.py already does)."""
 
     def test_get_usage_defaults_to_zero_when_field_missing(self):
         from auth import db as auth_db
@@ -255,7 +266,8 @@ class TestClaudeFreeTierCounterDb(unittest.TestCase):
         mock_doc_ref.update.assert_called_once()
         call_kwargs = mock_doc_ref.update.call_args[0][0]
         self.assertIn('claude_free_tier_usage', call_kwargs)
-        # firestore.Increment(1) 实例之间不支持 == 比较出 True，改为断言类型/字段名。
+        # firestore.Increment(1) instances don't support == comparing True to
+        # True, so assert on type/field name instead.
         self.assertIsInstance(call_kwargs['claude_free_tier_usage'], type(firestore.Increment(1)))
 
     def test_increment_returns_none_when_firebase_unavailable(self):
@@ -266,8 +278,9 @@ class TestClaudeFreeTierCounterDb(unittest.TestCase):
 
 
 class TestClaudeChatRouteKeyRoutingAndCounter(unittest.TestCase):
-    """/api/claude-chat 路由本身的计数器 + Key 路由决策逻辑（mock 掉
-    call_claude_model()/两个计数器函数，只验证路由层面"谁调用了谁、传了什么参数"）。"""
+    """The /api/claude-chat route's own counter + key routing decision logic
+    (mocks out call_claude_model()/the two counter functions, only verifying
+    at the route level "who called whom, with what arguments")."""
 
     def setUp(self):
         main.app.config['TESTING'] = True
@@ -350,7 +363,7 @@ class TestClaudeChatRouteKeyRoutingAndCounter(unittest.TestCase):
 
 
 # ==========================================================================
-# 黑盒/集成测试
+# Black-box / integration tests
 # ==========================================================================
 
 class TestClaudeChatAuthGuard(unittest.TestCase):
@@ -442,11 +455,15 @@ class TestClaudeChatFreeTierFlow(unittest.TestCase):
 
 
 class TestClaudeChatServerCreditsExhausted(unittest.TestCase):
-    """端到端复现"Anthropic 服务端余额不足"场景（用真实的、余额为 0 的账户直接调用
-    官方 API 验证过实际错误形状——见 _make_credits_exhausted_error() 的默认参数）：
-    mock 掉真正的 anthropic.Anthropic 客户端使其抛出这个真实形状的 APIStatusError，
-    验证一路传导到 HTTP 响应体的 SERVER_CREDITS_EXHAUSTED，而不是把原始异常文本
-    （400/invalid_request_error 的英文提示）泄漏给前端。"""
+    """End-to-end reproduction of the "Anthropic server-side balance exhausted"
+    scenario (the real error shape was verified by calling the official API
+    directly against a real, zero-balance account -- see the default
+    arguments of _make_credits_exhausted_error()): mocks out the real
+    anthropic.Anthropic client to make it raise this real-shaped
+    APIStatusError, and verifies SERVER_CREDITS_EXHAUSTED propagates all the
+    way through to the HTTP response body, instead of leaking the raw
+    exception text (the 400/invalid_request_error English message) to the
+    frontend."""
 
     def setUp(self):
         main.app.config['TESTING'] = True
@@ -475,7 +492,8 @@ class TestClaudeChatServerCreditsExhausted(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(data['error'], 'SERVER_CREDITS_EXHAUSTED')
         self.assertIn('message', data)
-        # 余额不足是开发者账户侧的问题，不应该消耗用户的免费额度计数。
+        # Balance exhaustion is a developer-account-side problem, and must
+        # not consume the user's own free quota count.
         mock_incr.assert_not_called()
 
 

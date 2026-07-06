@@ -438,9 +438,11 @@ class TestRunPeerReview(unittest.TestCase):
     @patch('main.random.uniform', return_value=0.5)
     @patch('main.g4f.ChatCompletion.create')
     def test_429_exhausting_all_attempts_returns_none(self, mock_create, mock_rand, mock_sleep):
-        # 失败的互评现在整条隐藏（返回 None），不再展示"系统繁忙"兜底文案，见
-        # run_peer_review() 顶部注释。PEER_REVIEW_MAX_ATTEMPTS 也从 3 砍回 2（1 次重试）
-        # 以优先保证 provider response 不被互评拖慢。
+        # A failed review is now hidden entirely (returns None), instead of
+        # showing a "system busy" fallback message -- see the comment above
+        # run_peer_review(). PEER_REVIEW_MAX_ATTEMPTS was also cut from 3 back
+        # to 2 (1 retry) to prioritize not letting peer review slow down the
+        # provider's own response.
         import main
         mock_create.side_effect = [Exception('Error 429: Queue full')] * main.PEER_REVIEW_MAX_ATTEMPTS
         result = main.run_peer_review(self._make_mock_provider(), 'gpt-4', 'prompt')
@@ -494,28 +496,28 @@ class TestParsePeerReviewJson(unittest.TestCase):
         self.fn = main.parse_peer_review_json
 
     def test_valid_json_returns_score_and_comment(self):
-        score, comment = self.fn('{"score": 85, "comment": "很好的回答"}')
+        score, comment = self.fn('{"score": 85, "comment": "A great answer"}')
         self.assertEqual(score, 85)
-        self.assertEqual(comment, '很好的回答')
+        self.assertEqual(comment, 'A great answer')
 
     def test_score_clamped_above_100(self):
-        score, _ = self.fn('{"score": 150, "comment": "超分了"}')
+        score, _ = self.fn('{"score": 150, "comment": "over the max"}')
         self.assertEqual(score, 100)
 
     def test_score_clamped_below_1(self):
-        score, _ = self.fn('{"score": -5, "comment": "负分"}')
+        score, _ = self.fn('{"score": -5, "comment": "negative score"}')
         self.assertEqual(score, 1)
 
     def test_score_as_float_converted_to_int(self):
-        score, _ = self.fn('{"score": 85.7, "comment": "还可以"}')
+        score, _ = self.fn('{"score": 85.7, "comment": "decent"}')
         self.assertIsInstance(score, int)
         self.assertEqual(score, 85)
 
     def test_json_with_surrounding_text_extracted(self):
-        text = '这是我的评分：\n{"score": 70, "comment": "一般般"}\n谢谢。'
+        text = 'Here is my score:\n{"score": 70, "comment": "so-so"}\nThanks.'
         score, comment = self.fn(text)
         self.assertEqual(score, 70)
-        self.assertEqual(comment, '一般般')
+        self.assertEqual(comment, 'so-so')
 
     def test_malformed_json_returns_fallback(self):
         score, comment = self.fn('{score: 90, comment: good}')
@@ -523,13 +525,13 @@ class TestParsePeerReviewJson(unittest.TestCase):
         self.assertIsInstance(comment, str)
 
     def test_non_json_text_returns_fallback_with_raw_text(self):
-        text = '这是一段普通文字，没有JSON格式内容。'
+        text = 'This is a plain piece of text, with no JSON content.'
         score, comment = self.fn(text)
         self.assertEqual(score, 80)
         self.assertEqual(comment, text.strip())
 
     def test_missing_score_returns_fallback_80(self):
-        score, _ = self.fn('{"comment": "有comment但没有score"}')
+        score, _ = self.fn('{"comment": "has a comment but no score"}')
         self.assertEqual(score, 80)
 
     def test_missing_comment_returns_empty_string(self):

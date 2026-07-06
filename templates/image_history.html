@@ -1016,8 +1016,8 @@
         // This page is only ever reached by a logged-in user -- main.py's
         // view_image_history() redirects guests/anonymous visitors back to '/' before this
         // template is even rendered (image generation history is never persisted for them,
-        // see auth/db.py's image_history collection and CLAUDE.md section 6 "文生图 Recents
-        // 访问限制"). There is therefore no guest/sessionStorage branch here at all, unlike
+        // see auth/db.py's image_history collection and CLAUDE.md section 6's text-to-image
+        // Recents access restriction). There is therefore no guest/sessionStorage branch here at all, unlike
         // templates/history.html's chat equivalent -- serverHistoryEntry is always populated.
         const targetHistoryId = {{ history_id | tojson }};
         const serverHistoryEntry = {{ history_entry | tojson }};
