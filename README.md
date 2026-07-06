@@ -1,5 +1,14 @@
 # LLM Aggregator
 
+[![App Engine](https://img.shields.io/badge/Deployed_App-Click_to_Use-success?style=for-the-badge&logo=google-cloud&logoColor=white)](https://llm-aggregator-499321.uk.r.appspot.com/)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge&logo=python)](https://www.python.org/)
+[![Flask](https://img.shields.io/badge/Flask-Web_Framework-black?style=for-the-badge&logo=flask)](https://flask.palletsprojects.com/)
+[![Firebase](https://img.shields.io/badge/Firebase-Firestore-orange?style=for-the-badge&logo=firebase)](https://firebase.google.com/)
+
+---
+
+An AI model aggregation platform that allows users to send a single prompt to multiple LLMs and Text-to-Image providers simultaneously, comparing responses side-by-side with automated blind peer reviews.
+
 ## What problem this solves
 
 Most people only talk to one chatbot at a time. You open ChatGPT, or Claude, or Gemini, and you ask your question there. You rarely see how the same prompt performs across different models, because opening five tabs and copying the same text five times is slow and annoying. When a new free model shows up somewhere, most people never even try it, because there is no easy way to test it against something they already trust.
@@ -10,13 +19,15 @@ The same idea applies to image generation. You type one description, and the app
 
 The app also connects to real paid APIs from Anthropic, OpenAI, and Google, alongside a large set of free community providers. A logged in user gets a small free trial of these paid models, so you can compare a free provider against a real frontier model without needing your own key. If you already have your own key, you can enter it once and use it directly.
 
-![Home page](assets/home.png)
+![Brand](assets/brand.png)
 
 ## Features
 
 ### Compare many models at once
 
 When you submit a prompt, the backend calls every checked provider at the same time using a thread pool, so one slow provider never blocks the rest. Every answer comes back with its own response time, and the fastest successful answer is shown first. You can pick from a long list of free providers with no API key required, or check any of the frontier cards for Claude, ChatGPT, or Gemini.
+
+![Text Gen](assets/text_gen.png)
 
 ### Blind peer review
 
@@ -28,7 +39,7 @@ Once every checked provider has answered, the app asks each successful model to 
 
 Claude, ChatGPT, and Gemini are wired in as first class providers, not an afterthought. Each one gets its own small free quota per account, tracked and shown as a pill in the navbar, so you always know how many free calls you have left before you spend your own money.
 
-![Frontier trial quota badges](assets/frontier_trial.png)
+![Frontier trial](assets/frontier_trial.png)
 
 ### Frontier only mode
 
@@ -46,17 +57,19 @@ If you already pay for Claude, ChatGPT, or Gemini yourself, you can save your pe
 
 The same side by side idea works for image generation. Type one prompt, and several free image providers plus the paid Gemini and ChatGPT image tiers generate a picture from it at the same time, so you can pick the result you like best.
 
-![Image generation input form](assets/image_gen_input.png)
+![Image Gen](assets/image_gen.png)
 
 ### History you can manage
 
 Every comparison you run gets saved to your account, both for chat and for image generation, in two separate lists. You can pin a favorite result to the top, rename it, delete it, or page through older ones from the sidebar.
 
-![Chat generation history](assets/text_gen_history.png)
+#### Chat History
+
+![Chat generation history](assets/text_history.png)
+
+#### Image History
 
 ![Image generation history](assets/image_gen_history.png)
-
-![History sidebar with pin, rename, and delete](assets/history_sidebar_pin_rename_delete.png)
 
 ### Guest mode
 
@@ -86,6 +99,10 @@ The app is built to deploy on Google App Engine, and the deploy setup is kept de
 
 ## Quick start
 
+### Deployed Version
+Don't want to set it up locally? You can access the live version on Google App Engine: [Click to use](https://llm-aggregator-499321.uk.r.appspot.com/).
+
+### Local Setup
 Clone the repository, then set up a virtual environment and install the dependencies.
 
 ```bash
