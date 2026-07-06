@@ -1,8 +1,16 @@
-# 忽略 Git 目录
+# -----------------------------------------------------------------------------
+# Google App Engine 部署忽略配置 (.gcloudignore)
+# -----------------------------------------------------------------------------
+
+# 忽略 Git 自身的版本控制数据（防止小文件过多超限）
 .git/
 .gitignore
 
-# 虚拟环境
+# 忽略本地开发测试脚本及测试套件
+tests/
+availability_g4f/
+
+# 虚拟环境文件夹（含有数千个依赖碎片文件，必须忽略）
 .venv/
 venv/
 ENV/
@@ -14,27 +22,29 @@ __pycache__/
 *.pyo
 *.pyd
 
-# 操作系统临时文件
+# 操作系统产生的临时隐藏文件
 .DS_Store
 Thumbs.db
 
-# 环境变量本地配置文件
+# 环境变量本地配置文件（包含敏感或本地端口配置）
 .env
 .flaskenv
 
-# IDE 和编辑器配置
+# IDE 和编辑器本地配置
 .vscode/
 .idea/
 
-# 测试和缓存文件
+# 测试生成的结果日志
 provider_test_results*.txt
-available_providers_models.txt
 image_provider_test_results.txt
+
+# 服务商与模型本地扫描的缓存文件
+available_providers_models.txt
 available_image_providers_models.txt
 available_free_image_providers.txt
 
-# 敏感密钥
+# 敏感密钥文件（GAE线上环境会通过 ADC 凭据自动管理，无需上传此文件）
 firebase-key.json
 
-# 生成的媒体文件
-generated_media/
+# 注意：切勿在此处添加 generated_media/ 
+# 因为项目依赖该本地目录进行图片持久化存储与历史回溯
