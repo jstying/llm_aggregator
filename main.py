@@ -74,20 +74,17 @@ try:
     G4F_AVAILABLE = True
     logger.info("g4f imported successfully")
 
-    # 当前支持的 Provider 列表。CohereForAI_C4AI_Command/Groq/OpenRouterFree 是
-    # 2026-07-05 可用性调研新增（见 availability_g4f/available_providers_models.txt 和
-    # provider_test_results_v3.txt），均连续多轮真实调用零失败。Groq/OpenRouterFree 底层
-    # 在未提供用户自有 Key 时会走 g4f 官方维护的 g4f.space 中转代理（backup_url），
-    # 与 Yqcloud/OperaAria/PollinationsAI 同属"无凭证调用免费渠道"这一类别，不是本项目
-    # 自建的代理，不违反"不要给图片下载功能加服务端代理接口"这条规则（那条规则针对的是
-    # 本项目自己写的下载代理，不针对 g4f 内部的 provider 实现细节）。
+    # 当前支持的 Provider 列表。CohereForAI_C4AI_Command 是 2026-07-05 可用性调研新增
+    # （见 availability_g4f/available_providers_models.txt），连续多轮真实调用零失败。
+    # Groq/OpenRouterFree 已于 2026-07-05 部署到 GAE 后移除：两者在云服务商环境下均
+    # 100% 返回 "Error 403: Access from cloud provider blocked"（g4f 官方对云 IP 的
+    # 主动封锁，见 g4f.dev/members.html），本地环境不受影响，但生产环境完全不可用，
+    # 且没有可绕过该封锁的免 Key 方案，故直接下线，不保留为可选项。
     G4F_PROVIDERS = [
         g4f.Provider.Yqcloud,
         g4f.Provider.OperaAria,
         g4f.Provider.PollinationsAI,
         g4f.Provider.CohereForAI_C4AI_Command,
-        g4f.Provider.Groq,
-        g4f.Provider.OpenRouterFree,
     ]
 
     # 配置映射表：一个 Provider 对应一个模型列表
@@ -97,8 +94,6 @@ try:
         'OperaAria': ['aria'],
         'PollinationsAI': ['openai-fast'],
         'CohereForAI_C4AI_Command': ['command-a-03-2025', 'command-r-08-2024'],
-        'Groq': ['openai/gpt-oss-120b'],
-        'OpenRouterFree': ['openrouter/free'],
     }
 
     # 文生图（text-to-image）Provider 列表：2026-07-05 复测（见
@@ -135,8 +130,6 @@ try:
     # openai-fast        → 惜字如金的极速答题者：一句结论+一句理由，英文输出，100字内
     # command-a-03-2025  → 立足 Cohere 企业级定位的商业顾问：结构化要点、面向落地决策，250字
     # command-r-08-2024  → 立足 Cohere 检索增强定位的事实核查员：先给可验证事实点，标注不确定处，200字
-    # openai/gpt-oss-120b → 立足 Groq LPU 芯片"极速推理"定位：直给结论，不解释推理过程，120字内
-    # openrouter/free      → 立足 OpenRouter"多模型聚合路由"定位：先说结论，再补一句多模型共识视角，150字
     ROUTE_PROMPTS_MAP = {
         ('Yqcloud', 'gpt-4'): '\n\n[System: Respond immediately. You are a rigorous analyst who never states a conclusion without showing its evidence trail. Answer quickly using a three-part structure: "Core conclusion -> Key evidence -> Potential risks or reflection." Keep the entire response under 300 words.]',
         ('Yqcloud', 'gpt-3.5-turbo'): '\n\n[System: Give a TLDR immediately. You are a no-nonsense efficiency assistant who leads with the punchline and never over-explains. State the single most important conclusion in one sentence first, then add up to two key points. Reply in a casual, conversational tone. Keep the entire response under 150 words. No filler.]',
@@ -144,8 +137,6 @@ try:
         ('PollinationsAI', 'openai-fast'): '\n\n[System: Reply immediately. You are a speed-first minimalist who never wastes a word. Give ONE sentence answer then ONE sentence reason. English only. Max 100 words. No preamble.]',
         ('CohereForAI_C4AI_Command', 'command-a-03-2025'): '\n\n[System: Respond immediately. You are an enterprise business consultant in the spirit of Cohere\'s enterprise-AI focus, structuring answers around what a decision-maker can act on. Lead with a short structured breakdown of options or steps, then a clear recommendation. Keep the entire response under 250 words.]',
         ('CohereForAI_C4AI_Command', 'command-r-08-2024'): '\n\n[System: Respond immediately. You are a fact-checking researcher in the spirit of Cohere\'s retrieval-augmented-generation focus. Lead with the most verifiable factual points, and explicitly flag anything you are not certain about. Keep the entire response under 200 words.]',
-        ('Groq', 'openai/gpt-oss-120b'): '\n\n[System: Respond instantly. You are built for raw inference speed on Groq\'s LPU hardware, so you never show your reasoning steps, only the destination. State the final answer directly with no lead-up. Keep the entire response under 120 words.]',
-        ('OpenRouterFree', 'openrouter/free'): '\n\n[System: Respond immediately. You are OpenRouter\'s free routed model, built around aggregating many different models into one gateway. Lead with your direct answer, then add one sentence framing it as a broad, cross-model consensus view. Keep the entire response under 150 words.]',
     }
 
     # 互评裁判提示词配置表：model → 裁判专属提示词前缀（要求输出 JSON 格式）。前沿模型的
@@ -160,8 +151,6 @@ try:
         'openai-fast': 'You are a blind reviewer. Rate the following answer for clarity and accuracy. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sharp sentence critique in English"}',
         'command-a-03-2025': 'You are a blind reviewer judging from a business-decision standpoint. Rate how actionable and well-structured the following answer is. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sentence critique focused on actionability"}',
         'command-r-08-2024': 'You are a blind reviewer judging factual accuracy. Rate how well-supported and verifiable the following answer is. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sentence critique focused on factual rigor"}',
-        'openai/gpt-oss-120b': 'You are a blind reviewer judging response speed and directness. Rate how concisely the following answer reaches its conclusion without unnecessary lead-up. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sentence critique focused on concision"}',
-        'openrouter/free': 'You are a blind reviewer judging breadth of perspective. Rate how well-rounded and consensus-like the following answer reads. Output ONLY this JSON, nothing else: {"score": integer(1-100), "comment": "one sentence critique focused on breadth of perspective"}',
     }
 
 except ImportError as e:
@@ -894,7 +883,7 @@ def run_cross_peer_review(entries):
 
     # provider 数量越多，每个 reviewer 要评审的 target 就越多（N-1 个），这些任务会在
     # 下面的线程池里同时提交、大概率并发落在同一时间窗口——这才是 provider>=6 时对
-    # PollinationsAI/Groq/OpenRouterFree 这类严格限流免费后端出现 429 风暴的真正成因
+    # PollinationsAI 这类严格限流免费后端出现 429 风暴的真正成因
     # （不是重试次数不够，而是同一个 reviewer 一开始就被并发打了好几发请求）。这里给
     # 每个 reviewer 身份（kind+provider）配一把独占锁，串行化"打向同一个 reviewer"的
     # 请求；不同 reviewer 之间依然通过线程池并发，不会退化成整批完全串行。

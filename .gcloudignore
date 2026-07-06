@@ -26,8 +26,13 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# 环境变量本地配置文件（包含敏感或本地端口配置）
-# .env
+# 环境变量本地配置文件（包含敏感或本地端口配置）。这一行之前被误注释掉，导致 .env
+# 会跟着一起部署到 GAE：不仅泄露本地密钥，还会造成一个更隐蔽的 bug——GAE 用 app.yaml
+# 的 env_variables 预先设置了 ANTHROPIC_API_KEY/GEMINI_API_KEY（部署前如果忘了把占位符
+# 替换成真实值，它们的值就是字面量字符串 "${...}"），而 load_dotenv() 默认不会覆盖
+# 已存在的环境变量，所以 .env 里的真实 Key 不会生效；只有 app.yaml 没声明的
+# OPENAI_API_KEY 才会被 .env 补上，这解释了"只有 ChatGPT 能连上"的现象。必须保持忽略。
+.env
 .flaskenv
 
 # IDE 和编辑器本地配置

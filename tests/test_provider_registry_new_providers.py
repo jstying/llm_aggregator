@@ -1,7 +1,13 @@
-"""Covers the 2026-07-05 provider registry change: removed BlackForestLabs_Flux1Dev/
-StabilityAI_SD35Large (HuggingFace ZeroGPU quota permanently exhausted, no free
-replacement found) and added three new free text providers found via a full g4f
-availability re-scan: CohereForAI_C4AI_Command, Groq, OpenRouterFree.
+"""Covers the provider registry changes:
+
+- 2026-07-05: removed BlackForestLabs_Flux1Dev/StabilityAI_SD35Large (HuggingFace
+  ZeroGPU quota permanently exhausted, no free replacement found) and added
+  CohereForAI_C4AI_Command/Groq/OpenRouterFree, found via a full g4f availability
+  re-scan.
+- 2026-07-05 (post-GAE-deploy): removed Groq/OpenRouterFree again -- both return
+  "Error 403: Access from cloud provider blocked" 100% of the time when g4f runs
+  from a cloud IP (GAE), unrelated to the original local-environment scan that
+  added them. CohereForAI_C4AI_Command is unaffected and stays.
 
 Scope is limited to this change (registry wiring), not a full re-test of shared
 logic (determine_actual_model/error classification/etc.) which already has its own
@@ -30,11 +36,20 @@ class TestG4FProviderRegistryIntegrity(unittest.TestCase):
     def test_new_text_providers_present(self):
         provider_names = {p.__name__ for p in main.G4F_PROVIDERS}
         self.assertIn('CohereForAI_C4AI_Command', provider_names)
-        self.assertIn('Groq', provider_names)
-        self.assertIn('OpenRouterFree', provider_names)
-        self.assertEqual(main.PROVIDER_MODELS_MAP['Groq'], ['openai/gpt-oss-120b'])
-        self.assertEqual(main.PROVIDER_MODELS_MAP['OpenRouterFree'], ['openrouter/free'])
         self.assertIn('command-a-03-2025', main.PROVIDER_MODELS_MAP['CohereForAI_C4AI_Command'])
+
+    def test_cloud_blocked_providers_removed(self):
+        """Groq/OpenRouterFree were pulled after real GAE deploy logs showed a 100%
+        "Access from cloud provider blocked" 403 from a cloud IP."""
+        provider_names = {p.__name__ for p in main.G4F_PROVIDERS}
+        self.assertNotIn('Groq', provider_names)
+        self.assertNotIn('OpenRouterFree', provider_names)
+        self.assertNotIn('Groq', main.PROVIDER_MODELS_MAP)
+        self.assertNotIn('OpenRouterFree', main.PROVIDER_MODELS_MAP)
+        self.assertNotIn(('Groq', 'openai/gpt-oss-120b'), main.ROUTE_PROMPTS_MAP)
+        self.assertNotIn(('OpenRouterFree', 'openrouter/free'), main.ROUTE_PROMPTS_MAP)
+        self.assertNotIn('openai/gpt-oss-120b', main.PEER_REVIEW_PROMPTS_MAP)
+        self.assertNotIn('openrouter/free', main.PEER_REVIEW_PROMPTS_MAP)
 
 
 class TestImageProviderRegistryIntegrity(unittest.TestCase):
@@ -63,22 +78,20 @@ class TestImageProviderRegistryIntegrity(unittest.TestCase):
 
 class TestNewProviderRouteAndJudgePrompts(unittest.TestCase):
     """ROUTE_PROMPTS_MAP/PEER_REVIEW_PROMPTS_MAP entries are optional per provider
-    (CLAUDE.md section 10), but for the three added here they were included -- this
-    checks structural shape only (not exact wording, which is free to change)."""
+    (CLAUDE.md section 10), but for the ones still active this checks structural
+    shape only (not exact wording, which is free to change)."""
 
-    def test_route_prompt_exists_for_each_new_provider_model_pair(self):
+    def test_route_prompt_exists_for_each_active_provider_model_pair(self):
         for name, models in [
             ('CohereForAI_C4AI_Command', main.PROVIDER_MODELS_MAP['CohereForAI_C4AI_Command']),
-            ('Groq', main.PROVIDER_MODELS_MAP['Groq']),
-            ('OpenRouterFree', main.PROVIDER_MODELS_MAP['OpenRouterFree']),
         ]:
             for model in models:
                 key = (name, model)
                 self.assertIn(key, main.ROUTE_PROMPTS_MAP, msg=f"missing ROUTE_PROMPTS_MAP entry for {key}")
                 self.assertTrue(main.ROUTE_PROMPTS_MAP[key].startswith('\n\n[System:'))
 
-    def test_judge_prompt_exists_for_each_new_model(self):
-        for model in ('command-a-03-2025', 'command-r-08-2024', 'openai/gpt-oss-120b', 'openrouter/free'):
+    def test_judge_prompt_exists_for_each_active_model(self):
+        for model in ('command-a-03-2025', 'command-r-08-2024'):
             self.assertIn(model, main.PEER_REVIEW_PROMPTS_MAP, msg=f"missing PEER_REVIEW_PROMPTS_MAP entry for {model}")
             self.assertIn('"score"', main.PEER_REVIEW_PROMPTS_MAP[model])
 
@@ -89,8 +102,8 @@ class TestDetermineActualModelForNewProviders(unittest.TestCase):
 
     def test_rule_a_requested_model_supported(self):
         self.assertEqual(
-            main.determine_actual_model('Groq', 'openai/gpt-oss-120b'),
-            'openai/gpt-oss-120b',
+            main.determine_actual_model('CohereForAI_C4AI_Command', 'command-r-08-2024'),
+            'command-r-08-2024',
         )
 
     def test_rule_b_unsupported_model_falls_back_to_first(self):
@@ -101,23 +114,30 @@ class TestDetermineActualModelForNewProviders(unittest.TestCase):
 
 
 class TestProvidersEndpointExposesNewProviders(unittest.TestCase):
-    """Black-box: GET /api/providers must expose the three new providers with the
-    same field contract as existing ones."""
+    """Black-box: GET /api/providers must expose the surviving new provider with the
+    same field contract as existing ones, and must not expose the removed ones."""
 
     def setUp(self):
         main.app.config['TESTING'] = True
         self.client = main.app.test_client()
 
-    def test_new_providers_present_with_required_fields(self):
+    def test_new_provider_present_with_required_fields(self):
         import json
         response = self.client.get('/api/providers')
         data = json.loads(response.data)
         by_name = {p['name']: p for p in data}
-        for name in ('CohereForAI_C4AI_Command', 'Groq', 'OpenRouterFree'):
-            self.assertIn(name, by_name, msg=f"{name} not exposed by /api/providers")
-            self.assertEqual(by_name[name]['type'], 'g4f')
-            self.assertEqual(by_name[name]['status'], 'available')
-            self.assertIn(by_name[name]['default_model'], by_name[name]['models'])
+        self.assertIn('CohereForAI_C4AI_Command', by_name, msg="CohereForAI_C4AI_Command not exposed by /api/providers")
+        self.assertEqual(by_name['CohereForAI_C4AI_Command']['type'], 'g4f')
+        self.assertEqual(by_name['CohereForAI_C4AI_Command']['status'], 'available')
+        self.assertIn(by_name['CohereForAI_C4AI_Command']['default_model'], by_name['CohereForAI_C4AI_Command']['models'])
+
+    def test_cloud_blocked_providers_not_exposed(self):
+        import json
+        response = self.client.get('/api/providers')
+        data = json.loads(response.data)
+        by_name = {p['name']: p for p in data}
+        self.assertNotIn('Groq', by_name)
+        self.assertNotIn('OpenRouterFree', by_name)
 
 
 if __name__ == '__main__':
