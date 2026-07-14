@@ -1,512 +1,229 @@
 # claude.md
 
-## 0. Rules for future updates (mandatory)
+This file is now a technical deep dive reference, not a short ops manual. It exists so that a future session, or a person prepping for a system design interview about this project, can answer hard follow up questions without re reading 3600 lines of main.py. It was rebuilt on 2026-07-13 by reading the real code end to end (main.py, auth/db.py, auth/routes.py, the Jinja templates, app.yaml, requirements.txt) and checking every claim against it.
 
-Any future edit to this file must be short and to the point. Do not write debugging narratives. Do not write incident retrospectives. Do not write stories like "we first thought X, then discovered Y." Only write the conclusion and the current state.
+## 0. Update rule (mandatory, read this first)
 
-Follow this format when you append an update record:
+Future edits to this file must stay short. Do not write debugging stories. Do not write "we first thought X, then found Y." Write the conclusion and the current state only. Use this format for a new entry:
 
 `[Module name] Reason: short explanation. Changes: 1. 2. 3.`
 
-Example:
-
-`[Claude quota] Reason: Users said the quota was too low. Changes: 1. Changed CLAUDE_FREE_TIER_LIMIT from 10 to 20. 2. Updated the frontend dialog text to match the new number.`
-
-After you add a new entry, check whether this document has grown too long again. If a history entry is older than 3 months, or the feature it describes is now fully stable, delete the details and keep only the final conclusion, folded into the relevant numbered section above section 14. This document is an operations manual for future Claude sessions, not a project log.
-
 未来更新规范：后续任何修改必须简明扼要。请遵循以下示例格式：
-
 [模块名] 更新原因：简短说明。调整内容：1. 2. 3.
 
-## 1. System overview
+If this file crosses 150k characters again, fold old entries from section 20 into the relevant numbered section above it, then delete the entry. This file is a reference manual. It is not a diary.
 
-This is a Flask web app that aggregates and compares large language models. A user types a prompt. The system calls several g4f providers at the same time. It shows each provider's answer and response time. Then successful answers can be peer-reviewed, by each other and by the frontier providers, through a separate scheduler.
+## 1. What this project actually is
 
-The system supports three identity states: anonymous visitor, guest, and logged-in user. A logged-in user's conversation history is stored in Firestore. The user manages it from the Recents sidebar on the left, which supports grouping, pagination, pinning, renaming, and deleting. A guest's history lives only in the browser's sessionStorage. It disappears when the tab closes.
+This is a Flask app. One person built it. It lets you type one prompt and get answers from several language models at the same time, then has the models grade each other's answers. It also does the same thing for text to image. Under the hood there are two totally separate worlds living side by side: a free world built on the g4f library, which scrapes together access to models with no API key and no bill, and a paid world built on the three official SDKs from Anthropic, OpenAI, and Google. The free world and the paid world share almost no code. They share a page, a sort rule, and a peer review scheduler. That is it.
 
-The system also supports text-to-image comparison, through a fully separate g4f call chain. Image generation results are stored in their own `image_history` collection, with their own Recents sidebar. Only logged-in users can use this feature. Guests and anonymous users cannot use it at all.
+The reason this separation matters for an interview: it is the single biggest design decision in the whole app, and it explains almost every other choice, including the database schema, the concurrency model, and the quota system.
 
-Beyond the free g4f providers, the project wires up five frontier (paid, official-SDK) providers, each its own independent call chain: Claude (chat), ChatGPT (chat and image), and Gemini (chat and image, the image tier is the "Nano Banana" series). These are the only providers that cost real money, so each has its own quota counter and abuse prevention, much stricter than the free g4f providers. See section 6 for the exact rules.
+## 2. Request lifecycle, in order, as text and as a diagram
 
-There is a Trial Quota badge at the top of the navbar, one pill per frontier provider per mode (chat mode shows Claude/ChatGPT/Gemini-chat; image mode shows Gemini-image/ChatGPT-image). After each call to any frontier provider, the frontend asks the backend for the real quota number again. It never guesses the number locally.
+Here is what happens on one full compare click, in the order it actually happens in the code.
 
-A user can click Stop Generating mid-flight to cancel any in-progress compare/generate/frontier request; an in-memory, TTL-evicted cancellation registry and a matching quota-refund ledger make sure a cancelled request neither writes into history nor keeps a consumed quota unit.
+The browser calls `POST /api/compare` first, with plain fetch, no framework. Flask receives it. The route runs no login check at all, on purpose, because g4f is free and open to guests and anonymous users too. The route reads which g4f providers were checked, builds a `ThreadPoolExecutor` with at most 5 workers, and submits one call per checked provider. Every submitted call runs `g4f.ChatCompletion.create()` with a 20 second timeout on the SDK side and a 21 second timeout on the `future.result()` side. The extra one second on the outer wait is just scheduling slack. Each thread call is a normal blocking network call. The GIL is not a problem here, because the thread spends almost all of its time waiting on a socket, not doing CPU work, so it releases the GIL and other threads get to run. As results land, they get sorted, success first, then shorter time first. If the caller is logged in, the whole result set is written to Firestore right there, through `save_chat_history()`, and the new document id comes back to the browser as `history_id`.
 
-The backend is built with Flask plus a Blueprint (`auth/`). The frontend uses Jinja2 plus plain JavaScript, with no frontend framework and no build tool. Overall page scale is controlled by the `--page-zoom` variable on `:root`, currently set to 0.88.
+The browser now looks at which frontier cards were checked. For each one it was told to run, Claude, ChatGPT, or Gemini chat, it fires one more `POST` to that provider's own route, in parallel with each other but after the g4f call already returned. Each of these routes is a small independent island. None of them touch `ThreadPoolExecutor`. Each one does the same five things in the same order: check the session has `user_id` (guests get 401, no exceptions), check for a personal key header, if no personal key check the Firestore quota counter for that one provider, call the official SDK, classify whatever exception came back into a friendly code, and if the call actually happened, append the result onto the same `history_id` document that g4f created earlier. Note the word append. None of the five frontier routes are allowed to create a new history document. Only the g4f stage can start one.
 
-## 2. Architecture map
+Once every checked provider, free and paid together, has answered, the browser makes one more call, `POST /api/peer-review`, carrying the full merged list. This is where the two worlds actually touch. The peer review scheduler builds an N times N minus one grid of review tasks, one for every successful answer being read by every other successful answer, and dispatches each task to either `run_peer_review()` (the g4f path) or `run_frontier_peer_review()` (the SDK path), depending on who the reviewer is. It runs all of this through a second, separate `ThreadPoolExecutor`, capped at 10 workers, with a lock per reviewer identity so one rate limited free backend does not get hit by five requests in the same instant. When the whole grid is done, the scores get written back into the same history document that already exists, through `update_chat_history_peer_reviews()`, which finds each result by provider name and replaces just its `peer_reviews` field.
 
-The system has three parts: the Flask backend, the Firebase auth module, and the HTML5/JS frontend.
+Text as an ASCII picture of the same thing:
 
-### Backend (`main.py`)
+```
+browser
+  |
+  |--POST /api/compare-----------> Flask route (no auth)
+  |                                   |
+  |                                   v
+  |                            ThreadPoolExecutor(<=5)
+  |                            g4f.ChatCompletion.create() x N, 20s each
+  |                                   |
+  |                                   v
+  |                            sort: success first, faster first
+  |                                   |
+  |                                   v
+  |                        save_chat_history() -> Firestore "history"
+  |<--history_id, results-------------|
+  |
+  |--POST /api/claude-chat-------> auth guard -> key check -> quota check
+  |--POST /api/chatgpt-chat------> -> call official SDK -> classify error
+  |--POST /api/gemini-chat-------> -> append_chat_history_result(history_id)
+  |<--each result, independently------|
+  |
+  |--POST /api/peer-review (all g4f + frontier results together)
+  |                                   |
+  |                                   v
+  |                        ThreadPoolExecutor(<=10), per-reviewer lock
+  |                        run_peer_review() / run_frontier_peer_review()
+  |                                   |
+  |                                   v
+  |                  update_chat_history_peer_reviews() -> same Firestore doc
+  |<--peer_reviews by provider--------|
+```
 
-Routes fall into these groups: page routes (`/`, `/home`, `/history/<id>`, `/image-history/<id>`, `/apikey-config`), g4f chat API (`/api/providers`, `/api/compare`, `/api/compare/cancel`, `/api/test-single`), cross-namespace peer review (`/api/peer-review`), frontier chat APIs (`/api/claude-chat`, `/api/chatgpt-chat`, `/api/gemini-chat`, each with a `/refund` sibling), frontier image APIs (`/api/gemini-image`, `/api/chatgpt-image`, each with a `/refund` sibling), quota query API (`/api/quota-status`), text-to-image API (`/api/image-providers`, `/api/generate-images`, `/api/generate-images/cancel`), the static file route for generated images (`/media/<filename>`), auth API (`/api/auth/guest`), chat history API (the `/api/history` group), and image history API (the `/api/image-history` group, logged-in users only).
+Text to image runs the same shape, one stage shorter, because there is no peer review for images yet. `POST /api/generate-images` runs `test_g4f_image_provider()` through its own `ThreadPoolExecutor`, calling `g4f.client.Client().images.generate()`, a completely different g4f entry point from the chat one above, sharing no mapping table with it. g4f downloads the picture itself and writes it into a folder returned by `get_media_dir()`. On GAE Standard the real filesystem is read only everywhere except `/tmp`, so at import time the code overwrites g4f's own module level path variables, `_g4f_copy_images.images_dir` and `.media_dir`, to point inside `tempfile.gettempdir()` instead of the relative folder g4f wants to use by default. A local dev machine has a writable current directory, so this bug is invisible locally and fires every single time in production, a classic "works on my machine" trap. `serve_generated_media()`, mounted at `GET /media/<filename>`, reads through that same `get_media_dir()` function, so writes and reads always agree on the folder, even though the folder itself changed. There is no age based cleanup of this folder. Files sit there until the user explicitly deletes that history record, at which point `_delete_local_media_files_for_image_results()` removes exactly the files that record referenced. This is a deliberate tradeoff: keep images viewable forever, accept that disk usage only grows.
 
-Concurrent scheduling uses `ThreadPoolExecutor`, which calls several g4f providers at the same time so one slow provider does not hold up the rest. The text-to-image route reuses the same scheduling skeleton, but it only has one stage.
+Gemini image and ChatGPT image results come back from their official SDKs as base64 already in memory, never as a url. Before either one gets written into Firestore, `_persist_image_result_local_copy()` decodes the base64, writes it to a file under the same `get_media_dir()`, and swaps the field from `b64_json` to `url`. This exists because Firestore rejects an array entry once a nested field crosses about one megabyte, and a gpt-image output almost always crosses that. If the local write itself fails, the function does not fall back to shipping the giant base64 string anyway. It returns a small failure result instead, so the history document write always succeeds, even if what it truthfully records is "this image was generated but could not be saved."
 
-On the g4f side there are two fully separate call chains: `g4f.ChatCompletion` handles text chat, and `g4f.client.Client().images.generate()` handles text-to-image. The model matching logic and the exception handling of the two chains share nothing. When g4f generates an image, it automatically downloads the image into the local `get_media_dir()` folder, and the `url` field it returns is a relative path like `/media/<filename>?url=...`. This is a routing convention from g4f's own bundled GUI server, but this project does not run that server, so we added our own `GET /media/<filename>` static file route (`serve_generated_media`) to serve these files. `get_media_dir()` and g4f's own `images_dir`/`media_dir` module globals are redirected at import time to `tempfile.gettempdir()`, because GAE Standard's local filesystem is read-only everywhere except `/tmp`; a relative path like `./generated_media` works locally (masking the bug) but fails 100% of the time in production. These files are not cleaned up automatically by age; they are only deleted together with their `image_history` record when the user explicitly deletes it. Before that deletion, the files just keep accumulating during normal use. This is an accepted, deliberate tradeoff in exchange for being able to view historical images forever.
+## 3. Tech choices you will get pressed on
 
-Five frontier call chains run fully independent of g4f and of each other: `call_claude_model()` (Claude chat, official `anthropic` SDK), `call_chatgpt_model()` (ChatGPT chat, official `openai` SDK), `call_gemini_text_model()` (Gemini chat, official `google-genai` SDK), `call_gemini_image_model()` (Gemini image), and `call_chatgpt_image_model()` (ChatGPT image). None of them enter the `ThreadPoolExecutor` g4f scheduler or reuse a g4f mapping table. Each is shown on the frontend as its own provider card, with its own class, its own model dropdown, and its own quota pill. When the user clicks Compare/Generate, the frontend sends the normal g4f request first (unless Frontier-only mode is on, see section 6), then one extra request per checked frontier provider, and merges each result into the same rendered list as it arrives.
+### 3.1 Why a thread pool and not asyncio or gevent
 
-Persisting frontier results into history: every frontier chat/image endpoint accepts an optional `history_id` field in the request body. As long as the call actually happened (not blocked by quota, not cancelled), the result is appended to the existing history record for that `history_id`, whether the call succeeded or failed. The functions that do the appending are `append_chat_history_result()`/`append_image_history_result()` in `auth/db.py`, plus thin per-provider wrappers in `main.py`. They check ownership before appending, and after appending they re-sort the whole results array using "success first, then shorter response time first." These functions can only append to a record that already exists; they cannot create one. The only entry points that create a new record are the g4f chain's `save_chat_history()`/`save_image_history()` (called even in Frontier-only mode, producing an empty-results record for later frontier calls to append to).
+The honest answer starts with what the code is actually waiting on. Every provider call in this app, g4f's `ChatCompletion.create()`, `anthropic.Anthropic().messages.create()`, `openai.OpenAI().chat.completions.create()`, `google_genai.Client().interactions.create()`, is a synchronous, blocking network call under the hood. None of the three official SDKs ship an async client that this project uses. Switching the scheduler to asyncio would not remove that blocking call, it would just mean wrapping every one of those calls in `run_in_executor()` anyway, which is a thread pool with extra steps. You do not get a real win from asyncio unless the I/O itself is async all the way down, and here it is not.
 
-Image results whose payload arrives as base64 (Gemini image, ChatGPT image) are never written to Firestore as-is: `_persist_image_result_local_copy()` decodes `b64_json` to a local file under `get_media_dir()` and swaps it for a `url` before appending, because an embedded base64 string over roughly 1MB makes Firestore reject the whole write ("invalid nested entity"). If the local write itself fails, this function returns a small failure result instead of falling back to the oversized original, so the history append always succeeds (as a visible failure) instead of the entry silently vanishing from history.
+The second reason is more specific to this stack. `firebase-admin`, which this project uses for every Firestore read and write, sits on top of `grpc`, and grpc has its own C level networking and threading underneath the Python layer. `gevent`'s monkey patching rewrites Python's socket module so it can cooperatively schedule green threads, and that patching has a long history of not playing well with C extensions that manage their own sockets or threads, grpc among them. Turning this whole app over to gevent risks quietly breaking Firestore calls in ways that are hard to reproduce locally, which is a bad trade for a performance win this workload does not even need.
 
-Peer review is a separate concern from the g4f compare/generate stage. `run_cross_peer_review()`, reached through `POST /api/peer-review`, is a standalone scheduler the frontend calls once every checked provider (g4f and frontier) has returned, reviewing every successful result against every other successful result regardless of namespace. See section 6 for trigger and reliability rules.
+The third reason is about scale. The classic case for an event loop over threads is the C10k problem, thousands of concurrent, mostly idle connections, where one thread per connection would burn too much memory. This app runs at most 5 concurrent g4f calls and at most 10 concurrent peer review calls at any one moment, both hard capped in the code. At that concurrency level, thread creation and context switch overhead is noise. The GIL is not a bottleneck either, since the threads are blocked on network I/O almost the entire time they are alive, so they release the GIL and let each other run. A thread pool gets you real concurrency here at a fraction of the migration cost of rewriting Flask routes, and every SDK call, into async.
 
-### Auth subsystem (`auth/`)
+### 3.2 Why Google App Engine Standard, and what stateless really costs you
 
-`auth_bp` is mounted at the root path, with no prefix: `/login`, `/register`, `/logout`, `/profile`. When `auth/db.py` starts, it tries to connect to Firebase Firestore. If it cannot connect, it sets `FIREBASE_AVAILABLE` to `False`, and the auth routes then return 503 instead of crashing. User identity is carried between requests by Flask's `session`, keyed by the `SECRET_KEY` environment variable.
+GAE Standard was picked because this is a small project with one person running it, and it gives autoscaling, zero server patching, and pay per use, without needing to run or reason about a container orchestrator. The tradeoff for that convenience is that the runtime is fully stateless. Any request can land on any instance. Any instance can be created or killed at any moment, including right after handling your last request. Nothing the app writes to local memory or local disk can be assumed to still be there for the next request from the same user.
 
-### Frontend (Jinja2 + JS)
+This project pays that cost in three concrete places, and it is worth knowing all three cold. First, session data. Flask's default session is a signed cookie stored in the browser, through `itsdangerous`, not a server side session store, so login state actually does survive fine across instances, as long as every instance signs and verifies with the same `SECRET_KEY`. The code reads that key with `os.environ.get('SECRET_KEY', secrets.token_hex(32))`, and if the environment variable is missing, every process, and every restart of the same process, gets its own random fallback key. That means every session becomes unreadable the moment the key changes underneath it, an outage that looks like "everyone got logged out for no reason." Second, local media files. Every generated image lives under `tempfile.gettempdir()`, which is local disk on whichever instance wrote it. If instance A generates an image and instance B later serves that history page, instance B has no file at that path, and the request gets a plain 404. There is no shared storage layer yet to fix this, the accepted long term fix is something like Cloud Storage plus a per user quota, not built. Third, the two in memory dictionaries this app uses for Stop Generating, the quota refund ledger and the cancellation registry, live in one process's RAM only. If the original call landed on instance A and the refund request lands on instance B, the ledger lookup on B simply misses, the refund silently does nothing, and the user loses one quota unit. The code accepts this as a known, bounded cost rather than solving it with a shared cache, because the failure mode is small and rare, not because it was missed.
 
-The navbar has three states, switched based on `session.user_id`/`is_guest`. Both `auth/base.html` and `index.html` each keep their own copy of this logic. All communication with the backend goes through the Fetch API and is non-blocking.
+## 4. API reference with the details that get asked in a deep dive
 
-## 3. Tech stack
+### 4.1 `GET /api/providers`, `GET /api/image-providers`
 
-The languages are Python and JavaScript. The backend framework is Flask, with concurrency handled by `concurrent.futures.ThreadPoolExecutor`. Core dependencies are g4f, firebase-admin, python-dotenv, and three official provider SDKs: `anthropic` (Claude), `openai` (ChatGPT), and `google-genai` (Gemini, imported as `from google import genai`; do not confuse it with the deprecated `google-generativeai` package).
+No auth. Returns the live list of g4f text or image providers this process has, each with its model list, its default model (always the first entry in that provider's list), a `type` of `g4f` or `g4f_image`, and a `status` that is always the literal string `available`, since providers here are configured, not health checked in real time.
 
-Auth uses Werkzeug's password hashing functions plus Flask's `session`. The database is Google Cloud Firestore, accessed through the Firebase Admin SDK. The frontend is plain HTML5, CSS3, and vanilla JS, with no framework and no build tool. The template engine is Jinja2. The deployment platform is Google App Engine (Standard, python312 runtime); its local filesystem is read-only outside `/tmp`, which is why all locally-written media goes through `tempfile.gettempdir()` (see section 2).
+### 4.2 `POST /api/compare`
 
-Environment variables: `SECRET_KEY` and `PORT` are basic config, loaded locally from a `.env` file via python-dotenv. `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and `OPENAI_API_KEY` are the developer's default keys for the three frontier SDKs. The app starts fine without any of them; a call only fails when it actually needs the missing key. `GEMINI_API_KEY` is the one exception: `google_genai.Client()` checks it immediately at construction time and raises `ValueError` right away if missing, instead of waiting for an actual call — the user-facing outcome is the same either way (the request fails, nothing else is affected).
+Body: `{prompt, providers, frontier_only, model, provider_models, request_id, max_workers}`. Only `prompt` is required. `providers` is a list of g4f provider names to run, empty means run all four. `frontier_only`, added 2026-07-08, is a separate boolean, not a repurposed empty array, because an empty `providers` array already meant "run everything" long before frontier only mode existed, and overloading that same empty array to also mean "run nothing" would have silently changed old behavior. When `frontier_only` is true, the g4f stage is skipped completely, `ThreadPoolExecutor(max_workers=0)` would raise anyway, so the code branches around it, and a history document with empty results is still created for the frontier calls to append onto later. `provider_models` is a dict from provider name to model name, added so each provider card can remember its own model choice instead of one global model field.
 
-## 4. Code layout
+Every task gets `future.result(timeout=21)`. On a raised `TimeoutError` the result gets the friendly "system is busy" message. On any other exception it gets `Execution error: {str(e)}` verbatim. Inside `test_g4f_provider()` itself, exceptions are classified in this order and this order cannot be reversed: content policy keywords first (things like `content_filter`, `responsible ai`), then network and rate limit keywords (`timeout`, `502`, `rate limit`, and so on), then anything else falls through as the raw exception string. The reason content policy has to come first is that a moderation block will never succeed on retry, so telling the user "system busy, try again" would be actively misleading. Response text also passes through `detect_and_truncate()`, which first checks an empty `SENSITIVE_KEYWORDS` list (currently a no op placeholder, nothing is actually blocked by it today), then looks for a sentence repeated three times in a row, then looks for an 8 to 50 character chunk repeated three times in a row, and truncates at the first repeat it finds, appending a note that it was auto truncated.
+
+Response shape:
+
+```
+{prompt, total_providers, successful_providers, results: [LlmResult...], history_id}
+```
+
+### 4.3 `POST /api/compare/cancel`, `POST /api/generate-images/cancel`
+
+No auth. Body is just `{request_id}`. Both just call `_mark_request_cancelled()`, which drops that id into `_CANCELLED_HISTORY_REQUESTS` with a timestamp, after sweeping any entry older than 600 seconds. Marking an id that never existed, or was already used, is a harmless no op.
+
+### 4.4 `POST /api/peer-review`
+
+Body: `{results, history_id}`. `results` must actually be a list or this returns 400. Every entry is run through `_sanitize_peer_review_entries()`, which throws away anything past the first `MAX_PEER_REVIEW_ENTRIES`, currently 10, and drops any entry whose provider, model, and type combination does not really match a known mapping table, or whose provider flag (`CLAUDE_AVAILABLE`, and so on) is currently false. This exists because a peer review call against a frontier model is a real, billed API call, so the client cannot be trusted to hand over an arbitrary list of fake "success: true" entries and get them all reviewed for free. As soon as one surviving entry is a frontier kind, the whole request needs a logged in session, the exact same `_get_authenticated_user_id()` guard the other frontier routes use, a pure g4f list still needs no login at all. If fewer than 2 entries survive, the response is `{"peer_reviews": {}}` immediately, no thread pool spun up.
+
+The scheduler itself, `run_cross_peer_review()`, builds one task per ordered pair where the reviewer is not the target, dispatches through a `ThreadPoolExecutor(max_workers=min(10, len(tasks)))`, and wraps each distinct reviewer identity, a `(kind, provider)` tuple, in its own `threading.Lock()`, so a single free backend never receives several concurrent review requests at once, which is exactly what used to trigger 429 storms once the provider count crossed about six. The future timeout for the whole batch is not a hardcoded number. It is `max_reviewer_queue_depth * _peer_review_single_worst_case_seconds() + 10`, where `_peer_review_single_worst_case_seconds()` itself is `PEER_REVIEW_MAX_ATTEMPTS * PEER_REVIEW_REQUEST_TIMEOUT` plus the worst case backoff between attempts. With today's constants, `PEER_REVIEW_MAX_ATTEMPTS = 2` and `PEER_REVIEW_REQUEST_TIMEOUT = 25`, one review's worst case is `2 * 25 + 5 = 55` seconds, and the backoff formula itself is `(attempt + 1) * 3 + random(0, 2)` seconds, growing each retry so a dense burst of retries does not all land on the exact same rate limit window. A review that never comes back clean, wrong JSON on every attempt, an unretryable error, simply returns `None` and gets dropped from the array. There is no fallback score, no "review failed" placeholder shown to the user. This is a deliberate choice: a broken free reviewer should never drag down the experience of a genuinely good answer.
+
+### 4.5 The five frontier chat and image routes, and their refund siblings
+
+`POST /api/claude-chat`, `POST /api/chatgpt-chat`, `POST /api/gemini-chat`, `POST /api/gemini-image`, `POST /api/chatgpt-image`, each with a `.../refund` sibling. All five share one shape almost word for word. Body: `{prompt, model, history_id, request_id}`, plus one of the headers `X-User-Claude-Key`, `X-User-ChatGPT-Key`, `X-User-Gemini-Key` if the user brought a personal key (the Gemini header covers both Gemini chat and Gemini image, since it is one API key for both tiers). Step one is always the availability flag for that SDK. Step two is always `_get_authenticated_user_id()`, guests and anonymous users get a flat 401, no degraded experience, no free preview. Step three checks the header for a personal key, and only if there is none does it read that provider's own Firestore counter and compare it against that provider's own limit, currently 10 for all five, returning `{"error": "FREE_TIER_EXHAUSTED"}` with a 403 before ever calling the official SDK if the count is already at the ceiling. Step four calls the SDK function and reads back whichever `error_code` it set. Step five, if the call happened at all, meaning it got past the quota gate, appends the result onto the existing history document named by `history_id`, unless that `request_id` has already been marked cancelled by a Stop Generating click that raced ahead of it.
+
+The five quota fields are `claude_free_tier_usage`, `gemini_free_tier_usage` (this one is the image tier specifically), `gemini_text_free_tier_usage`, `chatgpt_free_tier_usage`, `chatgpt_image_free_tier_usage`, each an independent integer on that user's document in the `users` collection, each touched with `firestore.Increment(1)` on success and never checked in the same transaction as the read, a deliberate simplification explained in section 6.
+
+Error classification differs slightly per SDK, and the exact order matters. For Claude, inside `call_claude_model()`, catching `anthropic.APIStatusError` first checks whether the message contains the substring "credit balance" or the error type equals `billing_error`, and if either is true it returns `SERVER_CREDITS_EXHAUSTED`. This was verified against a real account: the actual shape Anthropic returns for an exhausted account is 400 plus `invalid_request_error` plus a message containing "credit balance", not the 429 the intuitive guess would expect, and not the 403 plus `billing_error` combination the general docs imply either, that combination is kept only as a defensive fallback. A 401 on that same exception maps to an invalid key message. Anything else in that branch becomes `Error {status_code}: {message}` verbatim. `anthropic.APIConnectionError` separately maps to the generic busy message. For Gemini, both `call_gemini_image_model()` and `call_gemini_text_model()` share `_classify_google_genai_error()`, which reads `status_code`, `code`, `status`, and `message` off the exception with `getattr()` duck typing, because the real exception classes live in an underscore prefixed private submodule of `google-genai` with no stable public import path. A `status_code` of 429, or a `status` string of `RESOURCE_EXHAUSTED`, maps to quota exhausted. A `status_code` of 403 maps to permission denied. This is the one provider where only the quota exhausted path has actually been fired against a real, zero quota account, the 403 path is docs only, an open verification gap worth saying out loud in an interview rather than overstating confidence. For ChatGPT, both `call_chatgpt_model()` and `call_chatgpt_image_model()` share `_classify_openai_error()`, checking for the error code `insufficient_quota` or that substring in the message, mapping it to quota exhausted, and a 401 to permission denied, everything else falls through as `Error {status_code}: {message}`.
+
+The friendly message returned to the user branches on whether they brought a personal key. If they did and their own key ran dry, the message tells them to check their own account. If the developer's shared key ran dry while the user's own trial quota still had room left, the message tells them the problem is on the developer's side and to reach out, because blaming the user's quota in that case would be simply wrong. Either way, this kind of failure never counts against the user's free quota, since the quota check already happened earlier in the function and passed, and the increment only ever runs on a genuinely successful call.
+
+### 4.6 `POST /api/generate-images`, and the two image timeout constants
+
+Structurally identical to `/api/compare`, one stage, no peer review, calling `test_g4f_image_provider()` through its own `ThreadPoolExecutor`. Inside that function, exceptions are classified in this order, and this order also cannot flip: on the first attempt, a 429 or "queue" keyword triggers exactly one retry, waiting `2 + random(0, 1)` seconds first. On any other exception, or a retry that also failed, GPU quota keywords (`zerogpu`, `gpu token limit`, `gpu quota`) get checked before the general network keyword list, because a GPU quota exhausted error will never succeed on retry, retrying it just wastes another slot in an already tight shared pool, so it needs its own friendly message and must never be mistaken for a transient network blip.
+
+The timeout math is a formula, not a set of hand tuned constants per provider. `IMAGE_GENERATION_ADVISORY_TIMEOUT` is 40 seconds, the value handed to g4f's own `timeout` kwarg. The outer, hard cutoff used by `future.result()` is computed as `advisory * 2 + 5`, giving 85 seconds by default. The reason for doubling rather than adding a small fixed buffer is the retry: a single attempt, whether it is the first one about to throw a 429 or the retried second one about to actually succeed, can each independently run close to the full advisory window before finishing, so the outer wait has to cover two full advisory windows plus a small scheduling buffer, not one. `AnyProvider`, g4f's own aggregator style provider that tries several real backends internally before giving up, gets its own advisory override of 70 seconds through `IMAGE_PROVIDER_TIMEOUT_OVERRIDES`, and its outer value is still derived through the exact same formula, giving 145 seconds, never hand set as its own separate constant. That 145 number is also why `app.yaml`'s gunicorn worker timeout is set to 300 seconds, it needs to outlive the single slowest possible image call plus a peer review batch queued up behind it.
+
+### 4.7 History routes, both collections
+
+`GET/PATCH/DELETE /api/history[...]` and the identical `/api/image-history[...]` set, all behind `_get_authenticated_user_id()`, guests included in the reject. Pagination reads the entire matching Firestore query for that `user_id`, a single field equality filter, then sorts and slices in Python, explained in section 6. Deleting an image history entry reads the entry first, deletes the Firestore document second, and only after that walks the just deleted entry's `results` array to remove the matching local files under `get_media_dir()`, because once the document is gone there would be no way to recover which filenames it had referenced.
+
+### 4.8 `GET /api/quota-status`, `GET /health`
+
+Quota status needs a login, same guard as everywhere else, and returns all five counters and their limits in one call, used by the frontend to refresh the Trial Quota badges after every frontier call instead of guessing locally whether that call consumed a unit. Health needs no login and reports which SDKs actually imported, which provider lists are populated, and whether the routing and peer review prompt tables loaded, useful as a first check when something is misbehaving in a deployed instance.
+
+## 5. Concurrency and the Stop Generating machinery, in detail
+
+The scheduling pattern repeats three times in this codebase with only the payload changed: build a `ThreadPoolExecutor`, submit one task per provider, collect each `future.result()` with its own timeout, and catch a timed out future without letting it take down the whole batch. This is what lets one slow or hanging g4f provider fail its own future without blocking the other providers in the same request, since each future is waited on independently, not as one big blocking gather.
+
+Stop Generating is worth understanding because it looks simple from the browser and is not simple on the server. Clicking Stop only calls `AbortController.abort()` on the browser's own fetch. It does not, and cannot, reach into the Flask worker thread that is still sitting inside `anthropic.messages.create()` or `genai.interactions.create()` on the server, because this deployment is a normal synchronous WSGI app, not something that can be cooperatively cancelled mid call. That server side call keeps running to completion no matter what the browser does. So two problems exist independently of each other. First, the quota counter might already be incremented by the time the user gave up waiting. Second, the eventual result, arriving after the user has moved on, might still get written into history as if it were expected.
+
+The refund ledger, `_PENDING_FRONTIER_REFUNDS`, solves the first problem. Every time a frontier route actually succeeds in incrementing a quota counter, it records that call's one time `request_id`, generated by the frontend, together with `user_id` and provider name, into this in memory dict. When the browser's abort fires, it calls that provider's `/refund` endpoint with the same `request_id`. The refund only actually decrements the counter if the ledger has a matching entry for that exact `request_id`, `user_id`, and provider, and it removes the entry from the ledger the instant it matches, so the same `request_id` can never be replayed to refund twice. There is a real floor on the decrement side too, `decrement_*_free_tier_usage()` reads the current value first and refuses to go below zero, a defensive backstop on top of the ledger's own one shot guarantee.
+
+The cancellation registry, `_CANCELLED_HISTORY_REQUESTS`, solves the second problem, and it is a separate mechanism because it needs to cover g4f calls too, which have no quota to refund but still must not silently create a history entry the user thinks does not exist. `/api/compare/cancel` and `/api/generate-images/cancel` mark the g4f side's `request_id`. The five frontier `/refund` routes mark their own `request_id` as a side effect, no extra frontend call needed there. Every place that is about to persist, `save_chat_history()`, `save_image_history()`, and every `_append_*_result_to_history()` helper, checks `_is_request_cancelled()` first and skips the write entirely on a hit.
+
+Both structures are plain Python dicts, live only in that one process's memory, and evict entries older than 600 seconds on every write, a lazy sweep rather than a background timer. Neither is persisted or shared across GAE instances, which is the same stateless tradeoff discussed in section 3.2, the failure mode here is small, a missed refund or a stray history entry, and was accepted rather than solved with something like Redis, since this project deliberately keeps its infrastructure to just Firestore plus GAE with no extra moving pieces.
+
+## 6. Data layer, and the security reasoning behind it
+
+### 6.1 Collections
+
+`users` holds username, email, a Werkzeug password hash, a creation timestamp, and the five quota integers listed in section 4.5. `history` holds one document per chat comparison: `user_id`, `title` (the first 15 characters of the prompt), `prompt`, `results`, `created_at`, `is_pinned`, and `pinned_at` when pinned. `image_history` mirrors that shape exactly but is a fully separate collection, never merged with `history`, because the result objects inside it use the 8 field image contract, not the 7 field text contract, and mixing the two would force every reader of the collection to first figure out which schema a given document is using.
+
+### 6.2 Why sorting and paging happen in Python, not in Firestore
+
+`get_chat_history_list()` and `get_image_history_list()` both run exactly one Firestore query, a single field equality filter on `user_id`, nothing else, then pull every matching document into a Python list and sort it there before slicing out the requested page. The original version tried to order by `is_pinned` and then `created_at` inside the Firestore query itself, which Firestore treats as a composite query, and a composite query needs a composite index that Firestore does not create automatically. That index has to be created by hand in the console, it does not travel with a code deploy, and forgetting to create it in a fresh environment throws a `FAILED_PRECONDITION` straight back as a 500, not a graceful fallback. Since one user's history is never going to be large enough for client side sorting to matter for performance, moving the sort into Python traded a small, constant amount of CPU work for removing an entire class of "it works in my project but breaks in a fresh Firebase project" failure.
+
+The sort itself has a specific two group shape. Pinned documents sort as one block ahead of everything else, ordered inside that block by `pinned_at` ascending, meaning whichever item was pinned first stays on top and each later pin lands below it, never displacing an older pin. Unpinned documents sort by `created_at` descending, most recent first, the ordinary case. Unpinning removes the `pinned_at` field entirely with `firestore.DELETE_FIELD`, rather than setting it to `None` or zero, so that a later re-pin gets a clean, fresh timestamp instead of resurrecting whatever value used to be there. Any code that checks whether a pin toggle failed has to compare with `is None`, never a plain falsy check, because a successful unpin returns the boolean `False`, which is a perfectly valid result, not a failure.
+
+### 6.3 Ownership checks and the append only history model
+
+Every history function except the two that create a new document reads that document first and compares its `user_id` field against the caller before doing anything else, returning `False` or `None` on a mismatch or a missing document rather than raising. `append_chat_history_result()` and `append_image_history_result()` can only ever append to a document that already exists, they read the current `results` array, add the new entry, resort the whole array by the same success first, faster first rule used everywhere else, and write it back in one update. Neither function can create a document. The only two functions that ever create a new `history` or `image_history` document are `save_chat_history()` and `save_image_history()`, both only ever called from the g4f stage. This means a frontier route, even a compromised or buggy one, structurally cannot manufacture a brand new history record out of nothing, it can only attach a result to a record the g4f call already started, which is a meaningful security boundary, not just a style preference.
+
+### 6.4 Quota counters and why there is no transaction
+
+All five quota counters are read with a plain document get and written with `firestore.Increment(1)` or `Increment(-1)`, which is atomic at the single field level, meaning two concurrent increments on the same field cannot stomp on each other and lose an update. What is not atomic is the gap between checking the current value against the limit and then calling increment afterward, those are two separate round trips with no transaction wrapping them, so in principle two requests racing at the exact same instant could both read "9 out of 10 used" and both proceed, letting the count end at 12. This is a deliberate, accepted simplification given the actual scale of this project, not an oversight, and it is worth saying that plainly rather than pretending the system is airtight. The bigger, actually unresolved problem living next to it is that all five quotas are counted per registered account, and there is currently no IP rate limiting or CAPTCHA, so anyone willing to register a second free account gets a second free 10 calls per provider. Three fixes are on the table and none are built yet: IP based rate limiting, which first needs confirming a trustworthy client IP is even available under how GAE terminates connections, a CAPTCHA on registration, or email verification.
+
+### 6.5 Personal keys never touch the server's disk
+
+A user's own Claude, ChatGPT, or Gemini key lives only in the browser's `localStorage`, keyed as `user_claude_key`, `user_gemini_key`, `user_chatgpt_key`, and is sent as a request header on every call that needs it, `X-User-Claude-Key` and so on. The backend reads that header, uses it to build that one request's SDK client, and never writes it anywhere, not to Firestore, not to a log line, not to disk. This is the entire reason "bring your own key" can exist without adding a secrets management system to the project: the key genuinely never becomes server side state at all.
+
+## 7. Directory layout, as it actually exists today
 
 ```
 llm_aggregator/
-├── main.py                  # Flask entry point, all routes
-├── auth/
-│   ├── __init__.py          # auth_bp blueprint
-│   ├── db.py                 # Firebase init, user CRUD, history CRUD, quota counters
-│   └── routes.py             # /login /register /logout /profile
-├── templates/
-│   ├── home.html             # the only entry point for logged-out, non-guest visitors
-│   ├── index.html            # main app page: compare form, text-to-image form, Recents sidebar
-│   ├── history.html           # read-only chat history detail page
-│   ├── image_history.html     # read-only text-to-image history detail page
-│   ├── apikey-config.html      # personal API key config page
-│   └── auth/
-│       ├── base.html          # shared layout for auth pages
-│       ├── login.html / register.html / profile.html
-├── tests/                    # unittest tests, not deployed
-├── availability_g4f/          # provider availability probing scripts, dev-only, not deployed
-├── assets/                    # README screenshots, not deployed
-├── firebase-key.json           # local Firebase key, must never be committed
-├── .env                        # local environment variables, must never be committed
-├── app.yaml                    # GAE deploy config, committed, env_variables use ${VAR} placeholders, no real secrets
-├── requirements.txt
-└── env/                         # virtualenv, not committed
+  main.py                 all Flask routes, all g4f + frontier call chains, all timing/retry logic
+  auth/
+    __init__.py            defines auth_bp, a Blueprint with no prefix
+    db.py                  Firebase init, user CRUD, chat + image history CRUD, quota counters
+    routes.py              /login /register /logout /profile, each wrapped in try/except + flash
+  templates/
+    home.html               the only page an anonymous, non-guest visitor ever sees
+    index.html               the main app: compare form, text-to-image form, Recents sidebar
+    history.html              read-only chat history detail page
+    image_history.html        read-only image history detail page
+    apikey-config.html        personal API key page, localStorage only, no login guard
+    auth/
+      base.html, login.html, register.html, profile.html
+  tests/                    unittest suite, not deployed, see section 10
+  availability_g4f/         provider probe scripts, dev only, not deployed
+  assets/                   README screenshots, not deployed
+  generated_media/          local dev copy of get_media_dir(); redirected to /tmp on GAE
+  firebase-key.json         local Firebase service account key, never committed
+  .env                      local env vars (SECRET_KEY, PORT, the three API keys), never committed
+  app.yaml                  GAE deploy config, committed, only ${VAR} placeholders in env_variables
+  requirements.txt          pinned via pip freeze, gunicorn is the one hand-added line
+  env/                      local virtualenv, not committed
 ```
 
-### Key points in `main.py`
+## 8. Business rules, condensed
 
-`load_dotenv()` loads environment variables first. `app.secret_key` comes from `SECRET_KEY`. If it is not set, a random value is used instead, which means every session becomes invalid after a restart.
+Three identity states exist and are mutually exclusive in the session: anonymous has neither `user_id` nor `is_guest`, guest has `is_guest = True` and nothing ever written to Firestore for them, logged in has `user_id` and syncs with Firestore. `GET /home` only ever clears `is_guest`, it must never clear `user_id`. Text model fallback has three levels: requested model if supported, else that provider's first model, else `gpt-3.5-turbo` as a last resort. Image model fallback only has the first two levels, there is no universal fallback image model, an unmapped provider returns `None` and the frontend just shows `default`. The sort rule, success first then shorter response time first, is identical for text and image and is applied in exactly three places: right after the g4f concurrent stage, right after every history append, and nowhere else needs it since peer review does not reorder the array, only attaches to it.
 
-`index()` is the core identity router: if the user is not logged in and is not a guest, it renders `home.html`; otherwise it renders `index.html`, and computes the Trial Quota context through `_get_frontier_quota_context()` (all five frontier providers) to pass into the template. For guests and anonymous users every quota value comes back as `None`, not a "shown as 0/10" fallback.
+## 9. Known risks, still open
 
-`home()` (`GET /home`) only clears `is_guest`. It does not touch `user_id`. Then it redirects to `/`.
+Multiple free quotas can be farmed with throwaway accounts, discussed in 6.4, unresolved. Local media on GAE is per instance, a request landing on a different instance than the one that wrote the file gets a 404, discussed in 3.2, the real fix is shared object storage, not attempted yet. Some free g4f providers return a flat "Access from cloud provider blocked" the instant they run from a cloud IP even though they work fine on a laptop, Groq and OpenRouterFree were both dropped after exactly this happened on a real GAE deploy, so any new g4f provider needs to be checked against a real deployed instance, not just local dev, before it is trusted. Gemini's error classification has only actually been fired against one real scenario, a zero quota account returning 429, the 403 permission denied path is still docs only. The frontend's animations, optimistic updates, and scroll behavior have no automated test coverage at all, verification there is manual only.
 
-`view_history(id)` handles the chat history detail page: anonymous users get redirected to the home page, logged-in users get the page rendered after an ownership check, and guests get an empty shell that the frontend fills in by reading `sessionStorage`. `view_image_history(id)` handles the image history detail page, and its rule is different: both guests and anonymous users are redirected straight to the home page. There is no empty-shell case here, because image history offers guests no record at all, in any form.
+## 10. Build, run, test, deploy, quick version
 
-`_get_authenticated_user_id()` is the shared guard function for chat history, image history, all frontier providers, and quota query routes. Guests and anonymous users are always treated as unauthenticated and get a 401.
-
-The pure functions for model fallback are `determine_actual_model()` (text) and `determine_actual_image_model()` (image); the rules are in section 6. `init_result_object()`/`init_image_result_object()` build the standard result dict. `detect_and_truncate()` does duplicate detection and blocked-word filtering. `parse_peer_review_json()` extracts a score and a comment from a peer review answer via `_extract_balanced_json_candidates()` (brace-depth scanning, tries the last candidate first); if parsing fails it falls back to `(80, original_text)`.
-
-`test_g4f_provider()` and `test_g4f_image_provider()` are the core test functions for each of the two g4f chains. Their retry logic and error classification order are fully independent of each other; the exact order is in section 6. `compare_providers()` runs the g4f concurrent test stage only (peer review is now a separate endpoint, see below); logged-in users trigger `save_chat_history()`. `generate_images()` runs the single-stage concurrent flow; logged-in users trigger `save_image_history()`.
-
-Each of the five frontier call functions (`call_claude_model()`, `call_chatgpt_model()`, `call_gemini_text_model()`, `call_gemini_image_model()`, `call_chatgpt_image_model()`) takes `(prompt, model_key, user_api_key=None, apply_persona=True)`. If `user_api_key` has a value, the client is built with the user's own key; otherwise it reads the developer's key from the environment. This is the single branch point for key routing; no caller should ever bypass it to instantiate a client directly. `apply_persona=False` is passed only during peer review, so a provider's own hidden style prompt never leaks into a review request. Claude's balance-exhausted detection checks whether `error.message` contains "credit balance" (verified against a real account; the 403 + `billing_error` combination from the docs is kept only as a compatibility fallback). Gemini's quota-exhausted detection checks `status_code == 429` (also verified against a real account) and reads exception attributes with `getattr()` duck typing on purpose, because google-genai's exception classes have no stable public import path.
-
-`run_peer_review()` runs one peer review call with up to `PEER_REVIEW_MAX_ATTEMPTS` attempts, retrying only transient rate-limit errors with growing backoff; on final failure it returns `None` instead of a fallback message, so the review is hidden rather than shown with a fake score. `run_cross_peer_review()` (reached via `POST /api/peer-review`) is the standalone scheduler that peer-reviews every successful result (g4f and frontier) against every other; it serializes tasks aimed at the same reviewer identity with a per-reviewer lock, and computes its outer timeout dynamically from queue depth rather than a hardcoded constant.
-
-`_append_claude_result_to_history()` and its four frontier siblings are thin wrappers that append a call's result to an existing history record. If `history_id` is empty, they skip. If the append fails, it is only logged; it never affects the response for this request. They also check the in-memory cancellation registry (`_CANCELLED_HISTORY_REQUESTS`) before appending, so a Stop-Generating click can't still land a write after the frontend gave up on it.
-
-`quota_status()` (`GET /api/quota-status`) returns quota for all five frontier providers, using the same auth guard. `apikey_config()` (`GET /apikey-config`) only renders the page and has no login guard, because the page itself makes no request that needs permission; it only stores data in the browser's `localStorage`.
-
-### Key points in `auth/db.py`
-
-On init, it first looks for a local `firebase-key.json`, and only falls back to `ApplicationDefault()` (for GAE) if that file is not found. It must check whether the key file exists first, because `ApplicationDefault()` resolves credentials lazily, so its constructor throwing an exception cannot be used as the signal.
-
-Any exception sets `FIREBASE_AVAILABLE` to `False`. Every history CRUD function checks this flag internally; none of them rely on the caller to check it. Except for create operations, every other operation reads the document first to verify that its `user_id` field matches. If it does not match, or the document does not exist, the operation is rejected and a fallback value is returned.
-
-All queries use the new form `.where(filter=FieldFilter(field, op, value))`. Do not use the deprecated positional form `.where(field, op, value)`, which fills the logs with deprecation warnings.
-
-`append_chat_history_result()`/`append_image_history_result()` can only append to a record that already exists; they cannot create a new one. The append logic is: read the existing results list, append the new result, re-sort using "success first, then shorter response time first," then write the whole thing back.
-
-The `pinned_at` field controls pin sort order: pinning writes `SERVER_TIMESTAMP`; unpinning removes the field entirely with `DELETE_FIELD` (not by setting it to `None`). The sort rule is: within the pinned group, sort by `pinned_at` ascending; within the unpinned group, sort by `created_at` descending. Both chat history and image history follow this same rule.
-
-`get_chat_history_list`/`get_image_history_list` both do a single-field equality query only. Sorting and pagination happen in the Python layer, which avoids depending on a composite index that would need to be created by hand in the Firebase console.
-
-Claude and Gemini keep their own dedicated quota functions (`get_claude_free_tier_usage()`/`increment_claude_free_tier_usage()`/`decrement_claude_free_tier_usage()`, and a parallel Gemini set), each reading/writing one integer field on the `users` collection document with `firestore.Increment(1)`/`(-1)` for atomicity; there is no need to pre-write an initial value, `.get(field, 0)` is a sufficient fallback. ChatGPT chat, Gemini chat, and ChatGPT image instead share generic `get_free_tier_usage()`/`increment_free_tier_usage()`/`decrement_free_tier_usage(field_name)` helpers, parameterized by field name (`chatgpt_free_tier_usage`, `gemini_text_free_tier_usage`, `chatgpt_image_free_tier_usage`). All five counters are independent and share nothing. The decrement functions back a one-time refund ledger (`_PENDING_FRONTIER_REFUNDS` in `main.py`) used when a request is cancelled after its quota increment already happened; it only recognizes increments that really happened and cannot be replayed to farm quota. Checking a quota and incrementing it are two separate Firestore operations with no transaction between them; this is a deliberate simplification.
-
-### `auth/routes.py`
-
-Every route has an outer `try/except`, and on error it responds through `flash()`. A successful login or registration writes `session['user_id']`/`username` and clears `is_guest`. Logging out clears all three session keys. `/profile` first checks `session['user_id']` and redirects to the login page if it is missing.
-
-### Key points in the frontend templates
-
-`templates/index.html` uses a two-column layout: a 260px-wide dark sidebar on the left, and the main content area on the right. The sidebar uses `position:sticky` plus a pure CSS `calc()` height, instead of computing pixel heights in JS by hand. This avoids rounding errors that would otherwise stack up with the page zoom.
-
-Text-to-image mode and chat mode are two mutually exclusive containers, switched by `switchToImageMode()`/`switchToCompareMode()`. Every provider checkbox (free or frontier) must use its own separate class and must not share a class with any other provider, because some queries in the project use `querySelectorAll` without scoping to a container, and a shared class name would let forms cross-contaminate each other.
-
-The Recents sidebar supports both a chat history mode and an image history mode, switched by the `sidebarMode` variable, and both physically share the same `#sidebarRecents` container. The image version of Recents is only open to logged-in users; guests see a lock message and no network request is ever made. Chat history falls back to a sessionStorage mirror for guests; image history has no fallback at all for guests. This asymmetry is intentional.
-
-Both the chat form and the image form use a "four-section" layout: first the frontier provider selection area (one card per frontier provider), then that provider's own model dropdown, then the free g4f provider checkbox area, then the free model dropdown. The frontier area and the free area are two separate containers and must not be merged.
-
-Each of the five frontier model dropdowns is a custom component (`.custom-select-wrapper`/`.custom-select-trigger`/`.custom-options`/`.custom-option`, built by the shared `setupFrontierModelDropdown()`), not a native `<select>` — a native popup's colors/hover state cannot be fully restyled with CSS. The native `<select>` is kept underneath, hidden with `display:none`, purely to hold the `.value`/`.disabled` state that the rest of the code already reads. The free-model dropdown (`#customOptions`/`#imageCustomOptions`) uses `position:fixed`, computed on open via `getBoundingClientRect()` (divided by `--page-zoom`), so it never inflates the scrollable height of the page; the panel collapses on real page scroll. Selecting a new option delays the black "selected" highlight by `MODEL_HIGHLIGHT_DELAY_MS` so it doesn't snap ahead of the panel's own collapse animation.
-
-Each provider (free or frontier) remembers its own model selection independently — `providerModelSelections`/`imageProviderModelSelections` — and the shared free-model dropdown always binds to whichever free provider was checked most recently, not a merged union list. On submit, per-provider overrides go out as a `provider_models` dict, not one global model field.
-
-Frontier-only mode (`#frontierOnlyToggle`/`#frontierOnlyToggleImage`) force-unchecks and grays out every free provider checkbox and locks the free model dropdown; submitting with it on and no frontier provider checked is blocked client-side with an alert.
-
-Guests and anonymous users see a grayed-out card on every frontier provider with the message "Log in to unlock frontier models." When the form is submitted, if any frontier card is checked, the frontend sends one extra request per checked frontier provider after the g4f results, and merges each result into the same rendered list; once every checked provider (g4f and frontier) has answered, the frontend calls `POST /api/peer-review` to trigger cross-namespace peer review.
-
-Every piece of user-visible text on the page must be in English. No Chinese text is allowed there. This rule does not govern code comments or this document itself.
-
-For scrollbars, the project draws its own draggable scroll indicator, and the native scrollbar is fully hidden. When a custom dropdown panel closes, it must use `max-height:0` plus `overflow:hidden`, not just `opacity:0`/`visibility:hidden`; otherwise the invisible box would still expand the page's scrollable area.
-
-## 5. Core execution flow
-
-1. On startup: load environment variables, register the auth blueprint, initialize Firebase, redirect g4f's media directories to `/tmp`, and probe whether g4f/anthropic/openai/google-genai can be imported correctly.
-2. Visiting `/`: `index()` checks login state and decides whether to render the home page or the main app page.
-3. Guests go through `/api/auth/guest`; login and registration go through their own forms.
-4. Chat comparison goes through `/api/compare` (skipped entirely in Frontier-only mode): tests each g4f provider concurrently, sorts the results, saves history for logged-in users, and returns the results.
-5. Each checked frontier chat provider goes through its own route (`/api/claude-chat`, `/api/chatgpt-chat`, `/api/gemini-chat`): auth guard, own-key check, quota check, call the official API, classify the error, update the quota counter, append to the history record.
-6. Text-to-image goes through `/api/generate-images`, structurally identical to step 4 but for the image g4f chain.
-7. Each checked frontier image provider goes through its own route (`/api/gemini-image`, `/api/chatgpt-image`), structurally identical to step 5.
-8. Once every checked provider has responded, the frontend calls `POST /api/peer-review` to run cross-namespace peer review over every successful result.
-9. Clicking Stop Generating aborts in-flight requests client-side and calls the matching `/cancel` or `/refund` endpoint so the request never writes to history and any already-consumed quota is refunded.
-
-## 6. Core business rules
-
-### The three identity states
-
-An anonymous user has no `user_id` and no `is_guest`. They see `home.html` on the home page, and nothing is ever stored for them. A guest has `is_guest=True`. They see the main app page plus a guest badge, and their data lives only in frontend memory and sessionStorage; nothing is written to the database. A logged-in user has `user_id`, and their data syncs with Firestore. These three keys are mutually exclusive: whenever `user_id` is present, `is_guest` must already be cleared, and the same holds in reverse.
-
-### Model fallback rules
-
-Text models follow three rules: if the requested model is in the mapping table, use it directly; if it is unsupported or not specified, use the first model in the mapping table; if the provider has no model config at all, fall back to `gpt-3.5-turbo`. Image models only follow the first two rules, with no third fallback: if the provider is not in the mapping table, it returns `None`, and the frontend shows it as `default`.
-
-### Peer review rules
-
-Cross-namespace peer review (`run_cross_peer_review()` / `POST /api/peer-review`) runs after the frontend has collected every checked provider's result (g4f and frontier together). The trigger condition is: at least 2 results total, and at least 2 successes. Every successful answer is reviewed by every other successful answer, never itself; a failed result neither reviews nor gets reviewed. `apply_persona=False` is used for the answering call made during a review, so a provider's own style prompt never leaks into review text. If a review's response parses but the JSON extraction fails, it falls back to a score of 80 plus the raw text; if the review call itself exhausts its retries, the whole review is dropped (returns `None`) and simply does not appear, rather than showing a fake fallback score. `run_peer_review()` retries only transient rate-limit errors, with growing backoff, up to `PEER_REVIEW_MAX_ATTEMPTS` attempts total; `run_cross_peer_review()` serializes tasks aimed at the same reviewer identity behind a per-reviewer lock so a single rate-limited backend never gets hit by a whole concurrent batch at once, and its outer timeout is computed from queue depth, not hardcoded. The endpoint accepts at most `MAX_PEER_REVIEW_ENTRIES` (10) results and validates each entry's provider/model/type combination against the matching availability flag, silently dropping invalid entries; login is required as soon as any frontier reviewer is involved, while a pure g4f list stays guest-accessible.
-
-### Sort rule
-
-Successful results come first. Among results with the same success state, the one with the shorter response time comes first. Both the text chain and the image chain share this same sort expression.
-
-### Error message classification order
-
-On the text side, content moderation errors (like an Azure OpenAI moderation block) must be classified before network errors, because retrying a moderation error is pointless, and misclassifying it as "system busy" would push the user into a useless retry.
-
-On the image side, GPU quota exhausted errors must be classified before network errors, because a quota exhausted error should never be retried: retrying does nothing for an already-exhausted quota, and it adds pressure to an already tight free resource pool.
-
-### Image generation retry rule
-
-Only transient rate-limit errors, like a 429 or a full queue, get retried, and only once, waiting 2 to 3 seconds of random jitter before the retry. GPU quota exhausted errors and content moderation errors are never retried.
-
-### Image generation timeout budget
-
-The default advisory timeout is 40 seconds. The outer timeout is not a hardcoded constant; it is computed on the fly with the formula `2 * advisory + 5 second buffer`, which comes out to 85 seconds in the default case. It uses double the advisory time because a retry can run up to two attempts, and each one might run close to the full advisory time before finishing. `AnyProvider`, an aggregator-style provider, measurably takes longer, so it gets its own advisory budget of 70 seconds; its outer time is still computed by the same formula, not hardcoded separately.
-
-If some provider in the future needs more time, give it its own advisory override instead of raising the global default across the board, which would slow down the worst-case wait time for every provider batch.
-
-### Frontier-only mode
-
-When `frontier_only` is true in the request body, `/api/compare` and `/api/generate-images` force `providers_to_test` empty, skipping the entire g4f concurrent stage — this does not fall back to the old legacy meaning of "empty providers array means test everything." A history record is still created (with empty g4f results) for frontier calls to append to.
-
-### Claude / ChatGPT / Gemini access control
-
-Guests and anonymous users are always blocked from every frontier provider, with two layers of defense: the frontend shows a grayed-out card, and the backend returns 401. There is no degraded tier.
-
-Each of the five frontier providers has its own free-call limit (currently 10 each, independent constants and independent Firestore fields — never share one). The limit is only checked and consumed when the user did not bring their own key, and only a successful call consumes it; a failed or cancelled call does not count. Once a quota is used up, the backend blocks the request outright and never calls the official API, so it never touches the developer account's own budget. There is no transaction protecting the gap between checking a quota and incrementing it; this is a deliberate simplification. One click still consumes at most one quota unit per provider clicked.
-
-A user can enter their own key on the `/apikey-config` page, per provider (`X-User-Claude-Key`, `X-User-ChatGPT-Key`, `X-User-Gemini-Key` — the Gemini key covers both its chat and image tiers). Keys live only in the browser's `localStorage` and are sent per-request; the backend never persists a personal key.
-
-When a developer account's balance/quota is exhausted, this is converted into a provider-specific error code (e.g. `SERVER_CREDITS_EXHAUSTED` for Claude, `SERVER_QUOTA_EXHAUSTED` for Gemini/ChatGPT) and returned as a 503; it never counts against the user's free quota. The friendly message text branches on whether the user brought their own key: exhausting your own key tells you to check your own account; exhausting the developer key (while your trial quota still has uses left) tells you to contact the developer.
-
-Gemini's verification coverage is the smallest of the five: only the quota-exhausted scenario has been verified against a real, zero-quota account. The "success with sufficient quota" and "403 from an invalid key" paths are only backed by docs and mock data — a known, still-open verification gap.
-
-## 7. Data models
-
-### LLM Result (text, 7 fields; a peer-reviewed result gets one extra `peer_reviews` array, making 8 fields)
-
-```python
-{
-    'provider': str, 'success': bool, 'response': str, 'error': str,
-    'response_time': float, 'model': str, 'type': 'g4f'
-}
 ```
-
-### Image Result (image, 8 fields, an independent contract, not mixed with the text DTO)
-
-```python
-{
-    'provider': str, 'success': bool, 'url': str | None, 'b64_json': str | None,
-    'error': str, 'response_time': float, 'model': str, 'type': 'g4f_image'
-}
-```
-
-`url` and `b64_json` are mutually exclusive; on success only one of them is non-empty.
-
-### Frontier chat results (Claude, ChatGPT, Gemini-chat)
-
-```python
-{
-    'provider': str, 'success': bool, 'response': str, 'error': str,
-    'response_time': float, 'model': str, 'type': str,  # 'anthropic' / 'openai' / 'google_genai_text'
-}
-```
-
-Same shape as LLM Result but independent from it: `type` differs per provider and there is no `peer_reviews` field at the top level (cross peer review results, when present, are attached separately by the frontend/`/api/peer-review`, not baked into this DTO).
-
-### Frontier image results (Gemini-image, ChatGPT-image)
-
-```python
-{
-    'provider': str, 'success': bool, 'url': None, 'b64_json': str | None,
-    'error': str, 'response_time': float, 'model': str, 'type': str,  # 'google_genai' / 'openai_image'
-}
-```
-
-Same shape as Image Result but independent from it: the official APIs return image bytes directly as base64, so `url` is always `None` in the response returned for the live request. Before being appended to the Firestore history record, `_persist_image_result_local_copy()` converts `b64_json` into a local file and swaps it for a `url` (see section 2). So the persisted copy read back from history has a non-empty `url` and a `None` `b64_json`.
-
-### Firestore collection layout
-
-The `users` collection stores username, email, password hash, creation time, and five quota fields: `claude_free_tier_usage`, `gemini_free_tier_usage`, `gemini_text_free_tier_usage`, `chatgpt_free_tier_usage`, `chatgpt_image_free_tier_usage`.
-
-The `history` collection (logged-in users only) stores chat history, with fields `user_id`, `title`, `prompt`, `results`, `created_at`, `is_pinned`, `pinned_at`. The `results` array may mix g4f-shaped results with any frontier chat result, so rendering code must defensively handle the case where `peer_reviews` may not exist.
-
-The `image_history` collection (logged-in users only) has a similar structure, but is a fully separate collection storing image-type DTOs. Its `results` array may mix g4f image results with Gemini-image/ChatGPT-image results.
-
-Never merge these two collections, and never cross-use their discriminator fields.
-
-### CRUD contract table
-
-| Function | Args | Success | Failure |
-|---|---|---|---|
-| `save_chat_history` | `user_id, prompt, results` | dict with an id | `None` |
-| `get_chat_history_list` | `user_id, limit=20, offset=0` | list of dicts | `[]` |
-| `get_chat_history_by_id` | `user_id, history_id` | dict with an id | `None` |
-| `delete_chat_history` | `user_id, history_id` | `True` | `False` |
-| `update_chat_history_title` | `user_id, history_id, new_title` | `True` | `False` |
-| `toggle_pin_chat_history` | `user_id, history_id` | the flipped boolean | `None` |
-| `append_chat_history_result` | `user_id, history_id, result` | `True` | `False` |
-
-The image history function set has identical names and an identical contract, just against a different collection, plus a delete-time local-media cleanup step (see section 2). Checking whether `toggle_pin` failed must use `is None`, because `False` is a valid success result.
-
-The frontier quota counter functions (Claude/Gemini's dedicated pairs, plus the generic `get_free_tier_usage`/`increment_free_tier_usage`/`decrement_free_tier_usage` used by ChatGPT chat/image and Gemini chat) have no concept of ownership checking, because `user_id` comes directly from the session.
-
-## 8. External interfaces
-
-Chat: `GET /api/providers`, `POST /api/compare`, `POST /api/compare/cancel`, `POST /api/test-single`, `GET /health`.
-
-Cross-namespace peer review: `POST /api/peer-review`, body carries up to `MAX_PEER_REVIEW_ENTRIES` results (g4f and/or frontier); login required once any frontier reviewer is included.
-
-Frontier chat (login required): `POST /api/claude-chat`, `POST /api/chatgpt-chat`, `POST /api/gemini-chat` — body is `{prompt, model, history_id}`, optionally with `X-User-Claude-Key`/`X-User-ChatGPT-Key`/`X-User-Gemini-Key`. Each has a `POST .../refund` sibling for Stop-Generating cleanup.
-
-Frontier image (login required): `POST /api/gemini-image`, `POST /api/chatgpt-image` — same body/header shape as above, each with its own `/refund` sibling.
-
-Quota query (login required): `GET /api/quota-status`, returns per-provider `{used, limit}` for all five frontier providers.
-
-Text-to-image: `GET /api/image-providers`, `POST /api/generate-images`, `POST /api/generate-images/cancel`, `GET /media/<filename>`.
-
-Page routes: `GET /`, `GET /home`, `GET /history/<id>`, `GET /image-history/<id>` (login required, guests/anonymous get redirected), `GET /apikey-config` (no login guard).
-
-Auth: `/login`, `/register`, `/logout`, `/profile`. Guest: `POST /api/auth/guest`.
-
-Chat history (login required): `GET /api/history`, `PATCH /api/history/<id>/title`, `DELETE /api/history/<id>`, `POST /api/history/<id>/toggle-pin`. Image history routes have the same structure, with the prefix swapped to `/api/image-history`.
-
-### Third-party integrations
-
-g4f is used to call free channels with no credentials. The Firebase Admin SDK uses a local key file locally, and ADC on GAE. The `anthropic`, `openai`, and `google-genai` SDKs are the three integrations that need a real, paid key. Gemini image generation through g4f's key-free path is still unavailable; that is unrelated to the official paid Gemini API path and the two should not be confused.
-
-## 9. Known risks and limitations
-
-Timeout values must stay in sync: the peer review internal/outer timeouts and the image generation advisory/outer timeouts must each stay linked through their own formula; do not hand-edit just one side.
-
-Files under `generated_media/` (now under system temp, see section 2) are not scoped per user, and they keep accumulating as long as their matching `image_history` record still exists; there is no automatic cleanup by age. Deleting a record explicitly deletes its matching files, but that only covers the "user actively deletes it" path. The real long-term fix is shared storage (e.g. Cloud Storage) plus a per-user quota; not built yet.
-
-In production (GAE with multiple instances), local disk (including `/tmp`) is independent per instance. If an image is written on instance A and a later request lands on instance B, that request gets a 404. Fixing this requires shared storage, not just a different local path.
-
-All five frontier free quotas are counted per registered account, so anyone can register endless new accounts to get unlimited quota. There is currently no IP rate limiting or CAPTCHA protection. This is a known, unresolved problem. Three directions are being considered: IP-level rate limiting (first needs confirming whether a trustworthy client IP is even available under GAE deployment), a CAPTCHA, and email verification.
-
-Some free g4f providers get a 100% "Access from cloud provider blocked" 403 the moment they run from a cloud IP, even though they work fine locally (Groq and OpenRouterFree were removed for this reason after a real GAE deploy). When adding a new free g4f provider, verify it against a real deployed instance, not just local dev, before trusting the probe script's local-only result.
-
-Gemini's error classification has only been verified against one real scenario (zero quota); see section 6.
-
-The frontend interaction layer (optimistic updates, animations, layout) has no automated tests. The project has not adopted any frontend test framework; verification relies on manual testing.
-
-## 10. Guide for extending and modifying
-
-### Safe zone: adding a new text provider
-
-After running the probe script to confirm it works — including, ideally, from a real deployed instance, not just locally (see section 9 on cloud-blocked providers) — add it to the `G4F_PROVIDERS` list and to `PROVIDER_MODELS_MAP`. Optionally, give it an invisible style prompt and a peer review judge prompt. The frontend wiring is fully automatic; there is no need to touch any HTML or JS.
-
-### Safe zone: adding a new image provider
-
-Same process: add it to `IMAGE_PROVIDERS`/`IMAGE_PROVIDER_MODELS_MAP`. Do not let an image provider share a mapping table or a namespace with a text provider.
-
-### Safe zone: adding a new page
-
-If this page could ever be a redirect target, it must include the flash message display block, otherwise messages will keep piling up in the session.
-
-### Safe zone: adding a new frontier model
-
-First confirm whether the official model ID has changed, then add one mapping entry in the matching `*_MODELS` dict, and add one option to the frontend's custom model dropdown for that provider. There is no need to touch quota or permission logic.
-
-### Safe zone: adding a new frontier provider
-
-Follow the existing pattern from any of the five current frontier providers: an independent call function (own key routing, own error classification), an independent model mapping, an independent quota constant/field, and its own route reusing the shared auth guard, plus a matching `/refund` route. On the frontend, add a new card with its own independent class and its own custom model dropdown (via `setupFrontierModelDropdown()`). In `apikey-config.html`, wire the matching input to its own independent `localStorage` key. Do not let the new provider fall into g4f's namespace or take part in g4f's concurrent scheduling.
-
-### Danger zone: logic not to touch
-
-Do not change the 7-field text contract, the 8-field image contract, or the frontier result shapes in section 7. Do not let text and image providers share a mapping table or a scheduling path. Do not let any provider checkbox reuse another provider's class name.
-
-Do not mix image history into the chat history collection, and do not let `generate_images()` call `save_chat_history()`. Do not let guests or anonymous users use the image version of Recents or the image history detail page.
-
-Do not add a server-side proxy endpoint for image downloads; that introduces an SSRF risk. Downloads must happen in the browser. Do not add "if the file is missing, fetch it from the URL parameter" logic to `/media/<filename>`.
-
-Do not reintroduce any form of automatic cleanup for `get_media_dir()`, whether lazy cleanup by age or wiping the whole directory indiscriminately. Do not change `get_media_dir()` back to a relative path like `./generated_media`; GAE Standard's filesystem is read-only outside `/tmp`, so it must stay redirected to `tempfile.gettempdir()`. Do not let `_persist_image_result_local_copy()` fall back to returning the original oversized `b64_json` on a local write failure; it must return a small failure result so the Firestore append still succeeds.
-
-Do not let the peer review and text-to-image timeouts drift out of sync. Do not remove the `provider_models_json`/`image_provider_models_json` injection in the root route. Do not reverse the classification order between content moderation errors and network errors, and on the image side do not reverse GPU-quota-vs-network-error order either; do not add a retry for GPU quota errors.
-
-Do not change the image timeout formula back from "double the advisory plus a buffer" to "one times the advisory plus a fixed buffer." Do not add a separate outer key to the per-provider timeout override table; the outer value must always be derived from the advisory value through the formula.
-
-Do not set both `user_id` and `is_guest` in the session at the same time. Do not skip the `FIREBASE_AVAILABLE` check and call a CRUD function directly. Do not change the behavior of `GET /home`; it must not clear `user_id`. Do not remove the ownership check inside the history CRUD functions. Do not let the guest path call any history CRUD function. Do not use `if not new_pinned` to check whether a pin operation failed; it must be `is None`.
-
-Do not let `get_chat_history_list` go back to a composite sort query on the Firestore side; sorting must stay in the Python layer. Do not change the pin sort field back from `pinned_at` to `created_at`. Do not bring back the deprecated pattern of "clicking a history item renders it in place into an editable form"; it must fully navigate to a read-only page. Do not switch the guest history storage medium from `sessionStorage` to `localStorage`. On a history detail page, do not navigate away before an in-flight DELETE of the currently-viewed entry actually resolves; await it first and show a toast on failure instead.
-
-Do not remove the `sticky` positioning or the CSS `calc()` fixed height on `.left-sidebar`. Do not bring back the native scrollbar. Do not add any "resubmit" form entry point back to the history detail pages. Do not revert any of the five frontier model dropdowns from the custom `.custom-select-wrapper` component back to a bare native `<select>` — the native popup's colors can't be fully restyled. Do not remove `position:fixed` from the free-model `.custom-options` panel. Do not remove the `MODEL_HIGHLIGHT_DELAY_MS` delay on option selection.
-
-Do not let guests or anonymous users call any frontier route; all must be fully unavailable to them, with no degraded experience. Do not let any frontier card reuse another provider's class. Do not merge the frontier provider selection area and the free provider selection area back into a single container. Do not let any frontier provider take part in g4f's concurrent scheduling.
-
-Do not change the quota check order to "call the official API first, then check quota." Do not let a request that brought its own key still check or increment the free quota. Do not persist a user's personal key on the backend. Do not count balance/quota exhaustion against the user's free quota. Do not let two different frontier quota constants/fields reference the same value.
-
-Do not let any frontier chat/image endpoint call `save_chat_history()`/`save_image_history()` itself to create a new record; it can only append to an existing one. Do not let the append functions skip the ownership check, or turn into an endpoint that accepts arbitrary client-submitted content. Do not forget to swap the internal error code for a user-friendly message before appending to history on the balance/quota-exhausted branch.
-
-Do not let `run_peer_review()`/`run_cross_peer_review()` go back to showing a fallback message when a review call itself fails; a failed review must simply be hidden. Do not remove the per-reviewer-identity lock in `run_cross_peer_review()`, and do not hardcode its outer timeout instead of deriving it from queue depth.
-
-Do not reintroduce Chinese text anywhere user-visible, including page copy, flash messages, the message field in a JSON error body, or prompt text sent to an LLM. This rule does not govern code comments or this document itself.
-
-Do not let the Trial Quota badges render for guests or anonymous users. Do not let the frontend guess locally whether a call consumed quota; it must rely on the backend's real query endpoint. Do not change the quota query endpoint's guard to allow guests.
-
-## 11. Build, run, and test commands
-
-### Environment setup
-
-```bash
-python3 -m venv env
-source env/bin/activate
-pip install -r requirements.txt
-```
-
-### Prerequisites for running locally
-
-You need a `firebase-key.json` in the project root, and a fixed `SECRET_KEY` in `.env`. `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and `OPENAI_API_KEY` are optional; the app starts fine without them, but the matching feature fails when actually called.
-
-### Running
-
-```bash
-python main.py                    # default port 8080
-PORT=5000 python main.py
-gunicorn -b :8080 --timeout 300 main:app   # simulates GAE; 300s covers worst-case image/peer-review latency
-```
-
-After changing anything under `templates/*.html`, you must restart the dev server, because template auto-reload is not enabled. A running process keeps caching the old template, and a hard refresh in the browser will not fix that.
-
-Visit `http://localhost:8080`, and check status with `/health`.
-
-### Automated tests
-
-The project uses `unittest`, with test files under `tests/`. They fall into a few groups: white-box tests of internal functions (model fallback rules, DTO completeness, error classification, and so on), black-box tests of HTTP routes, auth-related tests, dedicated per-provider integration tests, regression tests for the English-only text policy, and regression tests for HTML structural integrity.
-
-Commands to run the tests:
-
-```bash
+python3 -m venv env && source env/bin/activate && pip install -r requirements.txt
+python main.py                 # port 8080 by default
+gunicorn -b :8080 --timeout 300 main:app   # mirrors the real GAE worker timeout
 python -m unittest discover -s tests
-python -m unittest discover -s tests -v
-python -m unittest tests.test_main_whitebox
 ```
 
-Frontend interactions (animations, optimistic updates, the scroll indicator) are not covered by unittest; verification relies on manual testing.
+A `firebase-key.json` and a fixed `SECRET_KEY` in `.env` are required to run locally at all. The three provider API keys are optional, the app starts without them, only the matching feature fails when actually called, except `GEMINI_API_KEY`, which `google_genai.Client()` checks immediately at construction time and raises on if missing, not lazily at call time like the other two SDKs. Templates are not auto reloaded, a change under `templates/` needs a full server restart, a browser hard refresh alone will not pick it up. Deploy is intentionally bare: `gcloud app deploy app.yaml`, no secret manager, no CI, no staging environment, real key values get substituted into `app.yaml` by hand right before running the command and are never committed.
 
-### Smoke tests
+## 11. Rules for extending this project without breaking it
 
-```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/api/providers
-curl -X POST http://localhost:8080/api/test-single -H "Content-Type: application/json" \
-  -d '{"prompt": "What is 2+2?", "provider": "PollinationsAI"}'
-curl -X POST http://localhost:8080/api/compare -H "Content-Type: application/json" \
-  -d '{"prompt": "Hello", "providers": ["PollinationsAI"]}'
-curl -X POST http://localhost:8080/api/auth/guest
-```
+Adding a new free text or image provider only needs an entry in the matching provider list and its matching model mapping table, the frontend wires itself up automatically from that data, no template or JS change needed. Adding a new frontier provider needs its own call function with its own key routing and its own error classifier, its own model mapping, its own quota constant and Firestore field, its own route plus its own `/refund` sibling, and its own frontend card with its own CSS class, never sharing a checkbox class with another provider, since some frontend queries use `querySelectorAll` without scoping to a container and a shared class name would let two providers' forms cross contaminate each other.
 
-Every frontier endpoint needs a logged-in session, for example:
+Do not change the 7 field text contract or the 8 field image contract. Do not let a frontier route call `save_chat_history()` or `save_image_history()` to create its own document, it may only append. Do not reverse the content-policy-before-network-error order on text, or the GPU-quota-before-network-error order on images. Do not add a retry for a GPU quota error. Do not change the image timeout formula away from `2 * advisory + 5`. Do not set both `user_id` and `is_guest` in the same session. Do not skip the `FIREBASE_AVAILABLE` check before calling a CRUD function. Do not check a pin toggle's result with a plain falsy check, it must be `is None`. Do not let guests touch the image version of history in any form, not even a client side mirror, that asymmetry with chat history is intentional. Do not reintroduce automatic, age based cleanup of `get_media_dir()`. Do not add a "fetch it from the URL parameter if the file is missing" fallback to the media route, that is an SSRF door. Do not add a server side proxy for image downloads, downloads must stay a pure browser action.
 
-```bash
-curl -X POST http://localhost:8080/api/claude-chat -H "Content-Type: application/json" \
-  -H "Cookie: session=<session cookie after login>" \
-  -d '{"prompt": "What is 2+2?", "model": "claude-sonnet-5"}'
-```
+## 12. Update log
 
-### Provider availability probe scripts
-
-Only rerun these after a g4f library upgrade, or when you suspect the existing conclusions are stale — and ideally confirm from a real deployed instance too, since some providers block cloud IPs (see section 9):
-
-```bash
-cd availability_g4f
-python find_providers_models.py
-python test_providers.py
-python find_image_providers.py
-python test_image_providers.py
-```
-
-### Dependency management
-
-`requirements.txt` locks versions in `pip freeze` format, with the only exception being `gunicorn`. To update a dependency, run `pip install <package>` and then `pip freeze > requirements.txt`; do not edit version numbers by hand.
-
-### Deploying to GAE
-
-```bash
-gcloud app deploy app.yaml
-gcloud app logs tail -s default
-```
-
-`app.yaml` is committed to git as normal; its `SECRET_KEY`/`ANTHROPIC_API_KEY`/`GEMINI_API_KEY`/`OPENAI_API_KEY` entries under `env_variables` only hold `"${VAR_NAME}"` placeholders, never real values. `gcloud` does not expand these automatically — replace all four placeholders with real values locally by hand before deploying, and never commit the replaced version. `firebase-key.json` is not deployed; GAE uses ADC instead. Keep the simplest possible deploy setup: no secret manager, no CI pipeline, no multi-environment config, no separate deploy script — just `app.yaml` plus `gcloud app deploy app.yaml`.
-
-## 12. Code conventions
-
-### Python
-
-Global constants use uppercase with underscores; functions and variables use lowercase with underscores. Route function names should line up semantically with their path.
-
-Use the module-level `logger` for logging, never `print`. Use INFO level for normal flow milestones, and always pass `exc_info=True` on an error. Truncate long strings in logs; for example, only log the first 50 characters of a prompt.
-
-LLM and text-to-image routes need an outer `try/except` that returns a JSON error body in a consistent shape. Auth routes report errors through an outer `try/except` using `flash()`. The field set of a result dict must not be added to or removed from casually.
-
-### JavaScript and frontend
-
-Use plain JS, with no framework and no build tool. Backend data is injected into the page through Jinja2's `tojson` filter, and parsed on page load. Before parsing a response as JSON, always check `response.ok` first; on a non-2xx status, try to read the `error` field first, and fall back to the status code if that field is missing.
-
-### Commit conventions
-
-Both Chinese and English commit messages are fine. Keep commits atomic: one commit does one thing.
-
-## 13. Key paths, quick reference
-
-Core chat path: submit the form, call `/api/compare` (unless Frontier-only), test each g4f provider concurrently, sort, save history for logged-in users, return JSON; each checked frontier chat provider is then called on its own route and merged into the same rendered list; once everything has answered, `POST /api/peer-review` runs cross-namespace peer review.
-
-Core text-to-image path: `/api/generate-images` (g4f), then each checked frontier image provider on its own route; same sort/save/merge pattern as chat, no peer review restriction on image (frontier image providers aren't included in blind review yet).
-
-Core frontier path (any of the five): auth guard, own-key check, quota check, call the official API, classify the error, update the quota counter on success without a personal key, append to the history record if `history_id` is non-empty, merge into the rendered list. None of this goes through the g4f concurrent scheduler, and it never creates a new history record on its own.
-
-Core auth path: the login form is submitted, goes through the auth blueprint, queries Firestore, writes the session, and redirects to the home page.
-
-Key invariants checklist: result sort order is always success first, then shorter response time first. `user_id` and `is_guest` are never both present at once. Any redirect target page must have a flash display area. The 7-field text contract and the 8-field image contract must not be broken. The error classification order must not be reversed. Peer review trigger is at least 2 results and at least 2 successes; a failed review is hidden, never shown with a fake score. Text and image providers keep strictly separate namespaces. History list queries only do a single-field query plus Python-layer sorting/pagination. Checking whether pinning failed must use `is None`. Guest data is never persisted: chat history mirrors into sessionStorage, image history has no fallback at all. Page zoom is controlled by `--page-zoom`; any CSS involving viewport height must use `calc(100vh/var(--page-zoom))`. `history` and `image_history` are two separate collections and must not be merged. No frontier provider can create a new history record on its own, only append to an existing one. All user-visible text must be in English. Every Trial Quota badge only renders for logged-in users, with numbers from a real backend query, never a frontend guess. Local media storage lives under `tempfile.gettempdir()`, never a relative path.
-
-Core files: all backend logic is in `main.py`; auth logic is in `auth/routes.py` and `auth/db.py`; frontend templates are in `templates/`, with `index.html` as the main app page.
-
-## 14. Update log
-
-(No open entries. Historical entries as of 2026-07-06 were folded into sections 2/3/6/7/8/9/10/11 above and removed from this log per the rule in section 0. Append new entries below using the mandated format.)
+(No open entries as of 2026-07-13. This file was fully rebuilt on that date from a direct read of the source; anything older than this rebuild that is not reflected above was already stale.)

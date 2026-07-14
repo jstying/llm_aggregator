@@ -40,3 +40,6 @@ firebase-key.json
 
 # 忽略 generated media 文件夹下所有生成的图片
 generated_media/
+
+# 个人简历草稿，不入库
+resume_bullets.md
