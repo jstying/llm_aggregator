@@ -334,6 +334,16 @@ def _classify_google_genai_error(e):
         return 'QUOTA_EXHAUSTED', message
     if status_code == 403:
         return 'PERMISSION_DENIED', message
+    # Live-verified 2026-08-28 (real call against the deployed google-genai version with a
+    # deliberately invalid key): an invalid API key does NOT come back as the 403 the
+    # troubleshooting docs imply -- it raises a private-module BadRequestError with
+    # status_code == 400 and a message embedding "'message': 'API key not valid. Please pass
+    # a valid API key.', 'status': 'INVALID_ARGUMENT'" plus an ErrorInfo reason of
+    # API_KEY_INVALID. Without this branch that shape fell through to the generic
+    # passthrough, showing the raw JSON blob to the user instead of the invalid-key message.
+    # Checked after the 429/403 branches so it can never shadow a quota signal.
+    if 'api key not valid' in message.lower() or 'api_key_invalid' in message.lower():
+        return 'PERMISSION_DENIED', message
     if status_code is not None:
         return None, f'Error {status_code}: {message}'
     return None, message
@@ -1071,6 +1081,30 @@ def run_cross_peer_review(entries):
 # error.type == 'billing_error' branch is also kept as a compatibility fallback, in case some
 # account/future API version really does take that more "documented" error shape.
 # ==================================================
+
+# Anthropic error classification, extracted from call_claude_model()'s inline
+# anthropic.APIStatusError branch so all three frontier vendors expose the same
+# _classify_*_error(e) -> (classification, message) shape and can be exercised by one shared
+# fixture suite (tests/test_error_classifiers.py). Uses getattr() duck typing like the other
+# two classifiers, so synthetic fixtures shaped like the real SDK exceptions classify
+# identically to the live ones. Behavior is byte-for-byte what the inline branch did:
+# "credit balance" in the message (the live-verified signal, see the comment above) or
+# type == 'billing_error' (docs-derived fallback) -> SERVER_CREDITS_EXHAUSTED; 401 ->
+# PERMISSION_DENIED with the fixed invalid-key message; anything else passes through as
+# 'Error {status_code}: {message}'.
+def _classify_anthropic_error(e):
+    error_message = getattr(e, 'message', None) or str(e)
+    is_credits_exhausted = (
+        getattr(e, 'type', None) == 'billing_error'
+        or 'credit balance' in error_message.lower()
+    )
+    if is_credits_exhausted:
+        return 'SERVER_CREDITS_EXHAUSTED', error_message
+    if getattr(e, 'status_code', None) == 401:
+        return 'PERMISSION_DENIED', 'Invalid or missing Claude API key.'
+    return None, f'Error {getattr(e, "status_code", None)}: {error_message}'
+
+
 def call_claude_model(prompt, model_key, user_api_key=None, apply_persona=True):
     model_id = CLAUDE_MODELS.get(model_key)
     start_time = time.time()
@@ -1111,18 +1145,12 @@ def call_claude_model(prompt, model_key, user_api_key=None, apply_persona=True):
         result['success'] = True
 
     except anthropic.APIStatusError as e:
-        error_message = getattr(e, 'message', str(e))
-        is_credits_exhausted = (
-            getattr(e, 'type', None) == 'billing_error'
-            or 'credit balance' in error_message.lower()
-        )
-        if is_credits_exhausted:
+        classification, message = _classify_anthropic_error(e)
+        if classification == 'SERVER_CREDITS_EXHAUSTED':
             result['error'] = 'SERVER_CREDITS_EXHAUSTED'
             result['error_code'] = 'SERVER_CREDITS_EXHAUSTED'
-        elif e.status_code == 401:
-            result['error'] = 'Invalid or missing Claude API key.'
         else:
-            result['error'] = f'Error {e.status_code}: {error_message}'
+            result['error'] = message
 
     except anthropic.APIConnectionError:
         result['error'] = 'The system is busy and trying to reconnect. Please try again shortly.'
@@ -1466,33 +1494,42 @@ def _get_authenticated_user_id():
 # ==================================================
 _PENDING_FRONTIER_REFUNDS = {}
 _PENDING_FRONTIER_REFUND_TTL_SECONDS = 600
+# Guards every read-modify-write on _PENDING_FRONTIER_REFUNDS. The consume path is a
+# check-then-pop compound operation; without a mutex its exactly-once behavior would rest on
+# the GIL happening to not switch threads between the two dict operations, which is an
+# accident of timing, not a guarantee. With the lock, two racing refund requests for the same
+# request_id are serialized and exactly one can ever win (see
+# tests/test_refund_ledger_concurrency.py, which races 25 threads per trial over 200 trials).
+_PENDING_FRONTIER_REFUNDS_LOCK = threading.Lock()
 
 
 def _record_pending_frontier_refund(request_id, user_id, provider):
     if not request_id:
         return
     now = time.time()
-    stale_ids = [
-        rid for rid, entry in _PENDING_FRONTIER_REFUNDS.items()
-        if now - entry['recorded_at'] > _PENDING_FRONTIER_REFUND_TTL_SECONDS
-    ]
-    for rid in stale_ids:
-        _PENDING_FRONTIER_REFUNDS.pop(rid, None)
-    _PENDING_FRONTIER_REFUNDS[request_id] = {
-        'user_id': user_id,
-        'provider': provider,
-        'recorded_at': now,
-    }
+    with _PENDING_FRONTIER_REFUNDS_LOCK:
+        stale_ids = [
+            rid for rid, entry in _PENDING_FRONTIER_REFUNDS.items()
+            if now - entry['recorded_at'] > _PENDING_FRONTIER_REFUND_TTL_SECONDS
+        ]
+        for rid in stale_ids:
+            _PENDING_FRONTIER_REFUNDS.pop(rid, None)
+        _PENDING_FRONTIER_REFUNDS[request_id] = {
+            'user_id': user_id,
+            'provider': provider,
+            'recorded_at': now,
+        }
 
 
 def _consume_pending_frontier_refund(request_id, user_id, provider):
     if not request_id:
         return False
-    entry = _PENDING_FRONTIER_REFUNDS.get(request_id)
-    if not entry or entry['user_id'] != user_id or entry['provider'] != provider:
-        return False
-    _PENDING_FRONTIER_REFUNDS.pop(request_id, None)
-    return True
+    with _PENDING_FRONTIER_REFUNDS_LOCK:
+        entry = _PENDING_FRONTIER_REFUNDS.get(request_id)
+        if not entry or entry['user_id'] != user_id or entry['provider'] != provider:
+            return False
+        _PENDING_FRONTIER_REFUNDS.pop(request_id, None)
+        return True
 
 
 # ==================================================
@@ -2737,6 +2774,251 @@ def gemini_text_chat_refund():
     except Exception as e:
         logger.error(f"Error in gemini_text_chat_refund: {str(e)}", exc_info=True)
         return jsonify({'refunded': False}), 500
+
+
+# ==================================================
+# Batched frontier chat endpoint (added 2026-08-28)
+# POST /api/frontier-chat
+#
+# The server-side concurrent scheduler for stage 2 of the compare pipeline. Before this
+# route, the three frontier providers were fired as three sequential browser fetches (each
+# one awaited before the next started), so stage 2 had no real concurrency at all; now the
+# frontend sends one request naming every checked frontier provider, and this route fans
+# them out through the same ThreadPoolExecutor pattern stages 1 and 3 already use. The three
+# standalone routes above (/api/claude-chat etc.) remain deployed unchanged -- they are the
+# canonical single-provider path and the refund/cancellation endpoints still live there.
+#
+# Per-provider semantics are kept identical to the standalone routes (same auth guard, same
+# personal-key header bypass, same quota gate before the SDK call, same increment + refund
+# ledger recording on success, same friendly SERVER_*_EXHAUSTED messages), driven off
+# _FRONTIER_CHAT_PROVIDERS below. The one deliberate difference: history appends do NOT
+# happen inside the worker threads. append_chat_history_result() is a read-modify-write on
+# the whole results array with no transaction, so two concurrent appends to the same
+# document could lose one; the workers only call the SDK and settle quota, and the appends
+# run sequentially in the request thread after the whole batch has been gathered, in the
+# order the providers were requested. Cancellation (_is_request_cancelled) is checked at
+# append time, exactly like the standalone routes.
+#
+# Config values are wrapped in lambdas so they resolve the module globals at call time --
+# tests that patch main.CLAUDE_AVAILABLE / main.call_claude_model etc. see the same
+# behavior through this route as through the standalone ones.
+# ==================================================
+FRONTIER_CHAT_TASK_TIMEOUT_SECONDS = 120
+
+_FRONTIER_CHAT_PROVIDERS = {
+    'claude': {
+        'label': 'Claude',
+        'available': lambda: CLAUDE_AVAILABLE,
+        'unavailable_code': 'CLAUDE_UNAVAILABLE',
+        'unavailable_message': 'Claude integration is not available on this server.',
+        'models': lambda: CLAUDE_MODELS,
+        'header': 'X-User-Claude-Key',
+        'get_usage': lambda user_id: get_claude_free_tier_usage(user_id),
+        'limit': lambda: CLAUDE_FREE_TIER_LIMIT,
+        'increment': lambda user_id: increment_claude_free_tier_usage(user_id),
+        'usage_field_name': 'claude_free_tier_usage',
+        'call': lambda prompt, model_key, key: call_claude_model(prompt, model_key, key),
+        'ledger_key': 'claude',
+        'server_exhausted_code': 'SERVER_CREDITS_EXHAUSTED',
+        'own_key_message': 'Your personal Claude API key has run out of credits. Please check your Anthropic account balance.',
+        'developer_message': (
+            "Your free trial quota still has uses left, but the developer's Claude "
+            "API account has run out of credits. Please contact the developer to restore access."
+        ),
+        'append': lambda user_id, history_id, result: _append_claude_result_to_history(user_id, history_id, result),
+    },
+    'chatgpt': {
+        'label': 'ChatGPT',
+        'available': lambda: CHATGPT_AVAILABLE,
+        'unavailable_code': 'CHATGPT_UNAVAILABLE',
+        'unavailable_message': 'ChatGPT integration is not available on this server.',
+        'models': lambda: CHATGPT_MODELS,
+        'header': 'X-User-ChatGPT-Key',
+        'get_usage': lambda user_id: get_free_tier_usage(user_id, CHATGPT_FREE_TIER_FIELD),
+        'limit': lambda: CHATGPT_FREE_TIER_LIMIT,
+        'increment': lambda user_id: increment_free_tier_usage(user_id, CHATGPT_FREE_TIER_FIELD),
+        'usage_field_name': 'chatgpt_free_tier_usage',
+        'call': lambda prompt, model_key, key: call_chatgpt_model(prompt, model_key, key),
+        'ledger_key': 'chatgpt',
+        'server_exhausted_code': 'SERVER_CHATGPT_QUOTA_EXHAUSTED',
+        'own_key_message': 'Your personal ChatGPT API key has run out of quota. Please check your OpenAI account balance.',
+        'developer_message': (
+            "Your free trial quota still has uses left, but the developer's ChatGPT "
+            "API account has run out of quota. Please contact the developer to restore access."
+        ),
+        'append': lambda user_id, history_id, result: _append_frontier_chat_result(user_id, history_id, result, 'ChatGPT'),
+    },
+    'gemini_text': {
+        'label': 'Gemini',
+        'available': lambda: GEMINI_AVAILABLE,
+        'unavailable_code': 'GEMINI_UNAVAILABLE',
+        'unavailable_message': 'Gemini integration is not available on this server.',
+        'models': lambda: GEMINI_TEXT_MODELS,
+        'header': 'X-User-Gemini-Key',
+        'get_usage': lambda user_id: get_free_tier_usage(user_id, GEMINI_TEXT_FREE_TIER_FIELD),
+        'limit': lambda: GEMINI_TEXT_FREE_TIER_LIMIT,
+        'increment': lambda user_id: increment_free_tier_usage(user_id, GEMINI_TEXT_FREE_TIER_FIELD),
+        'usage_field_name': 'gemini_text_free_tier_usage',
+        'call': lambda prompt, model_key, key: call_gemini_text_model(prompt, model_key, key),
+        'ledger_key': 'gemini_text',
+        'server_exhausted_code': 'SERVER_GEMINI_TEXT_QUOTA_EXHAUSTED',
+        'own_key_message': 'Your personal Gemini API key has run out of quota. Please check your Google AI account.',
+        'developer_message': (
+            "Your free trial quota still has uses left, but the developer's Gemini "
+            "API account has run out of quota. Please contact the developer to restore access."
+        ),
+        'append': lambda user_id, history_id, result: _append_frontier_chat_result(user_id, history_id, result, 'Gemini'),
+    },
+}
+
+
+def _run_frontier_chat_task(provider_key, user_id, prompt, model_key, request_id, user_api_key):
+    """One frontier provider's quota gate + SDK call + quota settlement, run inside the batch
+    executor. Returns {'payload': <what the client sees for this provider>,
+    'history_result': <what gets appended to the history doc, or None>}. History appends are
+    deliberately NOT done here -- see the route comment above."""
+    cfg = _FRONTIER_CHAT_PROVIDERS[provider_key]
+    using_own_key = bool(user_api_key)
+
+    if not using_own_key:
+        usage = cfg['get_usage'](user_id)
+        if usage >= cfg['limit']():
+            return {'payload': {'error': 'FREE_TIER_EXHAUSTED'}, 'history_result': None}
+
+    result = cfg['call'](prompt, model_key, user_api_key if using_own_key else None)
+
+    if result.get('error_code') == cfg['server_exhausted_code']:
+        friendly_message = cfg['own_key_message'] if using_own_key else cfg['developer_message']
+        history_result = {k: v for k, v in result.items() if k != 'error_code'}
+        history_result['error'] = friendly_message
+        return {
+            'payload': {'error': cfg['server_exhausted_code'], 'message': friendly_message},
+            'history_result': history_result,
+        }
+
+    if result['success'] and not using_own_key:
+        try:
+            cfg['increment'](user_id)
+            _record_pending_frontier_refund(request_id, user_id, cfg['ledger_key'])
+        except Exception as e:
+            logger.error(
+                f"Failed to increment {cfg['usage_field_name']} for {user_id}: {e}",
+                exc_info=True
+            )
+
+    return {'payload': result, 'history_result': result}
+
+
+@app.route('/api/frontier-chat', methods=['POST'])
+def frontier_chat():
+    try:
+        user_id, err_response = _get_authenticated_user_id()
+        if err_response:
+            return err_response
+
+        data = request.get_json() or {}
+        prompt = data.get('prompt', '').strip()
+        history_id = data.get('history_id')
+        provider_entries = data.get('providers')
+
+        if not prompt or not isinstance(provider_entries, list) or not provider_entries:
+            return jsonify({
+                'error': 'INVALID_REQUEST',
+                'message': 'A non-empty prompt and a non-empty providers list are required.'
+            }), 400
+
+        # Validate and dedupe (first entry per provider wins). Unknown providers/models
+        # reject the whole request -- same 400 contract as the standalone routes.
+        tasks = {}
+        for entry in provider_entries:
+            if not isinstance(entry, dict):
+                return jsonify({'error': 'INVALID_REQUEST', 'message': 'Each providers entry must be an object.'}), 400
+            provider_key = entry.get('provider')
+            cfg = _FRONTIER_CHAT_PROVIDERS.get(provider_key)
+            if cfg is None:
+                return jsonify({'error': 'INVALID_REQUEST', 'message': f'Unknown frontier provider "{provider_key}".'}), 400
+            if provider_key in tasks:
+                continue
+            model_key = entry.get('model')
+            if model_key not in cfg['models']():
+                return jsonify({
+                    'error': 'INVALID_REQUEST',
+                    'message': f'A valid {cfg["label"]} model is required.'
+                }), 400
+            tasks[provider_key] = {
+                'model': model_key,
+                'request_id': entry.get('request_id'),
+                'user_api_key': request.headers.get(cfg['header'], '').strip(),
+            }
+
+        results_by_provider = {}
+        outcomes = {}
+
+        # An unavailable SDK degrades only its own entry (unlike the standalone routes'
+        # whole-request 503) so one missing integration never blocks the other providers
+        # in the same batch.
+        runnable = {}
+        for provider_key, task in tasks.items():
+            cfg = _FRONTIER_CHAT_PROVIDERS[provider_key]
+            if not cfg['available']():
+                results_by_provider[provider_key] = {
+                    'error': cfg['unavailable_code'],
+                    'message': cfg['unavailable_message'],
+                }
+            else:
+                runnable[provider_key] = task
+
+        if runnable:
+            with ThreadPoolExecutor(max_workers=len(runnable)) as executor:
+                futures = {
+                    provider_key: executor.submit(
+                        _run_frontier_chat_task,
+                        provider_key, user_id, prompt,
+                        task['model'], task['request_id'], task['user_api_key'],
+                    )
+                    for provider_key, task in runnable.items()
+                }
+                for provider_key, future in futures.items():
+                    cfg = _FRONTIER_CHAT_PROVIDERS[provider_key]
+                    try:
+                        outcomes[provider_key] = future.result(timeout=FRONTIER_CHAT_TASK_TIMEOUT_SECONDS)
+                    except TimeoutError:
+                        logger.warning(f"Frontier chat task for {provider_key} timed out")
+                        outcomes[provider_key] = {
+                            'payload': {
+                                'provider': cfg['label'], 'success': False, 'response': '',
+                                'error': 'The system is busy and trying to reconnect. Please try again shortly.',
+                                'response_time': FRONTIER_CHAT_TASK_TIMEOUT_SECONDS,
+                                'model': runnable[provider_key]['model'],
+                                'type': 'anthropic' if provider_key == 'claude' else ('openai' if provider_key == 'chatgpt' else 'google_genai_text'),
+                            },
+                            'history_result': None,
+                        }
+                    except Exception as e:
+                        logger.error(f"Frontier chat task for {provider_key} failed: {e}", exc_info=True)
+                        outcomes[provider_key] = {
+                            'payload': {'error': 'Service temporarily unavailable. Please try again later.'},
+                            'history_result': None,
+                        }
+
+        # Sequential appends in request order, in the request thread -- see the route
+        # comment for why these must not run inside the worker threads.
+        for provider_key in tasks:
+            outcome = outcomes.get(provider_key)
+            if outcome is None:
+                continue
+            history_result = outcome.get('history_result')
+            if history_result is not None and not _is_request_cancelled(tasks[provider_key]['request_id']):
+                _FRONTIER_CHAT_PROVIDERS[provider_key]['append'](user_id, history_id, history_result)
+            results_by_provider[provider_key] = outcome['payload']
+
+        return jsonify({'results': results_by_provider})
+
+    except Exception as e:
+        logger.error(f"Error in frontier_chat: {str(e)}", exc_info=True)
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again later.'
+        }), 500
 
 
 # ==================================================

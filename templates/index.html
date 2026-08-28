@@ -2108,7 +2108,7 @@
 
         <div id="compareModeContainer">
         <div class="header">
-            <h1><span class="header-full">Text Generator</span><span class="header-short">Text Generator</span></h1>
+            <h1><span class="header-full">Text Generator</span><span class="header-short">LLM Aggregator</span></h1>
             {% if session.user_id %}
                 <p>Welcome back, {{ session.username }}. Compare AI provider responses below.</p>
             {% else %}
@@ -2303,7 +2303,7 @@
              fully independent -- submitting one never touches the other's state. -->
         <div id="imageModeContainer" style="display: none;">
         <div class="header">
-            <h1><span class="header-full">Image Generator</span><span class="header-short">Image Generator</span></h1>
+            <h1><span class="header-full">Image Generator</span><span class="header-short">LLM Aggregator</span></h1>
             <p>Generate images with providers and compare them side by side.</p>
         </div>
 
@@ -3320,7 +3320,8 @@
         // above (see the CSS comment on .claude-provider-checkbox/.claude-provider-trigger) --
         // it does not take part in the batch queries over providerTriggers/providerCards, and
         // is not written into the providers array of /api/compare, instead being submitted
-        // separately to /api/claude-chat, with the result then merged into the same results
+        // through the batched /api/frontier-chat request (or the standalone /api/claude-chat
+        // path via fetchClaudeResult()), with the result then merged into the same results
         // array that displayResults() renders, achieving "visual comparison within the same
         // results grid" while the backend scheduling chain (timeout/retry/peer review) stays
         // fully isolated and unaffected.
@@ -3572,7 +3573,12 @@
                 }
             }
 
-            return { trigger, modelSelect, fetchResult, refundIfNeeded, clear };
+            // showUpgradeModal and buildFailureResult are exposed (added 2026-08-28) so the
+            // batched /api/frontier-chat submit path below can pop the right provider's
+            // quota modal and build the right provider's failure card without going through
+            // fetchResult() -- fetchResult() itself remains the single-provider path, still
+            // used by the image form's controllers.
+            return { trigger, modelSelect, fetchResult, refundIfNeeded, clear, showUpgradeModal, buildFailureResult: opts.buildFailureResult };
         }
 
         const chatgptController = createFrontierProviderController({
@@ -3692,52 +3698,104 @@
                     return;
                 }
 
+                // Stage 2 (rewired 2026-08-28): every checked frontier provider goes out in
+                // ONE request to /api/frontier-chat, which fans them out server-side through
+                // the same ThreadPoolExecutor pattern as the g4f stage -- previously this was
+                // three sequential awaited fetches (Claude, then ChatGPT, then Gemini), so
+                // stage 2 had no concurrency at all and its latency was the sum of all three.
+                // Per-provider request_ids are still generated up front, exactly like before,
+                // so the AbortError catch below can reconcile each provider's refund ledger
+                // entry individually through the unchanged /api/.../refund endpoints.
+                const newFrontierRequestId = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                const frontierBatch = [];
                 if (claudeProviderTrigger && claudeProviderTrigger.checked && !claudeProviderTrigger.disabled) {
-                    claudeRequestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                    const claudeResult = await fetchClaudeResult(prompt, claudeModelSelect.value, data.history_id, claudeRequestId, signal);
-                    if (claudeResult) {
-                        data.results.push(claudeResult);
-                        data.total_providers += 1;
-                        if (claudeResult.success) data.successful_providers += 1;
-                        // Kept consistent with compare_providers()'s sort rule: success first, then shorter response time first.
-                        data.results.sort((a, b) => {
-                            if (a.success !== b.success) return a.success ? -1 : 1;
-                            return a.response_time - b.response_time;
+                    claudeRequestId = newFrontierRequestId();
+                    frontierBatch.push({ provider: 'claude', model: claudeModelSelect.value, request_id: claudeRequestId });
+                }
+                if (chatgptController.trigger && chatgptController.trigger.checked && !chatgptController.trigger.disabled) {
+                    chatgptRequestId = newFrontierRequestId();
+                    frontierBatch.push({ provider: 'chatgpt', model: chatgptController.modelSelect.value, request_id: chatgptRequestId });
+                }
+                if (geminiTextController.trigger && geminiTextController.trigger.checked && !geminiTextController.trigger.disabled) {
+                    geminiTextRequestId = newFrontierRequestId();
+                    frontierBatch.push({ provider: 'gemini_text', model: geminiTextController.modelSelect.value, request_id: geminiTextRequestId });
+                }
+
+                if (frontierBatch.length > 0) {
+                    // Per-provider UI handlers: which quota modal to pop and how to shape a
+                    // failure card. Claude predates the controller factory, so its two pieces
+                    // are referenced directly; the other two come off their controllers.
+                    const frontierHandlers = {
+                        claude: {
+                            showModal: showClaudeUpgradeModal,
+                            buildFailureResult: (error, model) => ({
+                                provider: 'Claude', success: false, response: '', error,
+                                response_time: 0, model, type: 'anthropic', peer_reviews: []
+                            })
+                        },
+                        chatgpt: { showModal: chatgptController.showUpgradeModal, buildFailureResult: chatgptController.buildFailureResult },
+                        gemini_text: { showModal: geminiTextController.showUpgradeModal, buildFailureResult: geminiTextController.buildFailureResult }
+                    };
+
+                    const frontierHeaders = { 'Content-Type': 'application/json' };
+                    const claudeKey = localStorage.getItem('user_claude_key');
+                    if (claudeKey) frontierHeaders['X-User-Claude-Key'] = claudeKey;
+                    const chatgptKey = localStorage.getItem('user_chatgpt_key');
+                    if (chatgptKey) frontierHeaders['X-User-ChatGPT-Key'] = chatgptKey;
+                    const geminiKey = localStorage.getItem('user_gemini_key');
+                    if (geminiKey) frontierHeaders['X-User-Gemini-Key'] = geminiKey;
+
+                    let frontierPayload = null;
+                    let batchErrorMessage = null;
+                    try {
+                        const frontierResponse = await fetch('/api/frontier-chat', {
+                            method: 'POST',
+                            headers: frontierHeaders,
+                            body: JSON.stringify({ prompt, history_id: data.history_id, providers: frontierBatch }),
+                            signal
                         });
+                        try { frontierPayload = await frontierResponse.json(); } catch (_) {}
+                        if (!frontierResponse.ok) {
+                            batchErrorMessage = (frontierPayload && (frontierPayload.message || frontierPayload.error)) || `Server error: ${frontierResponse.status}`;
+                            frontierPayload = null;
+                        }
+                    } catch (error) {
+                        if (error.name === 'AbortError') throw error;
+                        console.error('Error calling frontier providers:', error);
+                        batchErrorMessage = 'Network error contacting the frontier providers.';
                     }
+
+                    for (const entry of frontierBatch) {
+                        const handler = frontierHandlers[entry.provider];
+                        const outcome = (frontierPayload && frontierPayload.results) ? frontierPayload.results[entry.provider] : null;
+                        let card = null;
+                        if (!outcome) {
+                            card = handler.buildFailureResult(batchErrorMessage || 'Network error contacting the frontier providers.', entry.model);
+                        } else if (outcome.error === 'FREE_TIER_EXHAUSTED') {
+                            // The quota-exhausted modal fully communicates this state, so no
+                            // failure card is stacked on top -- same choice as fetchClaudeResult().
+                            handler.showModal();
+                        } else if (typeof outcome.provider === 'string') {
+                            // A real result object (success or ordinary failure) -- ensure
+                            // peer_reviews exists so renderPeerReviews() needs no null check.
+                            card = Object.assign({ peer_reviews: [] }, outcome);
+                        } else {
+                            card = handler.buildFailureResult(outcome.message || outcome.error || 'Unknown error', entry.model);
+                        }
+                        if (card) {
+                            data.results.push(card);
+                            data.total_providers += 1;
+                            if (card.success) data.successful_providers += 1;
+                        }
+                    }
+                    // Kept consistent with compare_providers()'s sort rule: success first, then shorter response time first.
+                    data.results.sort((a, b) => {
+                        if (a.success !== b.success) return a.success ? -1 : 1;
+                        return a.response_time - b.response_time;
+                    });
                     // Refresh the Trial Quota badge from the backend's real count -- own-key
                     // calls and failed calls don't consume a use, so re-fetching is more
-                    // reliable than trying to locally guess whether this one did.
-                    refreshTrialQuotaBadge();
-                }
-
-                if (chatgptController.trigger && chatgptController.trigger.checked && !chatgptController.trigger.disabled) {
-                    chatgptRequestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                    const chatgptResult = await chatgptController.fetchResult(prompt, chatgptController.modelSelect.value, data.history_id, chatgptRequestId, signal);
-                    if (chatgptResult) {
-                        data.results.push(chatgptResult);
-                        data.total_providers += 1;
-                        if (chatgptResult.success) data.successful_providers += 1;
-                        data.results.sort((a, b) => {
-                            if (a.success !== b.success) return a.success ? -1 : 1;
-                            return a.response_time - b.response_time;
-                        });
-                    }
-                    refreshTrialQuotaBadge();
-                }
-
-                if (geminiTextController.trigger && geminiTextController.trigger.checked && !geminiTextController.trigger.disabled) {
-                    geminiTextRequestId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                    const geminiTextResult = await geminiTextController.fetchResult(prompt, geminiTextController.modelSelect.value, data.history_id, geminiTextRequestId, signal);
-                    if (geminiTextResult) {
-                        data.results.push(geminiTextResult);
-                        data.total_providers += 1;
-                        if (geminiTextResult.success) data.successful_providers += 1;
-                        data.results.sort((a, b) => {
-                            if (a.success !== b.success) return a.success ? -1 : 1;
-                            return a.response_time - b.response_time;
-                        });
-                    }
+                    // reliable than trying to locally guess what this batch consumed.
                     refreshTrialQuotaBadge();
                 }
 
